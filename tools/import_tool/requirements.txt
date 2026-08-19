@@ -1,0 +1,4 @@
+# 数据导入工具 — 依赖清单
+pymysql>=1.1
+openpyxl>=3.0
+xlrd>=2.0

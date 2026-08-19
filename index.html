@@ -1,0 +1,1468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>聚浪网络科技 · 电商后台管理系统</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config={theme:{extend:{colors:{brand:'#1677ff','brand-dark':'#0958d9','brand-light':'#e6f4ff','bg-gray':'#f5f7fa'},borderRadius:{'8':'8px'},boxShadow:{card:'0 2px 8px rgba(0,0,0,0.06),0 1px 4px rgba(0,0,0,0.04)','card-hover':'0 4px 16px rgba(0,0,0,0.08),0 2px 8px rgba(0,0,0,0.06)',login:'0 4px 24px rgba(0,0,0,0.08)'}}}}</script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script async src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" onerror="console.warn('ECharts加载失败')"></script>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Helvetica Neue",Arial,sans-serif}
+    :root{--primary:#1677ff;--primary-dark:#0958d9;--danger:#dc2626;--success:#16a34a;--warning:#ea580c;--gray-50:#f8fafc;--gray-100:#f1f5f9;--gray-200:#e2e8f0;--gray-300:#cbd5e1;--gray-400:#94a3b8;--gray-500:#64748b;--gray-600:#475569;--gray-700:#334155;--gray-800:#1e293b;--gray-900:#0f172a;--sidebar-width:220px;--topbar-height:56px}
+    .hidden{display:none!important}
+    /* ========== 登录页 ========== */
+    .login-page{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:32px;position:relative;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+    .login-bg-layer1{position:fixed;inset:0;z-index:0;background:linear-gradient(135deg,oklch(99% 0.005 240) 0%,oklch(92% 0.02 245) 100%)}
+    .login-bg-mountains{position:fixed;inset:0;z-index:0;pointer-events:none}
+    .login-bg-mountains svg{position:absolute;bottom:0;left:0;width:100%;height:55%}
+    .login-bg-beam{position:fixed;inset:0;z-index:0;pointer-events:none;background:linear-gradient(132deg,transparent 25%,oklch(100% 0.02 245 / 0.55) 48%,oklch(95% 0.05 245 / 0.35) 55%,transparent 75%),linear-gradient(148deg,transparent 35%,oklch(100% 0.02 245 / 0.3) 55%,oklch(95% 0.04 245 / 0.2) 62%,transparent 80%)}
+    .login-bg-orb{position:fixed;border-radius:50%;z-index:0;pointer-events:none;filter:blur(2px);background:radial-gradient(circle at 30% 30%,oklch(100% 0.02 245 / 0.8),oklch(85% 0.06 245 / 0.3) 45%,transparent 70%)}
+    .login-bg-orb::after{content:'';position:absolute;border-radius:50%;background:radial-gradient(circle,oklch(100% 0.01 245 / 0.9) 0%,transparent 60%);width:35%;height:35%;top:18%;left:22%}
+    .orb-a{width:100px;height:100px;top:12%;left:8%}.orb-b{width:60px;height:60px;top:25%;right:12%}.orb-c{width:130px;height:130px;top:40%;left:72%}.orb-d{width:50px;height:50px;top:8%;left:55%}.orb-e{width:80px;height:80px;top:55%;left:18%}.orb-f{width:45px;height:45px;top:18%;right:30%}
+    @keyframes orbFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}
+    .orb-a{animation:orbFloat 8s ease-in-out infinite}.orb-b{animation:orbFloat 10s ease-in-out .5s infinite}.orb-c{animation:orbFloat 12s ease-in-out 1s infinite}.orb-d{animation:orbFloat 7s ease-in-out 2s infinite}.orb-e{animation:orbFloat 9s ease-in-out .8s infinite}.orb-f{animation:orbFloat 11s ease-in-out 1.5s infinite}
+    .login-bg-particles{position:fixed;inset:0;z-index:0;pointer-events:none}
+    .login-bg-particles circle{fill:oklch(70% 0.08 245 / 0.4)}
+    @keyframes particlePulse{0%,100%{opacity:0.3}50%{opacity:0.9}}
+    .login-card-wrapper{position:relative;z-index:10;display:flex;gap:32px;align-items:stretch;max-width:1100px;width:100%}
+    .login-card-brand{flex:1;background:rgba(255,255,255,0.72);border-radius:24px;padding:48px 44px;display:flex;flex-direction:column;justify-content:center;backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);border:1px solid rgba(255,255,255,0.5);box-shadow:0 20px 60px oklch(40% 0.05 245 / 0.12),0 8px 20px oklch(40% 0.05 245 / 0.08)}
+    .login-card-form-panel{width:420px;background:rgba(255,255,255,0.72);border-radius:24px;padding:48px 44px;display:flex;flex-direction:column;justify-content:center;backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);border:1px solid rgba(255,255,255,0.5);box-shadow:0 20px 60px oklch(40% 0.05 245 / 0.12),0 8px 20px oklch(40% 0.05 245 / 0.08)}
+    @media(max-width:860px){.login-card-wrapper{flex-direction:column;gap:24px;max-width:440px}.login-card-brand{display:none}.login-card-form-panel{width:100%;padding:40px 32px}}
+    .login-brand-logo{display:flex;align-items:center;gap:12px;margin-bottom:28px}
+    .login-brand-logo-icon{width:48px;height:48px;border-radius:14px;background:oklch(58% 0.14 245);display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px;font-weight:700;box-shadow:0 4px 16px oklch(58% 0.14 245 / 0.2)}
+    .login-brand-logo h1{font-size:20px;font-weight:700;color:oklch(25% 0.02 245);letter-spacing:-0.2px}
+    .login-brand-title{font-size:28px;font-weight:650;color:oklch(25% 0.02 245);margin-bottom:8px;letter-spacing:-0.4px;line-height:1.2}
+    .login-brand-desc{font-size:15px;color:oklch(55% 0.02 248);margin-bottom:36px;line-height:1.5}
+    .login-features{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    .login-feat-card{background:oklch(98% 0.005 245);border:1px solid oklch(94% 0.01 245);border-radius:16px;padding:20px;min-height:104px;transition:all .25s ease-out;cursor:default}
+    .login-feat-card:hover{background:#fff;transform:translateY(-4px);box-shadow:0 4px 20px oklch(20% 0.05 245 / 0.08)}
+    .login-feat-icon-wrap{width:40px;height:40px;border-radius:10px;background:oklch(58% 0.14 245 / 12%);display:flex;align-items:center;justify-content:center;margin-bottom:10px}
+    .login-feat-card h4{font-size:14px;font-weight:600;color:oklch(30% 0.02 245);margin-bottom:3px}
+    .login-feat-card p{font-size:12px;color:oklch(55% 0.02 248);line-height:1.4;margin:0}
+    .login-card-form-panel h2{font-size:22px;font-weight:700;color:oklch(25% 0.02 245);margin-bottom:4px}
+    .login-card-form-panel .form-subtitle{font-size:14px;color:oklch(55% 0.02 248);margin-bottom:32px}
+    @media(prefers-color-scheme:dark){
+      .login-bg-layer1{background:linear-gradient(135deg,oklch(18% 0.015 245) 0%,oklch(14% 0.012 240) 100%)}
+      .login-bg-beam{background:linear-gradient(132deg,transparent 25%,oklch(100% 0.02 245 / 0.25) 48%,oklch(95% 0.05 245 / 0.15) 55%,transparent 75%),linear-gradient(148deg,transparent 35%,oklch(100% 0.02 245 / 0.15) 55%,oklch(95% 0.04 245 / 0.1) 62%,transparent 80%)}
+      .login-card-brand,.login-card-form-panel{background:rgba(20,25,35,0.7);border-color:rgba(255,255,255,0.1);box-shadow:0 20px 60px rgba(0,0,0,0.3),0 8px 20px rgba(0,0,0,0.2)}
+      .login-brand-logo h1,.login-brand-title{color:oklch(90% 0.01 248)}.login-brand-desc,.login-feat-card p,.login-card-form-panel .form-subtitle{color:oklch(65% 0.015 248)}
+      .login-feat-card{background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.08)}.login-feat-card:hover{background:rgba(255,255,255,0.1)}
+      .login-feat-card h4,.login-card-form-panel h2{color:oklch(90% 0.01 248)}.form-group label{color:oklch(75% 0.01 248)}
+      .form-input{background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.12);color:oklch(90% 0.01 248)}
+      .form-input:focus{border-color:oklch(58% 0.14 245);box-shadow:0 0 0 4px oklch(58% 0.14 245 / 0.2);background:rgba(255,255,255,0.1)}
+      .form-input::placeholder{color:oklch(50% 0.015 248)}.pwd-toggle,.form-options label,.form-options a,.login-footer{color:oklch(65% 0.015 248)}
+    }
+    .form-group{margin-bottom:20px}
+    .form-group label{display:block;font-size:13px;font-weight:600;color:oklch(35% 0.02 245);margin-bottom:6px}
+    .form-input-wrap{position:relative}
+    .form-input{width:100%;height:48px;padding:0 16px;border:1px solid oklch(92% 0.01 245);border-radius:14px;font-size:14px;color:oklch(25% 0.02 245);background:oklch(98% 0.005 245);transition:all .2s ease-out;outline:none;font-family:inherit}
+    .form-input:focus{border-color:oklch(58% 0.14 245);box-shadow:0 0 0 4px oklch(58% 0.15 245 / 0.12);background:#fff}
+    .form-input::placeholder{color:oklch(75% 0.02 248)}
+    .pwd-toggle{position:absolute;right:14px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:oklch(60% 0.02 248);padding:4px;font-size:17px}
+    .form-options{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;font-size:13px}
+    .form-options label{display:flex;align-items:center;gap:6px;color:oklch(50% 0.02 248);cursor:pointer}
+    .form-options a{color:oklch(58% 0.14 245);text-decoration:none}.form-options a:hover{text-decoration:underline}
+    .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:0 20px;height:50px;border-radius:14px;font-size:15px;font-weight:500;cursor:pointer;border:none;transition:all .2s ease-out;font-family:inherit;letter-spacing:0.5px}
+    .btn-primary{background:linear-gradient(180deg,oklch(58% 0.15 245) 0%,oklch(52% 0.16 245) 100%);color:#fff;width:100%;box-shadow:0 4px 16px oklch(58% 0.15 245 / 0.3)}
+    .btn-primary:hover{box-shadow:0 6px 24px oklch(58% 0.15 245 / 0.4);transform:translateY(-1px)}
+    .login-error{color:#dc2626;font-size:13px;margin-top:14px;text-align:center;min-height:20px}
+    .login-footer{text-align:center;margin-top:24px;font-size:12px;color:oklch(60% 0.02 248)}
+    .login-footer a{color:oklch(58% 0.14 245);text-decoration:none}
+
+    @keyframes loginFadeIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+    .login-card-form-panel>*{animation:loginFadeIn .35s ease-out backwards}
+    .login-card-form-panel>*:nth-child(1){animation-delay:0s}
+    .login-card-form-panel>*:nth-child(2){animation-delay:.06s}
+    .login-card-form-panel>*:nth-child(3){animation-delay:.12s}
+    .login-card-form-panel>*:nth-child(4){animation-delay:.18s}
+
+    @media(prefers-color-scheme:dark){
+      .login-page{background:linear-gradient(135deg,#1a1f2e 0%,#1e2535 100%)}
+      .login-card{background:#252b3a;box-shadow:0 4px 24px rgba(0,0,0,0.3)}
+      .login-card-brand{background:#1e2433}
+      .login-brand-logo h1,.login-brand-title,.login-card-form-panel h2{color:#e2e8f0}
+      .login-brand-desc,.login-feat-card p,.login-card-form-panel .form-subtitle{color:#94a3b8}
+      .login-feat-card{background:rgba(255,255,255,0.04);border-color:rgba(255,255,255,0.06)}
+      .login-feat-card h4{color:#cbd5e1}
+      .form-group label{color:#94a3b8}
+      .form-input{background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.1);color:#e2e8f0}
+      .form-input:focus{border-color:#1677ff;box-shadow:0 0 0 3px rgba(22,119,255,0.2)}
+      .form-input::placeholder,.pwd-toggle,.form-options label,.form-options a,.login-footer{color:#64748b}
+    }
+    /* 主布局 */
+    .app-page{display:flex;min-height:100vh}
+    .sidebar{width:220px;background:#fff;position:fixed;top:0;left:0;bottom:0;z-index:50;overflow-y:auto;display:flex;flex-direction:column;box-shadow:0 0 15px rgba(0,0,0,0.03)}
+    .sidebar-logo{height:72px;padding:0 20px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #e2e8f0;background:rgba(255,255,255,0.85);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);position:sticky;top:0;z-index:5}
+    .sidebar-logo-icon{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,oklch(58% 0.15 245),oklch(48% 0.18 245));display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 2px 8px oklch(58% 0.15 245 / 0.25),inset 0 1px 2px rgba(255,255,255,0.2)}
+    .sidebar-logo-icon svg{width:18px;height:18px}
+    .sidebar-brand-text{display:flex;flex-direction:column;gap:2px;line-height:1.2}
+    .sidebar-brand-cn{font-size:16px;font-weight:600;color:oklch(20% 0.02 245);letter-spacing:0.5px;font-feature-settings:"palt"}
+    .sidebar-brand-en{font-size:11px;font-weight:500;color:oklch(55% 0.02 245);letter-spacing:2px;text-transform:uppercase;margin-top:2px}
+    .sidebar-nav{flex:1;padding:8px 0}
+    .nav-group{padding:0 8px;margin-bottom:8px}
+    .nav-group-divider{height:1px;background:#e2e8f0;margin:0 12px 8px}
+    .nav-group-title{padding:10px 12px;font-size:14px;font-weight:500;color:#475569;cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;user-select:none;border-radius:8px;transition:background .2s ease}
+    .nav-group-title:hover{background:#f8fafc}
+    .nav-group-title .ng-icon{font-size:15px;color:#94a3b8;width:18px;text-align:center}
+    .nav-group-title .ng-chevron{font-size:10px;color:#94a3b8;transition:transform .2s ease}
+    .nav-group.open .nav-group-title .ng-chevron{transform:rotate(90deg)}
+    .nav-group-items{overflow:hidden;transition:height .25s ease-in-out,opacity .25s ease-in-out}
+    .nav-group:not(.open) .nav-group-items{height:0;opacity:0}
+    .nav-item{display:flex;align-items:center;gap:8px;padding:9px 12px 9px 38px;font-size:13px;color:#475569;text-decoration:none;cursor:pointer;transition:background .2s ease,color .2s ease;border-radius:8px;margin:1px 0;position:relative}
+    .nav-item:hover{background:#f8fafc;color:#1e293b}
+    .nav-item.active{background:#eff6ff;color:#2563eb;font-weight:500}
+    .nav-item.active::before{content:'';position:absolute;left:0;top:4px;bottom:4px;width:3px;background:#2563eb;border-radius:0 2px 2px 0}
+    .nav-item .ni-icon{font-size:14px;color:inherit;width:18px;text-align:center;opacity:0.7}
+    .nav-item.active .ni-icon{opacity:1}
+    /* 子菜单样式 */
+    .nav-submenu-toggle{display:flex;align-items:center;gap:8px;padding:9px 12px 9px 38px;font-size:13px;color:#475569;cursor:pointer;transition:background .2s ease,color .2s ease;border-radius:8px;margin:1px 0;user-select:none;position:relative}
+    .nav-submenu-toggle:hover{background:#f8fafc;color:#1e293b}
+    .nav-submenu-toggle .ni-icon{font-size:14px;color:inherit;width:18px;text-align:center;opacity:0.7}
+    .nav-submenu-toggle .sub-chevron{font-size:10px;margin-left:auto;transition:transform .2s ease;color:#94a3b8}
+    .nav-submenu.open .nav-submenu-toggle .sub-chevron{transform:rotate(90deg)}
+    .nav-submenu-items{overflow:hidden;transition:height .2s ease-in-out,opacity .2s ease-in-out}
+    .nav-submenu:not(.open) .nav-submenu-items{height:0;opacity:0}
+    .nav-submenu .nav-item{padding-left:56px;font-size:12px}
+    .topbar{position:fixed;top:0;left:var(--sidebar-width);right:0;height:var(--topbar-height);background:#fff;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between;padding:0 24px;z-index:40}
+    .topbar-left{display:flex;align-items:center;gap:16px}.sidebar-toggle-btn{background:none;border:none;font-size:18px;color:#64748b;cursor:pointer}.topbar-right{display:flex;align-items:center;gap:16px;font-size:14px;color:#64748b}
+
+      .mkt-cards-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:8px;margin-bottom:20px}
+      @media(max-width:1200px){.mkt-cards-grid{grid-template-columns:repeat(2,1fr)}}
+      @media(max-width:640px){.mkt-cards-grid{grid-template-columns:1fr}}
+      .mkt-card{background:#fff;border-radius:12px;border:1px solid #f1f5f9;padding:18px;display:flex;flex-direction:column;gap:10px;position:relative;overflow:hidden;transition:all .2s ease-out}
+      .mkt-card:hover{border-color:#e0ecff;box-shadow:0 4px 16px rgba(22,119,255,0.06);transform:translateY(-1px)}
+      .mkt-card::before{content:'';position:absolute;top:0;left:0;bottom:0;width:3px}
+      .mkt-card--emerald::before{background:linear-gradient(180deg,#059669,#34d399)}
+      .mkt-card--rose::before{background:linear-gradient(180deg,#e11d48,#fb7185)}
+      .mkt-card--amber::before{background:linear-gradient(180deg,#d97706,#fbbf24)}
+      .mkt-card--indigo::before{background:linear-gradient(180deg,#4f46e5,#818cf8)}
+      .mkt-card--green::before{background:linear-gradient(180deg,#16a34a,#4ade80)}
+      .mkt-card--coral::before{background:linear-gradient(180deg,#f43f5e,#fda4af)}
+      .mkt-card--cyan::before{background:linear-gradient(180deg,#0891b2,#22d3ee)}
+      .mkt-card--violet::before{background:linear-gradient(180deg,#7c3aed,#a78bfa)}
+      .mkt-card-header{display:flex;align-items:center;gap:10px}
+      .mkt-card-icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0}
+      .mkt-card--emerald .mkt-card-icon{background:#ecfdf5;color:#059669}
+      .mkt-card--rose .mkt-card-icon{background:#fff1f2;color:#e11d48}
+      .mkt-card--amber .mkt-card-icon{background:#fffbeb;color:#d97706}
+      .mkt-card--indigo .mkt-card-icon{background:#eef2ff;color:#4f46e5}
+      .mkt-card--green .mkt-card-icon{background:#f0fdf4;color:#16a34a}
+      .mkt-card--coral .mkt-card-icon{background:#fff5f5;color:#f43f5e}
+      .mkt-card--cyan .mkt-card-icon{background:#ecfeff;color:#0891b2}
+      .mkt-card--violet .mkt-card-icon{background:#f5f3ff;color:#7c3aed}
+      .mkt-card-label{font-size:0.85rem;color:#64748b;font-weight:500}
+      .mkt-card-body{display:flex;flex-direction:column;gap:4px}
+      .mkt-card-value{font-size:1.5rem;font-weight:700;color:#0f172a;letter-spacing:-0.5px;line-height:1.2;font-variant-numeric:tabular-nums}
+      .mkt-card-trend{font-size:0.8rem;font-weight:500;display:flex;align-items:center;gap:4px}
+      .mkt-card-trend.up{color:#059669}.mkt-card-trend.down{color:#e11d48}.mkt-card-trend.warn{color:#d97706}.mkt-card-trend.neutral{color:#94a3b8}
+      .refund-big-num{font-size:1.5rem;font-weight:750;color:#e11d48;margin-bottom:4px}
+      .refund-big-trend{font-size:0.8rem;color:#94a3b8;margin-bottom:14px}
+      .refund-gauges{display:flex;gap:20px;margin-bottom:14px}
+      .refund-gauge{flex:1;text-align:center}
+      .refund-gauge-chart{width:100%;height:100px}
+      .refund-gauge-label{font-size:0.78rem;color:#64748b;margin-top:2px}
+      .refund-gauge-note{font-size:0.7rem;color:#94a3b8;margin-top:1px}
+      .refund-mini-bar{width:100%;height:80px}
+      .aov-conv-row{display:flex;flex-direction:column;gap:16px}
+      .aov-conv-item{flex:1}
+      .aov-conv-val{font-size:1.25rem;font-weight:700}
+      .aov-conv-trend{font-size:0.78rem}
+      .aov-conv-chart{width:100%;height:100px}
+
+      /* ======== 标头 ======== */
+      .dashboard-header{padding:8px 24px 0;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap}
+      .dh-left{display:flex;align-items:center;gap:14px}
+      .dh-icon{width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,oklch(58% 0.15 245),oklch(48% 0.18 245));display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 2px 8px oklch(58% 0.15 245 / 0.20)}
+      .dh-icon svg{width:20px;height:20px}
+      .dh-title-group{display:flex;flex-direction:column;gap:1px}
+      .dh-title{font-size:22px;font-weight:700;color:oklch(20% 0.02 245);letter-spacing:-0.3px;line-height:1.3;margin:0}
+      .dh-subtitle{font-size:11px;font-weight:500;color:oklch(55% 0.02 245);letter-spacing:1.5px;text-transform:uppercase}
+      .dh-status{font-size:11px;color:oklch(60% 0.02 245);display:flex;align-items:center;margin-top:1px}
+      .dh-chips{display:flex;gap:12px}
+      .dh-chip{background:oklch(98% 0.005 245);border:1px solid oklch(94% 0.01 245);border-radius:10px;padding:8px 14px;display:flex;flex-direction:column;gap:2px;min-width:110px}
+      .dh-chip-label{font-size:11px;color:oklch(55% 0.02 245);font-weight:500}
+      .dh-chip-value{font-size:16px;font-weight:700;color:oklch(20% 0.02 245);font-variant-numeric:tabular-nums}
+      .dh-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+      .dh-date-shortcuts{display:flex;gap:0;background:oklch(96% 0.01 245);border-radius:10px;padding:3px}
+      .dh-ds-btn{border:none;background:transparent;padding:5px 12px;border-radius:8px;font-size:0.82rem;font-weight:500;cursor:pointer;color:oklch(50% 0.02 245);transition:.15s;white-space:nowrap;font-family:inherit}
+      .dh-ds-btn:hover{color:oklch(30% 0.02 245);background:rgba(255,255,255,0.5)}
+      .dh-ds-btn.active{background:#fff;color:oklch(58% 0.15 245);box-shadow:0 1px 2px rgba(0,0,0,0.06);font-weight:600}
+      .dh-select{padding:5px 10px;border:1px solid oklch(92% 0.01 245);border-radius:9px;background:#fff;font-size:0.82rem;color:oklch(30% 0.02 245);font-family:inherit;outline:none;cursor:pointer;height:33px}
+      .dh-select:hover{border-color:oklch(85% 0.02 245)}
+      .dh-select:focus{border-color:oklch(58% 0.15 245)}
+      .dh-date-picker{display:flex;align-items:center;gap:5px}
+      .dh-dp-field{display:flex;align-items:center;gap:5px;background:#fff;border:1px solid oklch(92% 0.01 245);border-radius:9px;padding:5px 10px;height:33px;cursor:pointer}
+      .dh-dp-field:hover{border-color:oklch(85% 0.02 245)}
+      .dh-dp-field:focus-within{border-color:oklch(58% 0.15 245)}
+      .dh-dp-field i{color:oklch(65% 0.02 245);font-size:0.82rem}
+      .dh-dp-field input{border:none;background:transparent;outline:none;font-size:0.82rem;color:oklch(30% 0.02 245);width:100px;font-family:inherit}
+      .dh-dp-sep{color:oklch(80% 0.02 245);font-size:0.8rem}
+      @media(max-width:900px){.dashboard-header{flex-direction:column;align-items:flex-start}.dh-chips{display:none}}
+      .charts-section{width:100%}
+      .charts-row{width:100%}
+      .chart-module{min-width:0}
+      .chart-module-body{width:100%;min-height:280px}
+      .chart-module-body.short{min-height:290px}
+
+    .main-content{margin-left:var(--sidebar-width);width:calc(100% - var(--sidebar-width));padding-top:var(--topbar-height);min-height:100vh;background:linear-gradient(180deg,#f5f7fb 0%,#fafbfc 100%)}
+    .page-section{padding:8px 24px 40px;width:100%}
+    @media(max-width:768px){.sidebar{transform:translateX(-100%)}.sidebar.open{transform:translateX(0)}.main-content{margin-left:0;width:100%}.topbar{left:0}.page-section{padding:20px 16px 32px}}
+    .placeholder-card{background:#fff;border-radius:12px;border:1px solid #f1f5f9;padding:48px;text-align:center;color:#94a3b8}.placeholder-card i{font-size:48px;margin-bottom:16px;display:block}.placeholder-card h3{font-size:18px;color:#64748b;margin-bottom:8px}
+    /* Toast */
+    .toast{position:fixed;top:24px;right:24px;z-index:999;padding:12px 20px;border-radius:10px;font-size:14px;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,0.12);transition:.2s}.toast-success{background:#16a34a;color:#fff}.toast-error{background:#dc2626;color:#fff}
+    /* 数据表格 */
+    .data-table-wrap{overflow-x:auto}.data-table{width:100%;border-collapse:collapse;font-size:14px}.data-table th{text-align:left;padding:12px 16px;background:#f8fafc;color:#64748b;font-weight:600;border-bottom:1px solid #e2e8f0}.data-table td{padding:12px 16px;border-bottom:1px solid #f1f5f9;color:#334155}.empty-state{text-align:center;padding:40px;color:#94a3b8}
+    .badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:500}.badge-success{background:#dcfce7;color:#16a34a}.badge-warning{background:#fff7ed;color:#ea580c}.badge-info{background:#e6f4ff;color:#1677ff}.badge-danger{background:#fee2e2;color:#dc2626}.badge-gray{background:#f1f5f9;color:#64748b}
+    .btn-sm{height:32px;padding:0 12px;font-size:12px;border-radius:8px}.btn-outline{background:#fff;border:1px solid #e2e8f0;color:#475569}.btn-outline:hover{background:#f8fafc}.btn-danger{background:#dc2626;color:#fff}.btn-danger:hover{background:#b91c1c}
+    .modal{position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:100;display:flex;align-items:center;justify-content:center}.modal-content{background:#fff;border-radius:16px;width:90vw;max-width:560px;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.15)}.modal-header{padding:20px 24px 0;font-size:18px;font-weight:700}.modal-body{padding:24px;overflow-y:auto}.modal-footer{padding:0 24px 20px;display:flex;justify-content:flex-end;gap:12px}
+    .form-row{display:flex;gap:16px}.form-row .form-group{flex:1}.form-select{width:100%;height:44px;padding:0 14px;border:1px solid #e2e8f0;border-radius:10px;font-size:14px;color:#334155;background:#f8fafc;outline:none;font-family:inherit;cursor:pointer}
+    .overlay{position:fixed;inset:0;background:rgba(0,0,0,0.3);z-index:49}
+    /* 数据看板 */
+    .stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}@media(max-width:1200px){.stats-row{grid-template-columns:repeat(2,1fr)}}@media(max-width:640px){.stats-row{grid-template-columns:1fr}}
+    .stat-card{background:#fff;border-radius:14px;padding:20px 24px;border:1px solid #f1f5f9;box-shadow:0 1px 3px rgba(0,0,0,0.03);display:flex;align-items:center;gap:16px}
+    .stat-icon{width:48px;height:48px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:22px;color:#fff;flex-shrink:0}
+    .stat-icon.blue{background:linear-gradient(135deg,#3b82f6,#60a5fa)}.stat-icon.green{background:linear-gradient(135deg,#10b981,#34d399)}.stat-icon.orange{background:linear-gradient(135deg,#f59e0b,#fbbf24)}.stat-icon.red{background:linear-gradient(135deg,#ef4444,#f87171)}
+    .stat-label{font-size:14px;color:#64748b;margin-bottom:4px}.stat-value{font-size:24px;font-weight:700;color:#1e293b}.stat-trend{font-size:12px;color:#94a3b8}.stat-trend.up{color:#16a34a}.stat-trend.down{color:#dc2626}
+    /* 图表 */
+    .chart-row{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:22px}@media(max-width:1200px){.chart-row{grid-template-columns:1fr}}
+    .chart-card{background:#fff;border-radius:14px;border:1px solid #f1f5f9;box-shadow:0 1px 3px rgba(0,0,0,0.03);padding:20px 24px}.chart-card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}.chart-card-header h3{font-size:15px;font-weight:600;color:#1e293b}.chart-card-body{position:relative;height:280px}
+    .bottom-row{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:1200px){.bottom-row{grid-template-columns:1fr}}
+    .data-card{background:#fff;border-radius:14px;border:1px solid #f1f5f9;box-shadow:0 1px 3px rgba(0,0,0,0.03)}.data-card-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #f1f5f9}.data-card-header h3{font-size:15px;font-weight:600;color:#1e293b}.data-card-body{padding:16px 20px}
+    .view-all{font-size:13px;color:#1677ff;text-decoration:none}
+    /* 管理权限 */
+    .ap-tabs{display:flex;gap:0;margin-bottom:20px;background:#f1f5f9;border-radius:12px;padding:3px;width:fit-content}.ap-tab{border:none;background:transparent;padding:8px 20px;border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;color:#64748b;font-family:inherit}.ap-tab.active{background:#fff;color:#1677ff;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+    .ap-panel{display:none}.ap-panel.active{display:block}
+
+    /* 管理员列表样式 */
+    .ap-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+    .ap-search-wrap{position:relative;display:flex;align-items:center}
+    .ap-search-wrap i{position:absolute;left:12px;color:#94a3b8;font-size:13px}
+    .ap-search-input{padding:8px 14px 8px 34px;border:1px solid #e2e8f0;border-radius:10px;font-size:0.88rem;color:#334155;outline:none;width:260px;height:38px;font-family:inherit;background:#fff;transition:border-color .15s}
+    .ap-search-input:focus{border-color:#1677ff}.ap-search-input::placeholder{color:#cbd5e1}
+    .ap-btn-primary{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#1677ff;color:#fff;border:none;border-radius:10px;font-size:0.88rem;font-weight:500;cursor:pointer;font-family:inherit;transition:all .15s;height:38px}
+    .ap-btn-primary:hover{background:#0958d9;box-shadow:0 2px 8px rgba(22,119,255,0.2)}
+    .ap-table-wrap{overflow-x:auto;background:#fff;border-radius:12px;border:1px solid #f1f5f9}
+    .ap-table{width:100%;border-collapse:collapse;font-size:13px}
+    .ap-table th{text-align:left;padding:11px 14px;background:#fafbfc;color:#64748b;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.3px;border-bottom:1px solid #e2e8f0;white-space:nowrap}
+    .ap-table td{padding:10px 14px;border-bottom:1px solid #f8fafc;color:#334155;vertical-align:middle}
+    .ap-table tbody tr{transition:background .12s ease}
+    .ap-table tbody tr:hover{background:#f8fafc}
+    .ap-pwd-cell{display:flex;align-items:center;gap:6px}
+    .ap-pwd-text{font-family:'SF Mono','Fira Code','Consolas',monospace;font-size:12px;color:#64748b;letter-spacing:0.5px}
+    .ap-pwd-toggle{width:28px;height:28px;border-radius:6px;border:1px solid #e2e8f0;background:#fff;cursor:pointer;color:#94a3b8;font-size:12px;display:inline-flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0}
+    .ap-pwd-toggle:hover{background:#f1f5f9;color:#475569}
+    .ap-pwd-toggle.showing{background:#fef3c7;color:#d97706;border-color:#fcd34d}
+    .ap-actions{display:flex;gap:6px}
+    .ap-btn-sm{display:inline-flex;align-items:center;gap:4px;padding:5px 10px;border-radius:7px;font-size:12px;font-weight:500;cursor:pointer;font-family:inherit;transition:all .15s;border:1px solid #e2e8f0;background:#fff;color:#475569}
+    .ap-btn-sm:hover{background:#f8fafc;border-color:#cbd5e1}
+    .ap-btn-sm.edit:hover{background:#eff6ff;color:#1677ff;border-color:#bfdbfe}
+    .ap-btn-sm.pwd:hover{background:#fef3c7;color:#d97706;border-color:#fcd34d}
+    .ap-btn-sm.toggle:hover{background:#f0fdf4;color:#16a34a;border-color:#bbf7d0}
+    .ap-btn-sm.delete:hover{background:#fee2e2;color:#dc2626;border-color:#fecaca}
+    .ap-table-info{padding:10px 16px;font-size:12px;color:#94a3b8;background:#fff;border-radius:0 0 12px 12px;border:1px solid #f1f5f9;border-top:none}
+
+    /* 管理员弹窗 */
+    .ap-modal-wide{max-width:480px}
+    .ap-form-group{margin-bottom:16px}
+    .ap-form-group label{display:block;font-size:13px;font-weight:600;color:#334155;margin-bottom:5px}
+    .ap-form-input{width:100%;padding:9px 14px;border:1px solid #e2e8f0;border-radius:10px;font-size:14px;color:#334155;outline:none;font-family:inherit;background:#fff;transition:border-color .15s}
+    .ap-form-input:focus{border-color:#1677ff;box-shadow:0 0 0 3px rgba(22,119,255,0.08)}
+    .ap-form-row{display:flex;gap:12px}.ap-form-row .ap-form-group{flex:1}
+    .status-badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:500}.status-badge.enabled{background:#dcfce7;color:#16a34a}.status-badge.disabled{background:#fee2e2;color:#dc2626}
+
+    /* ======== 分平台/店铺详细数据 样式 ======== */
+    .ps-header{display:flex;align-items:center;gap:20px;padding:8px 0 16px;flex-wrap:wrap}
+    .ps-header-left{display:flex;align-items:center;gap:14px}
+    .ps-header-icon{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;color:#fff;font-size:17px;flex-shrink:0;box-shadow:0 2px 8px rgba(99,102,241,0.25)}
+    .ps-header-title-group{display:flex;flex-direction:column;gap:1px}
+    .ps-header-title{font-size:20px;font-weight:700;color:#0f172a;letter-spacing:-0.3px;margin:0;line-height:1.3}
+    .ps-header-sub{font-size:10px;font-weight:500;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase}
+    .ps-header-stats{display:flex;gap:20px;margin-left:auto}
+    .ps-hs-item{display:flex;flex-direction:column;gap:2px;text-align:center;padding:6px 16px;background:#f8fafc;border-radius:10px;border:1px solid #f1f5f9}
+    .ps-hs-label{font-size:11px;color:#94a3b8;font-weight:500}
+    .ps-hs-value{font-size:17px;font-weight:700;color:#1e293b;font-variant-numeric:tabular-nums}
+    .ps-back-btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #c7d2fe;border-radius:8px;background:linear-gradient(135deg,#eef2ff,#e0e7ff);color:#4f46e5;font-size:0.82rem;font-weight:600;cursor:pointer;transition:all .2s ease;font-family:inherit;white-space:nowrap;flex-shrink:0}.ps-back-btn:hover{background:linear-gradient(135deg,#e0e7ff,#c7d2fe);box-shadow:0 2px 8px rgba(99,102,241,0.15)}.ps-back-btn i{font-size:0.75rem}
+    .ps-header-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .ps-date-shortcuts{display:flex;gap:0;background:#f1f5f9;border-radius:10px;padding:3px}
+    .ps-ds-btn{border:none;background:transparent;padding:5px 12px;border-radius:8px;font-size:0.82rem;font-weight:500;cursor:pointer;color:#64748b;transition:.15s;white-space:nowrap;font-family:inherit}
+    .ps-ds-btn:hover{color:#334155;background:rgba(255,255,255,0.5)}
+    .ps-ds-btn.active{background:#fff;color:#6366f1;box-shadow:0 1px 2px rgba(0,0,0,0.06);font-weight:600}
+    .ps-select{padding:5px 10px;border:1px solid #e2e8f0;border-radius:9px;background:#fff;font-size:0.82rem;color:#334155;font-family:inherit;outline:none;cursor:pointer;height:33px}
+    .ps-select:hover{border-color:#cbd5e1}.ps-select:focus{border-color:#6366f1}
+    .ps-select-sm{padding:4px 8px;border:1px solid #e2e8f0;border-radius:7px;background:#fff;font-size:0.78rem;color:#475569;font-family:inherit;outline:none;cursor:pointer;height:30px}
+    .ps-date-picker{display:flex;align-items:center;gap:5px}
+    .ps-dp-field{display:flex;align-items:center;gap:5px;background:#fff;border:1px solid #e2e8f0;border-radius:9px;padding:5px 10px;height:33px;cursor:pointer}
+    .ps-dp-field:hover{border-color:#cbd5e1}.ps-dp-field:focus-within{border-color:#6366f1}
+    .ps-dp-field i{color:#94a3b8;font-size:0.82rem}
+    .ps-dp-field input{border:none;background:transparent;outline:none;font-size:0.82rem;color:#334155;width:100px;font-family:inherit}
+    .ps-dp-sep{color:#cbd5e1;font-size:0.8rem}
+    @media(max-width:900px){.ps-header{flex-direction:column;align-items:flex-start}.ps-header-stats{margin-left:0}}
+
+    .ps-platform-bars{display:flex;flex-direction:column;gap:10px;margin-bottom:20px}
+    .ps-platform-bar{display:flex;align-items:center;gap:16px;background:#fff;border-radius:12px;border:1px solid #f1f5f9;padding:14px 18px;transition:all .2s ease;cursor:pointer;position:relative;overflow:hidden}
+    .ps-platform-bar:hover{border-color:#e0e7ff;box-shadow:0 2px 12px rgba(99,102,241,0.06);transform:translateX(2px)}
+    .ps-platform-bar.active{border-color:#c7d2fe;box-shadow:0 0 0 3px rgba(99,102,241,0.08)}
+    .ps-pb-color{width:5px;align-self:stretch;border-radius:3px;flex-shrink:0}
+    .ps-pb-info{width:130px;flex-shrink:0}
+    .ps-pb-name{font-size:15px;font-weight:650;color:#1e293b;margin-bottom:2px}
+    .ps-pb-stores{font-size:11px;color:#94a3b8}
+    .ps-pb-metrics{flex:1;display:flex;gap:24px}
+    .ps-pb-metric{display:flex;flex-direction:column;gap:1px;min-width:80px}
+    .ps-pb-metric-label{font-size:10px;color:#94a3b8;font-weight:500;text-transform:uppercase;letter-spacing:0.5px}
+    .ps-pb-metric-value{font-size:15px;font-weight:700;color:#1e293b;font-variant-numeric:tabular-nums}
+    .ps-pb-share{width:160px;flex-shrink:0}
+    .ps-pb-share-top{display:flex;justify-content:space-between;margin-bottom:4px}
+    .ps-pb-share-pct{font-size:13px;font-weight:700;color:#6366f1}
+    .ps-pb-share-label{font-size:10px;color:#94a3b8}
+    .ps-pb-share-bar{height:6px;background:#f1f5f9;border-radius:3px;overflow:hidden}
+    .ps-pb-share-fill{height:100%;border-radius:3px;transition:width .6s ease}
+    .ps-pb-trend{width:70px;text-align:right;font-size:12px;font-weight:600;flex-shrink:0}
+    .ps-pb-trend.up{color:#16a34a}.ps-pb-trend.down{color:#dc2626}.ps-pb-trend.neutral{color:#94a3b8}
+
+    .ps-charts-row{display:flex;gap:18px;margin-bottom:20px}
+    @media(max-width:1000px){.ps-charts-row{flex-direction:column}}
+    .ps-chart-card{background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 3px rgba(0,0,0,0.03);padding:16px 20px}
+    .ps-chart-card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+    .ps-chart-card-header h3{font-size:14px;font-weight:600;color:#1e293b;margin:0}
+    .ps-chart-body{width:100%}
+
+    .ps-table-card{background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 3px rgba(0,0,0,0.03);margin-bottom:20px}
+    .ps-table-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #f1f5f9;gap:16px;flex-wrap:wrap}
+    .ps-table-title-group{display:flex;align-items:center;gap:10px}
+    .ps-table-title-group h3{font-size:15px;font-weight:600;color:#1e293b;margin:0}
+    .ps-table-badge{font-size:11px;color:#6366f1;background:#eef2ff;padding:3px 10px;border-radius:12px;font-weight:500}
+    .ps-table-tools{display:flex;align-items:center;gap:8px}
+    .ps-search-wrap{position:relative;display:flex;align-items:center}
+    .ps-search-wrap i{position:absolute;left:10px;color:#94a3b8;font-size:12px}
+    .ps-search-input{padding:5px 10px 5px 28px;border:1px solid #e2e8f0;border-radius:8px;font-size:0.82rem;color:#334155;outline:none;width:180px;height:30px;font-family:inherit;background:#fff}
+    .ps-search-input:focus{border-color:#6366f1}.ps-search-input::placeholder{color:#cbd5e1}
+    .ps-table-wrap{overflow-x:auto}
+    .ps-store-table{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap}
+    .ps-store-table th{text-align:left;padding:10px 12px;background:#fafbfc;color:#64748b;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.3px;border-bottom:1px solid #e2e8f0;position:sticky;top:0;z-index:1}
+    .ps-store-table th.ps-col-num{text-align:right}
+    .ps-store-table td{padding:10px 12px;border-bottom:1px solid #f8fafc;color:#334155;vertical-align:middle}
+    .ps-store-table td.ps-col-num{text-align:right;font-variant-numeric:tabular-nums}
+    .ps-store-table tbody tr{transition:background .15s ease;cursor:pointer}
+    .ps-store-table tbody tr:hover{background:#f8fafc}
+    .ps-store-table tbody tr.expanded{background:#eef2ff}
+    .ps-store-table tbody tr.expanded:hover{background:#e8edff}
+    .ps-rank{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;font-size:12px;font-weight:700;color:#64748b}
+    .ps-rank.top1{background:#fef3c7;color:#d97706}.ps-rank.top2{background:#f1f5f9;color:#64748b}.ps-rank.top3{background:#fef2f2;color:#dc2626}
+    .ps-store-name{font-weight:600;color:#1e293b}
+    .ps-store-platform{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
+    .ps-platform-淘宝{background:#fff0e6;color:#e67400}.ps-platform-京东{background:#dbeafe;color:#2563eb}.ps-platform-千牛{background:#fff0e6;color:#e67400}.ps-platform-抖店{background:#f3e8ff;color:#7c3aed}
+    .ps-platform-拼多多{background:#ffe8f0;color:#d6336c}.ps-platform-抖音{background:#f3e8ff;color:#7c3aed}
+    .ps-platform-快手{background:#fff3e0;color:#e65100}.ps-platform-小红书{background:#fce4ec;color:#c62828}
+    .ps-platform-其他{background:#f3e5f5;color:#7b1fa2}
+    .ps-sparkline-cell{position:relative;width:100%;min-width:60px;height:36px}
+    .ps-sparkline-cell canvas{width:100%!important;height:100%!important}
+    .ps-expand-btn{width:28px;height:28px;border-radius:6px;border:1px solid #e2e8f0;background:#fff;cursor:pointer;color:#94a3b8;transition:all .15s;display:inline-flex;align-items:center;justify-content:center}
+    .ps-expand-btn:hover{background:#6366f1;color:#fff;border-color:#6366f1}
+    .ps-expand-btn.active{background:#6366f1;color:#fff;border-color:#6366f1}
+    .ps-table-footer{display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-top:1px solid #f1f5f9;font-size:13px;color:#94a3b8}
+    .ps-pagination-btns{display:flex;gap:4px}
+    .ps-pagination-btns button{min-width:30px;height:30px;display:flex;align-items:center;justify-content:center;border:1px solid #e2e8f0;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;color:#475569;font-family:inherit;transition:.15s}
+    .ps-pagination-btns button:hover{border-color:#6366f1;color:#6366f1}
+    .ps-pagination-btns button.active{background:#6366f1;color:#fff;border-color:#6366f1}
+    .ps-pagination-btns button:disabled{opacity:0.4;cursor:not-allowed}
+
+    .ps-inline-bar{display:inline-block;height:4px;border-radius:2px;vertical-align:middle;margin-right:4px}
+
+    .ps-detail-panel{background:#fff;border-radius:12px;border:1px solid #e0e7ff;box-shadow:0 4px 20px rgba(99,102,241,0.08);margin-bottom:20px;overflow:hidden}
+    .ps-detail-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;background:linear-gradient(135deg,#eef2ff,#faf5ff);border-bottom:1px solid #e0e7ff}
+    .ps-detail-title-group{display:flex;align-items:center;gap:10px}
+    .ps-detail-platform{font-size:12px;padding:3px 10px;border-radius:4px;font-weight:500}
+    .ps-detail-title-group h3{font-size:17px;font-weight:700;color:#1e293b;margin:0}
+    .ps-detail-close{width:32px;height:32px;border-radius:8px;border:none;background:#fff;cursor:pointer;color:#94a3b8;font-size:16px;transition:.15s;display:flex;align-items:center;justify-content:center}
+    .ps-detail-close:hover{background:#fee2e2;color:#dc2626}
+    .ps-detail-metrics{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;padding:16px 20px;border-bottom:1px solid #f1f5f9}
+    @media(max-width:1000px){.ps-detail-metrics{grid-template-columns:repeat(3,1fr)}}
+    @media(max-width:600px){.ps-detail-metrics{grid-template-columns:repeat(2,1fr)}}
+    .ps-dm-item{display:flex;flex-direction:column;gap:3px;padding:10px 14px;background:#fafbfc;border-radius:10px}
+    .ps-dm-label{font-size:11px;color:#94a3b8;font-weight:500}
+    .ps-dm-value{font-size:17px;font-weight:700;color:#1e293b;font-variant-numeric:tabular-nums}
+    .ps-detail-charts{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:16px 20px}
+    @media(max-width:900px){.ps-detail-charts{grid-template-columns:1fr}}
+
+    /* ======== 每日数据分析报告样式 ======== */
+    .da-report-wrapper{margin-top:12px}
+    .da-report{background:#fff;border-radius:16px;border:1px solid #eef2f7;box-shadow:0 8px 30px rgba(15,23,42,.06);overflow:hidden}
+    .da-header{display:flex;align-items:center;justify-content:space-between;padding:22px 28px;background:linear-gradient(135deg,#0f766e 0%,#14b8a6 55%,#6366f1 130%);flex-wrap:wrap;gap:12px}
+    .da-date-badge{background:rgba(255,255,255,.18);color:#fff;padding:8px 18px;border-radius:99px;font-size:0.9rem;font-weight:600;display:inline-flex;align-items:center;gap:8px;backdrop-filter:blur(4px)}
+    .da-meta{display:flex;gap:18px;font-size:0.78rem;color:rgba(255,255,255,.85)}
+    .da-kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding:24px 28px;background:#f8fafc;border-bottom:1px solid #eef2f7}
+    @media(max-width:900px){.da-kpi-row{grid-template-columns:repeat(2,1fr)}}
+    @media(max-width:500px){.da-kpi-row{grid-template-columns:1fr}}
+    .da-kpi-card{padding:18px;border-radius:14px;background:#fff;border:1px solid #eef2f7;box-shadow:0 1px 3px rgba(15,23,42,.05);display:flex;flex-direction:column;gap:6px;transition:transform .15s,box-shadow .15s}
+    .da-kpi-card:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(15,23,42,.08)}
+    .da-kpi-good{border-left:4px solid #10b981}
+    .da-kpi-danger{border-left:4px solid #ef4444}
+    .da-kpi-label{font-size:0.78rem;color:#64748b;font-weight:600;letter-spacing:.2px}
+    .da-kpi-value{font-size:1.5rem;font-weight:800;color:#0f172a;font-variant-numeric:tabular-nums;line-height:1.15}
+    .da-kpi-sub{font-size:0.75rem;color:#94a3b8}
+    .da-report .analysis-section{padding:26px 28px;border-bottom:1px solid #f1f5f9}
+    .da-report .analysis-section:last-child{border-bottom:none}
+    .da-report .analysis-section h3{font-size:1.08rem;font-weight:700;color:#0f172a;margin:0 0 16px;display:flex;align-items:center;gap:10px}
+    .da-report .analysis-section h3 i{width:30px;height:30px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;background:#f0fdfa;color:#0d9488;font-size:0.9rem;flex-shrink:0}
+    .da-report .analysis-section p{font-size:0.9rem;color:#475569;line-height:1.7;margin-bottom:12px}
+    .da-report .analysis-section p:last-child{margin-bottom:0}
+    .da-report .highlight{background:#fef3c7;padding:2px 8px;border-radius:6px;font-weight:700;color:#92400e}
+    .da-report .warn{color:#e11d48;font-weight:700}
+    .da-report .danger{color:#dc2626;font-weight:700;background:#fee2e2;padding:2px 8px;border-radius:6px}
+    .da-table{width:100%;border-collapse:collapse;font-size:0.85rem;margin:12px 0;border-radius:10px;overflow:hidden;box-shadow:0 1px 2px rgba(15,23,42,.04)}
+    .da-table th{text-align:left;padding:11px 14px;background:#f1f5f9;color:#334155;font-weight:700;font-size:0.78rem;border-bottom:2px solid #e2e8f0;white-space:nowrap}
+    .da-table td{padding:11px 14px;border-bottom:1px solid #f1f5f9;color:#334155;font-variant-numeric:tabular-nums}
+    .da-table tbody tr:nth-child(even){background:#fafbfc}
+    .da-table tbody tr:hover{background:#f0fdfa}
+    .da-warn-list{list-style:none;padding:0;margin:10px 0}
+    .da-warn-list li{padding:10px 16px;border-radius:10px;margin-bottom:8px;font-size:0.85rem;font-weight:600;line-height:1.5}
+    .da-warn-list .da-warn-warning{background:#fff7ed;color:#c2410c;border-left:4px solid #f97316}
+    .da-warn-list .da-warn-danger{background:#fef2f2;color:#dc2626;border-left:4px solid #ef4444}
+    .da-error-card{background:#fff;border-radius:16px;border:1px solid #fecaca;box-shadow:0 1px 3px rgba(0,0,0,0.03);padding:44px;text-align:center}
+    .da-error-card i{font-size:44px;color:#dc2626;margin-bottom:14px;display:block}
+    .da-error-card h3{font-size:1.15rem;color:#991b1b;margin-bottom:8px}
+    .da-error-card p{color:#64748b;font-size:0.9rem}
+    /* ======== 个人中心 - 通知开关 ======== */
+    .pf-toggle-on span:first-of-type{background:#1677ff!important}
+    .pf-toggle-on span:last-of-type{transform:translateX(20px)}
+    /* ======== 个人中心 - 响应式 ======== */
+    @media(max-width:768px){#pf-panel-profile-info>div{grid-template-columns:1fr!important}}
+    /* ======== 财务中心 - 金额色 ======== */
+    .fin-income{color:#16a34a;font-weight:600}.fin-expense{color:#dc2626;font-weight:600}.fin-refund{color:#f59e0b;font-weight:600}
+    /* ======== 运营面板 - 绩效评级 ======== */
+    .op-grade{border-radius:12px;padding:3px 10px;font-size:12px;font-weight:600;display:inline-block}
+    .op-grade-s{background:#dcfce7;color:#16a34a}.op-grade-a{background:#e6f4ff;color:#1677ff}
+    .op-grade-b{background:#fef3c7;color:#d97706}.op-grade-c{background:#fee2e2;color:#dc2626}
+
+    /* ======== 违规词检测 v3 - 仪表盘风格 ======== */
+    .vd-stats-row{display:flex;gap:14px;margin-bottom:20px;align-items:stretch;position:relative}
+    .vd-stat-card{flex:1;background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,.03);padding:16px 20px;display:flex;align-items:center;gap:14px;transition:all .2s}
+    .vd-stat-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.06);transform:translateY(-1px)}
+    .vd-stat-icon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+    .vd-stat-body{display:flex;flex-direction:column}
+    .vd-stat-num{font-size:24px;font-weight:700;color:#1e293b;line-height:1.2}
+    .vd-stat-label{font-size:12px;color:#94a3b8;margin-top:2px}
+    .vd-notify-bell{width:44px;height:44px;border-radius:12px;background:#fff;border:1px solid #f1f5f9;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative;transition:all .2s;flex-shrink:0}
+    .vd-notify-bell:hover{background:#f8fafc;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+    .vd-notify-bell i{font-size:18px;color:#64748b}
+    .vd-bell-badge{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;border-radius:9px;background:#ef4444;color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 5px}
+    .vd-notify-dropdown{position:absolute;top:52px;right:0;width:320px;background:#fff;border-radius:12px;border:1px solid #e2e8f0;box-shadow:0 16px 48px rgba(0,0,0,.12);z-index:100;overflow:hidden}
+    .vd-notify-header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #f1f5f9;font-size:13px;font-weight:600;color:#1e293b}
+    .vd-notify-header button{background:none;border:none;color:#94a3b8;cursor:pointer;font-size:12px}.vd-notify-header button:hover{color:#ef4444}
+    .vd-notify-list{max-height:240px;overflow-y:auto;padding:8px}
+    .vd-notify-empty{padding:24px;text-align:center;color:#94a3b8;font-size:13px}
+    .vd-notify-item{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;font-size:13px;color:#475569;transition:background .15s}
+    .vd-notify-item:hover{background:#f8fafc}
+    .vd-notify-item i{font-size:14px;margin-top:2px;flex-shrink:0}
+    .vd-notify-time{font-size:11px;color:#94a3b8;margin-top:2px}
+
+    .vd-main-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px}
+    @media(max-width:1024px){.vd-main-grid{grid-template-columns:1fr}}
+    .vd-upload-panel,.vd-result-panel{background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,.03);padding:20px;display:flex;flex-direction:column;gap:14px}
+    .vd-panel-header{display:flex;align-items:center;justify-content:space-between}
+    .vd-panel-title{font-size:15px;font-weight:600;color:#1e293b;display:flex;align-items:center;gap:8px}
+    .vd-panel-title i{color:#f59e0b}
+    .vd-panel-hint{font-size:12px;color:#94a3b8}
+
+    /* 拖拽上传框 */
+    .vd-drop-zone{border:2px dashed #e2e8f0;border-radius:12px;padding:36px 20px;text-align:center;cursor:pointer;transition:all .25s;background:#fafbfc;display:flex;flex-direction:column;align-items:center;gap:10px}
+    .vd-drop-zone:hover,.vd-drop-active{border-color:#f59e0b;background:#fffbf0;box-shadow:0 0 0 4px rgba(245,158,11,.08)}
+    .vd-drop-icon i{font-size:40px;color:#cbd5e1;transition:all .25s}
+    .vd-drop-zone:hover .vd-drop-icon i{color:#f59e0b;transform:translateY(-4px)}
+    .vd-drop-text{font-size:14px;color:#64748b}
+    .vd-drop-link{color:#f59e0b;font-weight:500}
+    .vd-drop-sub{font-size:12px;color:#94a3b8}
+
+    /* 缩略图画廊 */
+    .vd-thumb-gallery{min-height:80px}
+    .vd-thumb-list{display:flex;flex-wrap:wrap;gap:8px}
+    .vd-thumb-item{position:relative;width:72px;height:72px;border-radius:10px;overflow:hidden;border:2px solid #e2e8f0;cursor:pointer;transition:all .2s;flex-shrink:0}
+    .vd-thumb-item:hover{border-color:#f59e0b;box-shadow:0 4px 12px rgba(245,158,11,.15);transform:scale(1.05)}
+    .vd-thumb-item img{width:100%;height:100%;object-fit:cover}
+    .vd-thumb-del{position:absolute;top:4px;right:4px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;border:none;cursor:pointer;font-size:10px;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .15s}
+    .vd-thumb-item:hover .vd-thumb-del{opacity:1}
+    .vd-thumb-status{position:absolute;bottom:0;left:0;right:0;padding:3px 6px;font-size:9px;font-weight:600;text-align:center;color:#fff}
+    .vd-status-pending{background:rgba(148,163,184,.7)}.vd-status-processing{background:rgba(245,158,11,.85)}.vd-status-done{background:rgba(16,185,129,.8)}.vd-status-hit{background:rgba(239,68,68,.85)}
+    .vd-thumb-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;gap:8px}
+
+    /* 操作按钮 */
+    .vd-actions{display:flex;gap:10px}
+    .vd-btn-detect{flex:1;background:linear-gradient(135deg,#f59e0b,#fbbf24);border:none;color:#fff;padding:10px 24px;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px;transition:all .2s;box-shadow:0 2px 8px rgba(245,158,11,.25)}
+    .vd-btn-detect:hover{box-shadow:0 4px 16px rgba(245,158,11,.4);transform:translateY(-1px)}
+    .vd-btn-detect:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+    .vd-btn-clear{background:#f1f5f9;border:none;color:#64748b;padding:10px 20px;border-radius:10px;cursor:pointer;font-size:14px;font-weight:500;display:flex;align-items:center;gap:6px;transition:all .2s}
+    .vd-btn-clear:hover{background:#e2e8f0;color:#475569}
+
+    /* 进度条 */
+    .vd-progress-wrap{padding:8px 0}
+    .vd-progress-bar{height:6px;background:#f1f5f9;border-radius:3px;overflow:hidden}
+    .vd-progress-fill{height:100%;background:linear-gradient(90deg,#f59e0b,#fbbf24);border-radius:3px;width:0;transition:width .4s ease;position:relative}
+    .vd-progress-fill::after{content:'';position:absolute;top:0;left:0;right:0;bottom:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.4),transparent);animation:vd-shimmer 1.5s infinite}
+    @keyframes vd-shimmer{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+    .vd-progress-text{display:flex;justify-content:space-between;margin-top:6px;font-size:12px;color:#94a3b8}
+
+    /* 检测结果区 */
+    .vd-result-body{flex:1;min-height:200px;max-height:500px;overflow-y:auto}
+    .vd-result-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;min-height:280px;gap:12px;padding:20px}
+    .vd-empty-title{font-size:16px;font-weight:600;color:#475569}
+    .vd-empty-desc{font-size:13px;color:#94a3b8;text-align:center;max-width:300px;line-height:1.6}
+    .vd-sample-badge{display:flex;gap:12px;margin-top:8px}
+    .vd-sample-red,.vd-sample-orange{padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500}
+    .vd-sample-red{background:#fee2e2;color:#dc2626}.vd-sample-orange{background:#fff7ed;color:#ea580c}
+
+    /* 扫描动画 */
+    .vd-scanning{display:flex;align-items:center;justify-content:center;height:280px;flex-direction:column}
+    .vd-scan-box{position:relative;width:120px;height:120px;border:3px solid #f1f5f9;border-radius:16px;display:flex;align-items:center;justify-content:center;flex-direction:column;overflow:hidden}
+    .vd-scan-line{position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,transparent,#f59e0b,transparent);animation:vd-scan 2s ease-in-out infinite}
+    @keyframes vd-scan{0%{top:0}50%{top:calc(100% - 3px)}100%{top:0}}
+
+    /* 合规通过横幅 */
+    .vd-pass-anim{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;margin-bottom:12px;animation:vd-fadeIn .5s ease}
+    .vd-pass-check{width:36px;height:36px;border-radius:50%;background:#dcfce7;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .vd-pass-check i{font-size:18px;color:#16a34a;animation:vd-bounceIn .6s ease}
+    .vd-pass-title{font-size:14px;font-weight:600;color:#16a34a}.vd-pass-desc{font-size:12px;color:#64748b}
+    @keyframes vd-bounceIn{0%{transform:scale(0)}60%{transform:scale(1.15)}100%{transform:scale(1)}}
+    @keyframes vd-fadeIn{0%{opacity:0;transform:translateY(10px)}100%{opacity:1;transform:translateY(0)}}
+
+    /* 结果卡片列表 */
+    .vd-result-card{background:#fff;border:1px solid #f1f5f9;border-radius:12px;margin-bottom:12px;overflow:hidden;animation:vd-fadeIn .3s ease;transition:all .2s}
+    .vd-result-card:hover{box-shadow:0 2px 12px rgba(0,0,0,.06)}
+    .vd-card-header{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#fafbfc;border-bottom:1px solid #f1f5f9;cursor:pointer}
+    .vd-card-header img{width:40px;height:40px;border-radius:8px;object-fit:cover}
+    .vd-card-info{flex:1;min-width:0}
+    .vd-card-name{font-size:13px;font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .vd-card-tags{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
+    .vd-tag{display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600}
+    .vd-tag-red{background:#fee2e2;color:#dc2626}.vd-tag-orange{background:#fff7ed;color:#ea580c}.vd-tag-green{background:#dcfce7;color:#16a34a}
+    .vd-card-arrow{color:#94a3b8;font-size:12px;transition:transform .2s}
+    .vd-result-card.open .vd-card-arrow{transform:rotate(180deg)}
+    .vd-card-body{max-height:0;overflow-y:auto;transition:max-height .3s ease;padding:0 16px}
+    .vd-result-card.open .vd-card-body{max-height:220px;padding:12px 16px}
+    .vd-highlight-text{font-size:13px;line-height:1.8;white-space:pre-wrap;word-break:break-all}
+    .vd-conf-mark{background:#fee2e2;color:#dc2626;padding:1px 3px;border-radius:3px;border:1px solid #fecaca;font-weight:600;cursor:help}
+    .vd-susp-mark{background:#fff7ed;color:#ea580c;padding:1px 3px;border-radius:3px;border:1px solid #fed7aa;font-weight:600;cursor:help}
+
+    /* ======== 智能体助手 - 浪小助 ======== */
+    .ai-float-btn{position:fixed;left:24px;bottom:24px;width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#6366f1);border:none;color:#fff;cursor:pointer;z-index:9998;box-shadow:0 4px 20px rgba(59,130,246,.35);display:flex;align-items:center;justify-content:center;font-size:22px;transition:all .3s cubic-bezier(.4,0,.2,1)}
+    .ai-float-btn:hover{transform:scale(1.08);box-shadow:0 8px 30px rgba(59,130,246,.5)}
+    .ai-float-btn .ai-btn-label{position:absolute;left:60px;white-space:nowrap;background:#1e293b;color:#fff;font-size:12px;font-weight:500;padding:6px 14px;border-radius:20px;opacity:0;pointer-events:none;transition:opacity .25s;box-shadow:0 2px 10px rgba(0,0,0,.15)}
+    .ai-float-btn:hover .ai-btn-label{opacity:1}
+    .ai-float-btn .ai-pulse{position:absolute;inset:-4px;border-radius:50%;border:2px solid rgba(59,130,246,.4);animation:ai-pulse 2s ease-out infinite}
+    @keyframes ai-pulse{0%{transform:scale(1);opacity:1}100%{transform:scale(1.6);opacity:0}}
+
+    /* 对话窗口 */
+    .ai-chat-window{position:fixed;left:24px;bottom:90px;width:380px;max-height:520px;background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.15),0 0 0 1px rgba(0,0,0,.05);z-index:9999;display:flex;flex-direction:column;overflow:hidden;transform-origin:bottom left;transition:all .3s cubic-bezier(.4,0,.2,1)}
+    .ai-chat-window.collapsed{transform:scale(0);opacity:0;pointer-events:none}
+    .ai-chat-header{display:flex;align-items:center;gap:12px;padding:14px 16px;background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff}
+    .ai-chat-avatar{width:38px;height:38px;border-radius:50%;background:rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+    .ai-chat-title{flex:1}
+    .ai-chat-name{font-size:14px;font-weight:600}.ai-chat-sub{font-size:11px;opacity:.8}
+    .ai-chat-close{background:none;border:none;color:#fff;cursor:pointer;font-size:18px;opacity:.7;padding:4px;border-radius:6px;transition:all .15s}
+    .ai-chat-close:hover{opacity:1;background:rgba(255,255,255,.15)}
+    .ai-chat-body{flex:1;overflow-y:auto;padding:16px;min-height:200px;max-height:320px;background:#f8fafc;display:flex;flex-direction:column;gap:12px}
+    .ai-msg{display:flex;gap:8px;animation:vd-fadeIn .3s ease}
+    .ai-msg-avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#6366f1);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;flex-shrink:0}
+    .ai-msg-bubble{background:#fff;border-radius:12px;border-top-left-radius:4px;padding:10px 14px;font-size:13px;color:#334155;line-height:1.6;box-shadow:0 1px 3px rgba(0,0,0,.04);max-width:85%}
+    .ai-msg-bubble p{margin:0}
+    .ai-chat-input-wrap{display:flex;gap:8px;padding:12px 16px;border-top:1px solid #f1f5f9}
+    .ai-chat-input{flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;font-size:13px;outline:none;transition:border .15s;font-family:inherit;resize:none}
+    .ai-chat-input:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.1)}
+    .ai-chat-send{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#3b82f6,#6366f1);border:none;color:#fff;cursor:pointer;font-size:15px;transition:all .15s;flex-shrink:0}
+    .ai-chat-send:hover{opacity:.9;transform:scale(1.05)}
+    .ai-chat-send:disabled{opacity:.4;cursor:not-allowed;transform:none}
+    .ai-chat-footer{text-align:center;padding:6px 16px 10px;font-size:10px;color:#94a3b8}
+  </style>
+</head>
+<body>
+<div id="loginPage" class="login-page">
+  <div class="login-bg-layer1"></div>
+  <div class="login-bg-mountains"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 500" preserveAspectRatio="none"><polygon points="0,500 0,320 60,280 120,310 180,250 240,290 300,220 360,260 420,200 480,240 540,180 620,230 680,190 740,210 800,170 860,200 920,160 980,190 1040,150 1100,180 1160,140 1220,170 1280,130 1340,160 1400,140 1440,155 1440,500" fill="oklch(78% 0.02 245 / 0.25)" stroke="oklch(75% 0.03 245 / 0.2)" stroke-width="0.5"/><polygon points="0,500 0,360 50,330 110,350 170,300 230,340 290,290 350,320 410,270 470,300 530,260 590,290 650,250 710,270 770,240 830,260 890,230 950,250 1010,220 1070,240 1130,210 1190,235 1250,210 1310,225 1370,200 1440,215 1440,500" fill="oklch(80% 0.02 245 / 0.15)" stroke="oklch(78% 0.03 245 / 0.1)" stroke-width="0.5"/></svg></div>
+  <div class="login-bg-beam"></div>
+  <div class="login-bg-orb orb-a"></div><div class="login-bg-orb orb-b"></div><div class="login-bg-orb orb-c"></div><div class="login-bg-orb orb-d"></div><div class="login-bg-orb orb-e"></div><div class="login-bg-orb orb-f"></div>
+  <div class="login-bg-particles"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%"><circle cx="80" cy="60" r="1.5" style="animation:particlePulse 4s ease-in-out infinite"/><circle cx="220" cy="140" r="1" style="animation:particlePulse 5s ease-in-out .5s infinite"/><circle cx="380" cy="50" r="2" style="animation:particlePulse 3.5s ease-in-out 1s infinite"/><circle cx="520" cy="120" r="1" style="animation:particlePulse 4.5s ease-in-out .3s infinite"/><circle cx="680" cy="40" r="1.5" style="animation:particlePulse 3s ease-in-out .8s infinite"/><circle cx="820" cy="100" r="1" style="animation:particlePulse 5.5s ease-in-out 1.2s infinite"/><circle cx="980" cy="30" r="2" style="animation:particlePulse 4s ease-in-out .6s infinite"/><circle cx="1100" cy="80" r="1" style="animation:particlePulse 3.5s ease-in-out 1.5s infinite"/><circle cx="1250" cy="55" r="1.5" style="animation:particlePulse 5s ease-in-out .2s infinite"/><circle cx="1350" cy="150" r="1" style="animation:particlePulse 4.5s ease-in-out 1s infinite"/><circle cx="160" cy="200" r="1" style="animation:particlePulse 3s ease-in-out .7s infinite"/><circle cx="450" cy="180" r="2" style="animation:particlePulse 6s ease-in-out .4s infinite"/><circle cx="750" cy="160" r="1" style="animation:particlePulse 4s ease-in-out 1.8s infinite"/><circle cx="1050" cy="190" r="1.5" style="animation:particlePulse 3.5s ease-in-out .9s infinite"/><circle cx="1300" cy="170" r="1" style="animation:particlePulse 5s ease-in-out 1.3s infinite"/><circle cx="300" cy="250" r="1" style="animation:particlePulse 4.5s ease-in-out .1s infinite"/><circle cx="600" cy="230" r="1.5" style="animation:particlePulse 3s ease-in-out 1.6s infinite"/><circle cx="900" cy="240" r="1" style="animation:particlePulse 5.5s ease-in-out .5s infinite"/><circle cx="1200" cy="260" r="2" style="animation:particlePulse 4s ease-in-out 1.1s infinite"/><circle cx="100" cy="350" r="1" style="animation:particlePulse 3.5s ease-in-out .3s infinite"/><circle cx="500" cy="310" r="1.5" style="animation:particlePulse 5s ease-in-out 1.7s infinite"/><circle cx="850" cy="330" r="1" style="animation:particlePulse 4s ease-in-out .8s infinite"/><circle cx="1150" cy="300" r="1" style="animation:particlePulse 3s ease-in-out 1.4s infinite"/><circle cx="700" cy="280" r="2" style="animation:particlePulse 6s ease-in-out .2s infinite"/><circle cx="250" cy="420" r="1" style="animation:particlePulse 4.5s ease-in-out .6s infinite"/><circle cx="650" cy="400" r="1" style="animation:particlePulse 3s ease-in-out 1s infinite"/><circle cx="1000" cy="380" r="1.5" style="animation:particlePulse 5s ease-in-out .4s infinite"/><circle cx="1350" cy="360" r="1" style="animation:particlePulse 4s ease-in-out 1.2s infinite"/><circle cx="420" cy="480" r="1" style="animation:particlePulse 3.5s ease-in-out .9s infinite"/><circle cx="950" cy="460" r="1.5" style="animation:particlePulse 4s ease-in-out 1.5s infinite"/><circle cx="1250" cy="440" r="1" style="animation:particlePulse 5.5s ease-in-out .7s infinite"/></svg></div>
+  <div class="login-card-wrapper">
+    <div class="login-card-brand">
+      <div class="login-brand-logo"><div class="login-brand-logo-icon">J</div><h1>聚浪网络科技</h1></div>
+      <div class="login-brand-title">电商后台管理系统</div>
+      <p class="login-brand-desc">一站式电商经营数据管理平台，整合多渠道订单、营销、客户数据，助力高效决策。</p>
+      <div class="login-features">
+        <div class="login-feat-card"><div class="login-feat-icon-wrap"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="oklch(58% 0.14 245)" stroke-width="1.5" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div><h4>订单管理</h4><p>全渠道订单统一处理</p></div>
+        <div class="login-feat-card"><div class="login-feat-icon-wrap"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="oklch(58% 0.14 245)" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg></div><h4>数据看板</h4><p>实时经营数据可视化</p></div>
+        <div class="login-feat-card"><div class="login-feat-icon-wrap"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="oklch(58% 0.14 245)" stroke-width="1.5" stroke-linecap="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div><h4>营销分析</h4><p>多维度转化漏斗追踪</p></div>
+        <div class="login-feat-card"><div class="login-feat-icon-wrap"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="oklch(58% 0.14 245)" stroke-width="1.5" stroke-linecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div><h4>客户洞察</h4><p>用户画像与行为分析</p></div>
+      </div>
+    </div>
+    <div class="login-card-form-panel">
+      <h2>欢迎回来</h2><p class="form-subtitle">登录您的管理员账号</p>
+      <form id="loginForm">
+        <div class="form-group"><label for="username">账号</label><input class="form-input" id="username" name="username" placeholder="admin" autocomplete="username" aria-label="账号"></div>
+        <div class="form-group"><label for="password">密码</label><div class="form-input-wrap"><input class="form-input" id="password" name="password" type="password" placeholder="········" autocomplete="current-password" aria-label="密码"><button type="button" class="pwd-toggle" onclick="var p=document.getElementById('password');p.type=p.type==='password'?'text':'password'" aria-label="切换密码显示"><i class="fa-regular fa-eye"></i></button></div></div>
+        <div class="form-options"><label><input type="checkbox" id="remember"> 记住密码</label><a href="#">忘记密码？</a></div>
+        <button type="submit" class="btn btn-primary">登 录</button>
+        <div class="login-error" id="loginError"></div>
+      </form>
+      <div class="login-footer">还没有账号？<a href="#">立即注册</a> · 聚浪网络科技 © 2026</div>
+    </div>
+  </div>
+</div>
+
+<div id="appPage" class="app-page hidden">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-icon"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M4 18c2-3 3-4 4-8 1 2 2 4 3 5 3-6 5-8 6-12 1 3 2 5 3 6"/></svg></div>
+      <div class="sidebar-brand-text"><span class="sidebar-brand-cn">聚浪网络</span><span class="sidebar-brand-en">JULANG NETWORK</span></div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-group open">
+        <div class="nav-group-title"><i class="fa-solid fa-chart-pie ng-icon"></i> 数据概览 <i class="fa-solid fa-chevron-right ng-chevron"></i></div>
+        <div class="nav-group-items">
+          <a href="#marketing-overview" class="nav-item active" data-page="marketing-overview"><i class="fa-solid fa-chart-line ni-icon"></i> 整体营销数据总览</a>
+          <a href="#platform-store" class="nav-item" data-page="platform-store"><i class="fa-solid fa-shop ni-icon"></i> 分平台/店铺详细数据</a>
+          <a href="#order-details" class="nav-item" data-page="order-details"><i class="fa-solid fa-receipt ni-icon"></i> 订单详情</a>
+          <a href="#daily-analysis" class="nav-item" data-page="daily-analysis"><i class="fa-solid fa-robot ni-icon"></i> 每日数据分析</a>
+        </div>
+      </div>
+      <div class="nav-group-divider"></div>
+      <div class="nav-group">
+        <div class="nav-group-title"><i class="fa-solid fa-briefcase ng-icon"></i> 运营管理中心 <i class="fa-solid fa-chevron-right ng-chevron"></i></div>
+        <div class="nav-group-items">
+          <a href="#store-account" class="nav-item" data-page="store-account"><i class="fa-solid fa-id-card ni-icon"></i> 店铺账号管理</a>
+          <a href="#operation-performance" class="nav-item" data-page="operation-performance"><i class="fa-solid fa-chart-bar ni-icon"></i> 运营业绩面板</a>
+        </div>
+      </div>
+      <div class="nav-group-divider"></div>
+      <div class="nav-group">
+        <div class="nav-group-title"><i class="fa-solid fa-coins ng-icon"></i> 财务中心 <i class="fa-solid fa-chevron-right ng-chevron"></i></div>
+        <div class="nav-group-items">
+          <a href="#finance" class="nav-item" data-page="finance"><i class="fa-solid fa-coins ni-icon"></i> 财务中心</a>
+        </div>
+      </div>
+      <div class="nav-group-divider"></div>
+      <div class="nav-group">
+        <div class="nav-group-title"><i class="fa-solid fa-building ng-icon"></i> 人事中心 <i class="fa-solid fa-chevron-right ng-chevron"></i></div>
+        <div class="nav-group-items">
+          <a href="#hr" class="nav-item" data-page="hr"><i class="fa-solid fa-user-group ni-icon"></i> 人事中心</a>
+        </div>
+      </div>
+      <div class="nav-group-divider"></div>
+      <div class="nav-group">
+        <div class="nav-group-title"><i class="fa-solid fa-toolbox ng-icon"></i> 工具箱 <i class="fa-solid fa-chevron-right ng-chevron"></i></div>
+        <div class="nav-group-items">
+          <a href="#toolbox-violation-check" class="nav-item" data-page="toolbox-violation-check"><i class="fa-solid fa-shield-halved ni-icon"></i> 违规词检测</a>
+        </div>
+      </div>
+      <div class="nav-group-divider"></div>
+      <div class="nav-group">
+        <div class="nav-group-title"><i class="fa-solid fa-users-gear ng-icon"></i> 用户管理 <i class="fa-solid fa-chevron-right ng-chevron"></i></div>
+        <div class="nav-group-items">
+          <a href="#admin-permissions" class="nav-item" data-page="admin-permissions"><i class="fa-solid fa-shield-halved ni-icon"></i> 管理员与权限</a>
+          <a href="#profile" class="nav-item" data-page="profile"><i class="fa-solid fa-id-badge ni-icon"></i> 个人中心设置</a>
+        </div>
+      </div>
+    </nav>
+  </aside>
+
+  <header class="topbar" id="topbar">
+    <div class="topbar-left"><button class="sidebar-toggle-btn" id="menuToggle"><i class="fa-solid fa-bars"></i></button></div>
+    <div class="topbar-right"><span id="currentUser">管理员</span><button class="btn btn-sm btn-outline" id="logoutBtn">退出</button></div>
+  </header>
+
+  <main class="main-content">
+    <section id="page-marketing-overview" class="page-section">
+      <div class="dashboard-header">
+        <div class="dh-left">
+          <div class="dh-icon"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 17 9 10 13 14 21 6"/><polyline points="17 6 21 6 21 10"/></svg></div>
+          <div class="dh-title-group"><h2 class="dh-title" id="pageTitle">整体营销数据总览</h2><span class="dh-subtitle">Overall Marketing Analytics</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>数据实时 · 更新于 <span id="dhUpdateTime">--</span></span></div>
+          <div class="dh-chip"><span class="dh-chip-label">总营业额</span><span class="dh-chip-value" id="totalRevenue">--</span></div>
+        </div>
+        <div class="dh-filters">
+          <div class="dh-date-shortcuts">
+            <button class="dh-ds-btn active" data-range="1">昨日</button>
+            <button class="dh-ds-btn" data-range="7">近7天</button>
+            <button class="dh-ds-btn" data-range="30">近30天</button>
+          </div>
+          <select id="mktPlatform" class="dh-select"><option value="">全部平台</option></select>
+          <select id="mktBrand" class="dh-select"><option value="">全部品牌</option></select>
+          <div class="dh-date-picker" style="position:relative">
+            <button type="button" id="mktDateBtn" onclick="App.toggleMktDatePicker(event)" style="display:flex;align-items:center;gap:6px;background:#fff;border:1px solid oklch(92% 0.01 245);border-radius:9px;padding:5px 12px;height:33px;cursor:pointer;font-size:0.82rem;color:oklch(30% 0.02 245);font-family:inherit">
+              <i class="fa-regular fa-calendar" style="color:oklch(65% 0.02 245);font-size:0.82rem"></i>
+              <span id="mktDateLabel" style="white-space:nowrap">选择日期</span>
+              <i class="fa-solid fa-chevron-down" style="color:oklch(65% 0.02 245);font-size:0.7rem"></i>
+            </button>
+            <input type="date" id="mktDateStart" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+            <input type="date" id="mktDateEnd" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+            <div id="mktDatePanel" style="display:none;position:absolute;top:40px;right:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:14px;user-select:none"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 8 cards -->
+      <div class="mkt-cards-grid">
+        <div class="mkt-card mkt-card--emerald"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-yen-sign"></i></div><span class="mkt-card-label">净支付金额</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="netPayment">--</div><div class="mkt-card-trend" id="netPaymentTrend"></div></div></div>
+        <div class="mkt-card mkt-card--rose"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-rotate-left"></i></div><span class="mkt-card-label">退款金额</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="refundAmount">--</div><div class="mkt-card-trend" id="refundAmountTrend"></div></div></div>
+        <div class="mkt-card mkt-card--amber"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-percent"></i></div><span class="mkt-card-label">金额退款率</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="refundRate">--</div><div class="mkt-card-trend" id="refundRateTrend"></div></div></div>
+        <div class="mkt-card mkt-card--indigo"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-users"></i></div><span class="mkt-card-label">访客数</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="visitors">--</div><div class="mkt-card-trend" id="visitorsTrend"></div></div></div>
+        <div class="mkt-card mkt-card--green"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-chart-line"></i></div><span class="mkt-card-label">推广总成交金额</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="adRevenue">--</div><div class="mkt-card-trend" id="adRevenueTrend"></div></div></div>
+        <div class="mkt-card mkt-card--coral"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-fire"></i></div><span class="mkt-card-label">推广花费金额</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="adSpend">--</div><div class="mkt-card-trend" id="adSpendTrend"></div></div></div>
+        <div class="mkt-card mkt-card--cyan"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-gem"></i></div><span class="mkt-card-label">当日ROI</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="roi">--</div><div class="mkt-card-trend" id="roiTrend"></div></div></div>
+        <div class="mkt-card mkt-card--violet"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-user-check"></i></div><span class="mkt-card-label">支付买家数</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="payers">--</div><div class="mkt-card-trend" id="payersTrend"></div></div></div>
+      </div>
+
+      <!-- ====== 图表分析区 ====== -->
+      <div class="charts-section" style="margin-top:20px">
+        <div class="charts-row" style="display:grid;grid-template-columns:2fr 1fr;gap:18px;margin-bottom:18px">
+          <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">核心指标趋势图</span><span style="font-size:0.75rem;color:#94a3b8;margin-left:8px;font-weight:400">净支付、退款、访客等核心指标的日度趋势，支持多指标对比</span></div><div class="chart-module-body" id="chartTrend" style="min-height:280px"></div></div>
+          <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">转化漏斗</span><span style="font-size:0.75rem;color:#94a3b8;margin-left:8px;font-weight:400">访客→买家→成交的逐层转化，定位流失环节</span></div><div class="chart-module-body" id="chartFunnel" style="min-height:200px"></div></div>
+        </div>
+        <div class="charts-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;margin-bottom:18px">
+          <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">退款分析</span><span style="font-size:0.75rem;color:#94a3b8;margin-left:8px;font-weight:400">各平台退款金额及退款率分布，快速识别异常</span></div><div class="chart-module-body" id="chartRefund" style="min-height:200px"><div class="refund-mini-bar" id="refundMiniBar"></div></div></div>
+          <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">推广效果分析</span><span style="font-size:0.75rem;color:#94a3b8;margin-left:8px;font-weight:400">推广花费与净成交对比，评估投放ROI与推广效率</span></div><div class="chart-module-body" id="chartAd" style="min-height:200px"></div></div>
+          <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">客单价与支付转化率</span><span style="font-size:0.75rem;color:#94a3b8;margin-left:8px;font-weight:400">客单价（ARPU）与支付转化率的日度走势，衡量用户质量与成交效率</span></div><div class="chart-module-body" id="chartAOV" style="min-height:200px"><div id="miniAOV" style="height:100px"></div><div id="miniConv" style="height:100px"></div></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-platform-store" class="page-section hidden">
+	      <!-- ====== 页头 ====== -->
+	      <div class="ps-header">
+	        <div class="ps-header-left">
+	          <div class="ps-header-icon"><i class="fa-solid fa-shop"></i></div>
+	          <div class="ps-header-title-group">
+	            <h2 class="ps-header-title">分平台 / 店铺详细数据</h2>
+	            <span class="ps-header-sub">Platform & Store Analytics</span>
+	          </div>
+	        </div>
+	        <div class="ps-header-stats" id="psHeaderStats">
+	          <div class="ps-hs-item"><span class="ps-hs-label">平台数</span><span class="ps-hs-value" id="psPlatformCount">--</span></div>
+	          <div class="ps-hs-item"><span class="ps-hs-label">店铺数</span><span class="ps-hs-value" id="psStoreCount">--</span></div>
+	          <div class="ps-hs-item"><span class="ps-hs-label">总净支付</span><span class="ps-hs-value" id="psTotalNet">--</span></div>
+	        </div>
+	        <button class="ps-back-btn hidden" id="psBackBtn" onclick="App.filterByPlatform('')"><i class="fa-solid fa-arrow-left"></i> 返回全部平台</button>
+	        <div class="ps-header-filters">
+	          <div class="ps-date-shortcuts">
+	            <button class="ps-ds-btn active" data-range="1">昨日</button>
+	            <button class="ps-ds-btn" data-range="7">近7天</button>
+	            <button class="ps-ds-btn" data-range="30">近30天</button>
+	          </div>
+	          <select id="psPlatform" class="ps-select"><option value="">全部平台</option></select>
+	          <div class="ps-date-picker" style="position:relative">
+	            <button type="button" id="psDateBtn" onclick="App.togglePsDatePicker(event)" style="display:flex;align-items:center;gap:6px;background:#fff;border:1px solid #e2e8f0;border-radius:9px;padding:5px 12px;height:33px;cursor:pointer;font-size:0.82rem;color:#334155;font-family:inherit">
+	              <i class="fa-regular fa-calendar" style="color:#94a3b8;font-size:0.82rem"></i>
+	              <span id="psDateLabel" style="white-space:nowrap">选择日期</span>
+	              <i class="fa-solid fa-chevron-down" style="color:#94a3b8;font-size:0.7rem"></i>
+	            </button>
+	            <input type="date" id="psDateStart" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+	            <input type="date" id="psDateEnd" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+	            <div id="psDatePanel" style="display:none;position:absolute;top:40px;right:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:14px;user-select:none"></div>
+	          </div>
+	        </div>
+	      </div>
+
+	      <!-- ====== 平台概览横条 ====== -->
+	      <div class="ps-platform-bars" id="psPlatformBars"></div>
+
+	      <!-- ====== 图表对比区 ====== -->
+	      <div class="ps-charts-row">
+	        <div class="ps-chart-card" style="flex:1.2">
+	          <div class="ps-chart-card-header">
+	            <h3>平台核心指标对比</h3>
+	            <select id="psCompareMetric" class="ps-select-sm">
+	              <option value="netPayment">净支付金额</option>
+	              <option value="visitors">访客数</option>
+	              <option value="payers">支付买家数</option>
+	              <option value="adSpend">推广花费</option>
+	              <option value="adRevenue">推广总成交</option>
+	              <option value="refundAmount">退款金额</option>
+	            </select>
+	          </div>
+	          <div class="ps-chart-body" id="chartPlatformCompare" style="height:300px"></div>
+	        </div>
+	        <div class="ps-chart-card" style="flex:0.8">
+	          <div class="ps-chart-card-header"><h3>平台营收占比</h3></div>
+	          <div class="ps-chart-body" id="chartPlatformPie" style="height:300px"></div>
+	        </div>
+	      </div>
+
+	      <!-- ====== 店铺排行榜 ====== -->
+	      <div class="ps-table-card">
+	        <div class="ps-table-header">
+	          <div class="ps-table-title-group">
+	            <h3>店铺数据排行榜</h3>
+	            <span class="ps-table-badge" id="psStoreTotal">共 0 家店铺</span>
+	          </div>
+	          <div class="ps-table-tools">
+	            <div class="ps-search-wrap">
+	              <i class="fa-solid fa-search"></i>
+	              <input type="text" class="ps-search-input" id="psStoreSearch" placeholder="搜索店铺或品牌...">
+	            </div>
+	            <select id="psSortBy" class="ps-select-sm">
+	              <option value="netPayment">按净支付排序</option>
+	              <option value="visitors">按访客数排序</option>
+	              <option value="payers">按买家数排序</option>
+	              <option value="adSpend">按推广花费排序</option>
+	              <option value="adRevenue">按推广成交排序</option>
+	              <option value="convRate">按转化率排序</option>
+	              <option value="aov">按客单价排序</option>
+	            </select>
+	          </div>
+	        </div>
+	        <div class="ps-table-wrap">
+	          <table class="ps-store-table" id="psStoreTable">
+	            <thead>
+	              <tr>
+	                <th style="width:50px">排名</th>
+	                <th style="width:180px">店铺名</th>
+	                <th style="width:80px">平台</th>
+	                <th class="ps-col-num">净支付金额</th>
+	                <th class="ps-col-num">访客数</th>
+	                <th class="ps-col-num">支付买家数</th>
+	                <th class="ps-col-num">推广花费</th>
+	                <th class="ps-col-num">推广总成交</th>
+	                <th class="ps-col-num">ROI</th>
+	                <th class="ps-col-num">转化率</th>
+	                <th class="ps-col-num">客单价</th>
+	                <th class="ps-col-num">退款率</th>
+	                <th style="width:100px">7天趋势</th>
+	                <th style="width:60px">操作</th>
+	              </tr>
+	            </thead>
+	            <tbody id="psStoreTbody"></tbody>
+	          </table>
+	        </div>
+	        <div class="ps-table-footer" id="psPagination"></div>
+	      </div>
+
+	      <!-- ====== 店铺详情展开面板（点击行展开） ====== -->
+	      <div class="ps-detail-panel hidden" id="psDetailPanel">
+	        <div class="ps-detail-header">
+	          <div class="ps-detail-title-group">
+	            <span class="ps-detail-platform" id="psDetailPlatform"></span>
+	            <h3 id="psDetailName"></h3>
+	          </div>
+	          <button class="ps-detail-close" onclick="App.closePsDetail()"><i class="fa-solid fa-xmark"></i></button>
+	        </div>
+	        <div class="ps-detail-metrics" id="psDetailMetrics"></div>
+	        <div class="ps-detail-charts">
+	          <div class="ps-chart-card">
+	            <div class="ps-chart-card-header"><h3>营收与退款趋势</h3></div>
+	            <div class="ps-chart-body" id="chartStoreTrend" style="height:260px"></div>
+	          </div>
+	          <div class="ps-chart-card">
+	            <div class="ps-chart-card-header"><h3>流量与转化趋势</h3></div>
+	            <div class="ps-chart-body" id="chartStoreTraffic" style="height:260px"></div>
+	          </div>
+	        </div>
+	      </div>
+	    </section>
+    <section id="page-daily-analysis" class="page-section hidden">
+      <div class="dashboard-header">
+        <div class="dh-left">
+          <div class="dh-icon" style="background:linear-gradient(135deg,#0d9488,#14b8a6);box-shadow:0 2px 8px rgba(13,148,136,0.25)"><i class="fa-solid fa-robot" style="color:#fff;font-size:18px"></i></div>
+          <div class="dh-title-group"><h2 class="dh-title" id="pageTitle">每日数据分析</h2><span class="dh-subtitle">Daily AI-Powered Analytics</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>AI驱动 · 昨日数据自动分析</span></div>
+        </div>
+        <div class="dh-filters">
+          <select id="daDateSelect" class="dh-select" style="min-width:160px"><option value="">选择历史报告...</option></select>
+          <button id="daGenerateBtn" style="background:linear-gradient(135deg,#0d9488,#14b8a6);color:#fff;border:none;padding:8px 20px;border-radius:10px;font-weight:600;cursor:pointer;font-family:inherit;font-size:0.88rem;box-shadow:0 2px 8px rgba(13,148,136,0.2)" onclick="App.generateDailyReport()"><i class="fa-solid fa-wand-magic-sparkles"></i> 生成昨日数据分析文档</button>
+          <button id="daDownloadBtn" class="hidden" style="background:#fff;color:#0d9488;border:1.5px solid #0d9488;padding:8px 20px;border-radius:10px;font-weight:600;cursor:pointer;font-family:inherit;font-size:0.88rem;margin-left:10px" onclick="App.downloadReport()"><i class="fa-solid fa-file-pdf"></i> 下载PDF</button>
+        </div>
+      </div>
+      <div id="daLoading" class="hidden" style="text-align:center;padding:48px;color:#64748b"><i class="fa-solid fa-spinner fa-spin" style="font-size:32px;margin-bottom:16px;display:block;color:#0d9488"></i><p style="font-size:0.95rem">AI 正在分析昨日数据，请稍候...</p><p style="font-size:0.8rem;color:#94a3b8">预计耗时 10-30 秒</p></div>
+      <div id="daReportContainer" class="da-report-wrapper"></div>
+      <div id="daEmpty" class="placeholder-card"><i class="fa-solid fa-robot" style="color:#0d9488"></i><h3>每日 AI 数据分析</h3><p style="max-width:440px;margin:8px auto 20px;line-height:1.6">点击上方按钮，AI 将自动分析昨日的店铺营销数据与抖店/京东/千牛单链接销售数据，重点评估推广花费/消耗与产出的比例，生成专业的 HTML 分析报告。</p><div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap"><div style="background:#f0fdfa;border-radius:10px;padding:12px 16px;min-width:100px"><i class="fa-solid fa-chart-line" style="color:#0d9488;margin-right:6px"></i><span style="font-size:0.82rem;color:#0f766e;font-weight:500">营销数据综合</span></div><div style="background:#f0fdfa;border-radius:10px;padding:12px 16px;min-width:100px"><i class="fa-solid fa-receipt" style="color:#0d9488;margin-right:6px"></i><span style="font-size:0.82rem;color:#0f766e;font-weight:500">单链接数据</span></div><div style="background:#f0fdfa;border-radius:10px;padding:12px 16px;min-width:100px"><i class="fa-solid fa-scale-balanced" style="color:#0d9488;margin-right:6px"></i><span style="font-size:0.82rem;color:#0f766e;font-weight:500">消耗产出比</span></div></div></div>
+    </section>
+    <section id="page-store-account" class="page-section hidden">
+      <div class="dashboard-header">
+        <div class="dh-left">
+          <div class="dh-icon" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);box-shadow:0 2px 8px rgba(99,102,241,0.25)"><i class="fa-solid fa-id-card" style="color:#fff;font-size:18px"></i></div>
+          <div class="dh-title-group"><h2 class="dh-title">店铺账号管理</h2><span class="dh-subtitle">Store Account Management</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>共 <span id="saTotalStores">0</span> 个店铺账号</span></div>
+        </div>
+        <div class="dh-chips">
+          <div class="dh-chip"><span class="dh-chip-label">启用中</span><span class="dh-chip-value" id="saEnabled" style="color:#16a34a">--</span></div>
+          <div class="dh-chip"><span class="dh-chip-label">已过期</span><span class="dh-chip-value" id="saExpired" style="color:#dc2626">--</span></div>
+          <div class="dh-chip"><span class="dh-chip-label">待授权</span><span class="dh-chip-value" id="saPending" style="color:#f59e0b">--</span></div>
+        </div>
+      </div>
+      <div class="ap-toolbar">
+        <div class="ap-search-wrap"><i class="fa-solid fa-search"></i><input class="ap-search-input" id="saSearch" placeholder="搜索店铺名称/账号/平台..." oninput="App.filterSATable()"></div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="saPlatformFilter" class="dh-select" onchange="App.filterSATable()"><option value="">全部平台</option><option>淘宝</option><option>京东</option><option>拼多多</option><option>抖音</option><option>快手</option><option>小红书</option><option>微信小程序</option></select>
+          <select id="saStatusFilter" class="dh-select" onchange="App.filterSATable()"><option value="">全部状态</option><option value="enabled">启用中</option><option value="expired">已过期</option><option value="pending">待授权</option></select>
+          <button class="ap-btn-primary" onclick="App.openSAModal()"><i class="fa-solid fa-plus"></i> 新增店铺账号</button>
+        </div>
+      </div>
+      <div class="ap-table-wrap">
+        <table class="ap-table" id="saTable">
+          <thead><tr>
+            <th style="width:50px">ID</th><th style="width:160px">店铺名称</th><th style="width:70px">平台</th>
+            <th style="width:110px">账号</th><th style="width:90px">授权方式</th>
+            <th style="width:100px">授权到期</th><th style="width:80px">状态</th>
+            <th style="width:130px">最后同步</th><th style="width:160px">操作</th>
+          </tr></thead>
+          <tbody id="saTableBody"></tbody>
+        </table>
+      </div>
+      <div class="ap-table-info" id="saTableInfo"></div>
+    </section>
+    <section id="page-operation-performance" class="page-section hidden">
+      <div class="dashboard-header">
+        <div class="dh-left">
+          <div class="dh-icon" style="background:linear-gradient(135deg,#f59e0b,#fbbf24);box-shadow:0 2px 8px rgba(245,158,11,0.25)"><i class="fa-solid fa-chart-line" style="color:#fff;font-size:18px"></i></div>
+          <div class="dh-title-group"><h2 class="dh-title">运营业绩面板</h2><span class="dh-subtitle">Operations Performance Dashboard</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>实时考核 · 本月数据</span></div>
+        </div>
+        <div class="dh-filters">
+          <div class="dh-date-shortcuts" id="opDateShortcuts">
+            <button class="dh-ds-btn" data-range="1">本月</button>
+            <button class="dh-ds-btn active" data-range="3">本季度</button>
+            <button class="dh-ds-btn" data-range="12">本年度</button>
+          </div>
+          <select id="opDepartment" class="dh-select"><option value="">全部部门</option><option>淘宝运营部</option><option>京东运营部</option><option>抖音运营部</option><option>拼多多运营部</option></select>
+        </div>
+      </div>
+      <!-- ====== KPI 总览卡片 ====== -->
+      <div class="mkt-cards-grid" id="opCards">
+        <div class="mkt-card mkt-card--emerald"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-bullseye"></i></div><span class="mkt-card-label">部门总GMV</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="opGMV">--</div><div class="mkt-card-trend" id="opGMVTrend"></div></div></div>
+        <div class="mkt-card mkt-card--indigo"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-user-check"></i></div><span class="mkt-card-label">目标完成率</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="opTargetRate">--</div><div class="mkt-card-trend" id="opTargetRateTrend"></div></div></div>
+        <div class="mkt-card mkt-card--cyan"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-people-group"></i></div><span class="mkt-card-label">运营团队人数</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="opTeamSize">--</div><div class="mkt-card-trend" id="opTeamSizeTrend"></div></div></div>
+        <div class="mkt-card mkt-card--amber"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-ranking-star"></i></div><span class="mkt-card-label">人均GMV</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="opAvgGMV">--</div><div class="mkt-card-trend" id="opAvgGMVTrend"></div></div></div>
+      </div>
+      <!-- ====== 图表区 ====== -->
+      <div class="charts-row" style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">
+        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">各部门GMV对比</span><span style="font-size:0.75rem;color:#94a3b8">按月展示各部门业绩达成情况</span></div><div class="chart-module-body" id="chartOPDept" style="min-height:300px"></div></div>
+        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">GMV月度趋势</span><span style="font-size:0.75rem;color:#94a3b8">各月GMV与环比增长情况</span></div><div class="chart-module-body" id="chartOPTrend" style="min-height:300px"></div></div>
+      </div>
+      <!-- ====== 个人业绩排行榜 ====== -->
+      <div class="ps-table-card">
+        <div class="ps-table-header">
+          <div class="ps-table-title-group"><h3>运营人员业绩排名</h3><span class="ps-table-badge" id="opRankTotal" style="background:#fef3c7;color:#d97706">共 0 人</span></div>
+          <div class="ps-table-tools">
+            <div class="ps-search-wrap"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="opSearch" placeholder="搜索姓名/部门..."></div>
+            <select id="opSortBy" class="ps-select-sm"><option value="gmv">按GMV排序</option><option value="targetRate">按目标完成率排序</option><option value="roi">按ROI排序</option></select>
+          </div>
+        </div>
+        <div class="ps-table-wrap">
+          <table class="ps-store-table" id="opRankTable">
+            <thead><tr>
+              <th style="width:50px">排名</th><th style="width:80px">姓名</th><th style="width:110px">部门</th>
+              <th class="ps-col-num" style="width:130px">GMV</th><th class="ps-col-num" style="width:100px">目标完成率</th>
+              <th class="ps-col-num" style="width:90px">ROI</th><th class="ps-col-num" style="width:90px">转化率</th>
+              <th class="ps-col-num" style="width:100px">客单价</th><th style="width:80px">绩效评级</th>
+            </tr></thead>
+            <tbody id="opRankTbody"></tbody>
+          </table>
+        </div>
+        <div class="ps-table-footer" id="opRankPagination"></div>
+      </div>
+    </section>
+    <section id="page-finance" class="page-section hidden">
+      <div class="dashboard-header">
+        <div class="dh-left">
+          <div class="dh-icon" style="background:linear-gradient(135deg,#0891b2,#22d3ee);box-shadow:0 2px 8px rgba(8,145,178,0.25)"><i class="fa-solid fa-coins" style="color:#fff;font-size:18px"></i></div>
+          <div class="dh-title-group"><h2 class="dh-title">财务中心</h2><span class="dh-subtitle">Finance Center</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>实时核算 · 更新于 <span id="finUpdateTime">--</span></span></div>
+        </div>
+        <div class="dh-filters">
+          <div class="dh-date-shortcuts" id="finDateShortcuts">
+            <button class="dh-ds-btn" data-range="1">本月</button>
+            <button class="dh-ds-btn active" data-range="3">本季度</button>
+            <button class="dh-ds-btn" data-range="12">本年度</button>
+          </div>
+          <select id="finPlatform" class="dh-select"><option value="">全部平台</option><option>淘宝</option><option>京东</option><option>拼多多</option><option>抖音</option><option>快手</option></select>
+        </div>
+      </div>
+      <!-- ====== 财务概览卡片 ====== -->
+      <div class="mkt-cards-grid" id="finCards">
+        <div class="mkt-card mkt-card--emerald"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-sack-dollar"></i></div><span class="mkt-card-label">总营收</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finRevenue">--</div><div class="mkt-card-trend" id="finRevenueTrend"></div></div></div>
+        <div class="mkt-card mkt-card--coral"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-arrow-trend-down"></i></div><span class="mkt-card-label">总成本</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finCost">--</div><div class="mkt-card-trend" id="finCostTrend"></div></div></div>
+        <div class="mkt-card mkt-card--indigo"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-chart-pie"></i></div><span class="mkt-card-label">净利润</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finProfit">--</div><div class="mkt-card-trend" id="finProfitTrend"></div></div></div>
+        <div class="mkt-card mkt-card--cyan"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-percent"></i></div><span class="mkt-card-label">利润率</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finMargin">--</div><div class="mkt-card-trend" id="finMarginTrend"></div></div></div>
+        <div class="mkt-card mkt-card--rose"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-rotate-left"></i></div><span class="mkt-card-label">退款金额</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finRefund">--</div><div class="mkt-card-trend" id="finRefundTrend"></div></div></div>
+        <div class="mkt-card mkt-card--amber"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-receipt"></i></div><span class="mkt-card-label">推广花费</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finAdSpend">--</div><div class="mkt-card-trend" id="finAdSpendTrend"></div></div></div>
+        <div class="mkt-card mkt-card--violet"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-truck"></i></div><span class="mkt-card-label">物流成本</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finLogistics">--</div><div class="mkt-card-trend" id="finLogisticsTrend"></div></div></div>
+        <div class="mkt-card mkt-card--green"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-hand-holding-dollar"></i></div><span class="mkt-card-label">应收账款</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finReceivable">--</div><div class="mkt-card-trend" id="finReceivableTrend"></div></div></div>
+      </div>
+      <!-- ====== 图表区 ====== -->
+      <div class="charts-row" style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">
+        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">月度营收与利润趋势</span><span style="font-size:0.75rem;color:#94a3b8">近12个月收入、成本、利润走势</span></div><div class="chart-module-body" id="chartFinTrend" style="min-height:300px"></div></div>
+        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">成本结构分析</span><span style="font-size:0.75rem;color:#94a3b8">按类别拆分的成本构成占比</span></div><div class="chart-module-body" id="chartFinCost" style="min-height:300px"></div></div>
+      </div>
+      <!-- ====== 收支明细表 ====== -->
+      <div class="ps-table-card">
+        <div class="ps-table-header">
+          <div class="ps-table-title-group"><h3>收支明细</h3><span class="ps-table-badge" id="finTxTotal" style="background:#ecfeff;color:#0891b2">共 0 条</span></div>
+          <div class="ps-table-tools">
+            <div class="ps-search-wrap"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="finSearch" placeholder="搜索摘要/订单号..."></div>
+            <select id="finTxType" class="ps-select-sm"><option value="">全部类型</option><option value="income">收入</option><option value="expense">支出</option><option value="refund">退款</option></select>
+          </div>
+        </div>
+        <div class="ps-table-wrap">
+          <table class="ps-store-table" id="finTable">
+            <thead><tr>
+              <th style="width:100px">日期</th><th style="width:110px">类型</th><th style="width:130px">订单号</th>
+              <th style="width:160px">摘要</th><th style="width:80px">平台</th>
+              <th class="ps-col-num" style="width:110px">金额</th><th style="width:90px">支付方式</th><th style="width:80px">状态</th>
+            </tr></thead>
+            <tbody id="finTbody"></tbody>
+          </table>
+        </div>
+        <div class="ps-table-footer" id="finPagination"></div>
+      </div>
+    </section>
+    <section id="page-hr" class="page-section hidden">
+      <div class="dashboard-header">
+        <div class="dh-left">
+          <div class="dh-icon" style="background:linear-gradient(135deg,#7c3aed,#a78bfa);box-shadow:0 2px 8px rgba(124,58,237,0.25)"><i class="fa-solid fa-building" style="color:#fff;font-size:18px"></i></div>
+          <div class="dh-title-group"><h2 class="dh-title">人事中心</h2><span class="dh-subtitle">Human Resources Center</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>实时更新 · 共 <span id="hrTotalEmp">0</span> 名员工</span></div>
+        </div>
+        <div class="dh-chips">
+          <div class="dh-chip"><span class="dh-chip-label">在职</span><span class="dh-chip-value" id="hrActive" style="color:#16a34a">--</span></div>
+          <div class="dh-chip"><span class="dh-chip-label">试用期</span><span class="dh-chip-value" id="hrProbation" style="color:#f59e0b">--</span></div>
+          <div class="dh-chip"><span class="dh-chip-label">本月入职</span><span class="dh-chip-value" id="hrNewHires" style="color:#6366f1">--</span></div>
+          <div class="dh-chip"><span class="dh-chip-label">离职</span><span class="dh-chip-value" id="hrResigned" style="color:#dc2626">--</span></div>
+        </div>
+      </div>
+      <!-- ====== 统计卡片 ====== -->
+      <div class="mkt-cards-grid" id="hrCards">
+        <div class="mkt-card mkt-card--emerald"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-user-check"></i></div><span class="mkt-card-label">出勤率</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="hrAttendance">--</div><div class="mkt-card-trend" id="hrAttendanceTrend"></div></div></div>
+        <div class="mkt-card mkt-card--indigo"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-clock"></i></div><span class="mkt-card-label">平均工时</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="hrAvgHours">--</div><div class="mkt-card-trend" id="hrAvgHoursTrend"></div></div></div>
+        <div class="mkt-card mkt-card--cyan"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-cake-candles"></i></div><span class="mkt-card-label">本月生日</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="hrBirthdays">--</div><div class="mkt-card-trend neutral"><span>人</span></div></div></div>
+        <div class="mkt-card mkt-card--amber"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-graduation-cap"></i></div><span class="mkt-card-label">培训完成率</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="hrTraining">--</div><div class="mkt-card-trend" id="hrTrainingTrend"></div></div></div>
+      </div>
+      <!-- ====== 图表区 ====== -->
+      <div class="charts-row" style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">
+        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">部门人员分布</span><span style="font-size:0.75rem;color:#94a3b8">各部门在职人数及占比</span></div><div class="chart-module-body" id="chartHRDept" style="min-height:300px"></div></div>
+        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">月度出勤趋势</span><span style="font-size:0.75rem;color:#94a3b8">近6个月各部门出勤率变化</span></div><div class="chart-module-body" id="chartHRAttendance" style="min-height:300px"></div></div>
+      </div>
+      <!-- ====== 员工花名册 ====== -->
+      <div class="ps-table-card">
+        <div class="ps-table-header">
+          <div class="ps-table-title-group"><h3>员工花名册</h3><span class="ps-table-badge" id="hrEmpTotal" style="background:#f5f3ff;color:#7c3aed">共 0 人</span></div>
+          <div class="ps-table-tools">
+            <div class="ps-search-wrap"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="hrSearch" placeholder="搜索姓名/工号/部门..."></div>
+            <select id="hrDeptFilter" class="ps-select-sm"><option value="">全部部门</option><option>淘宝运营部</option><option>京东运营部</option><option>抖音运营部</option><option>拼多多运营部</option><option>财务部</option><option>人事行政部</option><option>技术部</option><option>客服部</option></select>
+          </div>
+        </div>
+        <div class="ps-table-wrap">
+          <table class="ps-store-table" id="hrTable">
+            <thead><tr>
+              <th style="width:70px">工号</th><th style="width:80px">姓名</th><th style="width:100px">部门</th>
+              <th style="width:90px">职位</th><th style="width:100px">手机号</th>
+              <th style="width:160px">邮箱</th><th style="width:90px">入职日期</th><th style="width:80px">状态</th>
+            </tr></thead>
+            <tbody id="hrTbody"></tbody>
+          </table>
+        </div>
+        <div class="ps-table-footer" id="hrPagination"></div>
+      </div>
+    </section>
+    <!-- ====== 工具箱 - 违规词检测 (v3 仪表盘风格) ====== -->
+    <section id="page-toolbox-violation-check" class="page-section hidden">
+      <!-- 顶部统计卡片 -->
+      <div class="vd-stats-row" id="vdStatsRow">
+        <div class="vd-stat-card">
+          <div class="vd-stat-icon" style="background:#eff6ff;color:#3b82f6"><i class="fa-solid fa-images"></i></div>
+          <div class="vd-stat-body"><span class="vd-stat-num" id="vdStatTotal">0</span><span class="vd-stat-label">已上传</span></div>
+        </div>
+        <div class="vd-stat-card">
+          <div class="vd-stat-icon" style="background:#fef3c7;color:#f59e0b"><i class="fa-solid fa-spinner"></i></div>
+          <div class="vd-stat-body"><span class="vd-stat-num" id="vdStatProcessing">0</span><span class="vd-stat-label">检测中</span></div>
+        </div>
+        <div class="vd-stat-card">
+          <div class="vd-stat-icon" style="background:#fee2e2;color:#ef4444"><i class="fa-solid fa-triangle-exclamation"></i></div>
+          <div class="vd-stat-body"><span class="vd-stat-num" id="vdStatHits">0</span><span class="vd-stat-label">违规命中</span></div>
+        </div>
+        <div class="vd-stat-card">
+          <div class="vd-stat-icon" style="background:#dcfce7;color:#16a34a"><i class="fa-solid fa-circle-check"></i></div>
+          <div class="vd-stat-body"><span class="vd-stat-num" id="vdStatPassRate">--</span><span class="vd-stat-label">通过率</span></div>
+        </div>
+        <!-- 通知铃铛 -->
+        <div class="vd-notify-bell" id="vdNotifyBell" onclick="App.vdToggleNotifications()" title="检测通知">
+          <i class="fa-solid fa-bell"></i>
+          <span class="vd-bell-badge" id="vdBellBadge" style="display:none">0</span>
+        </div>
+        <!-- 通知下拉 -->
+        <div class="vd-notify-dropdown" id="vdNotifyDropdown" style="display:none">
+          <div class="vd-notify-header"><span>检测通知</span><button onclick="App.vdClearNotifications()">清空</button></div>
+          <div class="vd-notify-list" id="vdNotifyList"><div class="vd-notify-empty">暂无通知</div></div>
+        </div>
+      </div>
+
+      <!-- 主体双栏 -->
+      <div class="vd-main-grid">
+        <!-- 左侧：上传源区 -->
+        <div class="vd-upload-panel">
+          <div class="vd-panel-header">
+            <span class="vd-panel-title"><i class="fa-solid fa-cloud-arrow-up"></i> 上传源区</span>
+            <span class="vd-panel-hint">JPG / PNG / WebP · 多图 · 文件夹</span>
+          </div>
+          <!-- 拖拽上传框 -->
+          <div class="vd-drop-zone" id="vdDropZone"
+               ondragover="event.preventDefault();this.classList.add('vd-drop-active')"
+               ondragleave="this.classList.remove('vd-drop-active')"
+               ondrop="App.vdHandleDrop(event)"
+               onclick="document.getElementById('vdFileInput').click()">
+            <div class="vd-drop-icon"><i class="fa-solid fa-cloud-arrow-up"></i></div>
+            <div class="vd-drop-text">拖拽图片到此处，或<span class="vd-drop-link">点击选择</span></div>
+            <div class="vd-drop-sub">支持选择多张图片或整个文件夹</div>
+            <input type="file" id="vdFileInput" accept="image/*" multiple style="display:none" onchange="App.vdHandleFiles(this.files)">
+          </div>
+          <!-- 缩略图画廊 -->
+          <div class="vd-thumb-gallery" id="vdThumbGallery">
+            <!-- 空状态 -->
+            <div class="vd-thumb-empty" id="vdThumbEmpty">
+              <div class="vd-empty-illustration">
+                <i class="fa-solid fa-image" style="font-size:48px;color:#cbd5e1"></i>
+              </div>
+              <div class="vd-empty-text">暂无图片，请上传</div>
+            </div>
+            <div class="vd-thumb-list" id="vdThumbList"></div>
+          </div>
+          <!-- 操作按钮 -->
+          <div class="vd-actions">
+            <button class="vd-btn-detect" id="vdStartBtn" onclick="App.vdStartOCR()">
+              <i class="fa-solid fa-magnifying-glass"></i> 开始检测
+            </button>
+            <button class="vd-btn-clear" onclick="App.vdClearAll()">
+              <i class="fa-solid fa-trash-can"></i> 清空全部
+            </button>
+          </div>
+          <!-- 进度条 -->
+          <div class="vd-progress-wrap" id="vdProgressWrap" style="display:none">
+            <div class="vd-progress-bar"><div class="vd-progress-fill" id="vdProgressFill"></div></div>
+            <div class="vd-progress-text"><span id="vdProgressText">正在连接OCR引擎...</span><span id="vdProgressPercent">0%</span></div>
+          </div>
+        </div>
+
+        <!-- 右侧：检测结果区 -->
+        <div class="vd-result-panel">
+          <div class="vd-panel-header">
+            <span class="vd-panel-title"><i class="fa-solid fa-clipboard-list"></i> 检测结果区</span>
+            <span class="vd-panel-hint" id="vdResultSummary">等待检测</span>
+          </div>
+          <div class="vd-result-body" id="vdResultBody">
+            <!-- 空状态：未开始检测 -->
+            <div class="vd-result-empty" id="vdResultEmpty">
+              <div class="vd-empty-illustration">
+                <i class="fa-solid fa-magnifying-glass-chart" style="font-size:56px;color:#cbd5e1"></i>
+              </div>
+              <div class="vd-empty-title">准备开始检测</div>
+              <div class="vd-empty-desc">上传图片后点击「开始检测」，系统将自动提取文字并标记违规内容</div>
+              <div class="vd-sample-badge">
+                <span class="vd-sample-red">红色 = 精确违规</span>
+                <span class="vd-sample-orange">橙色 = 疑似违规</span>
+              </div>
+            </div>
+            <!-- 检测中动画 -->
+            <div class="vd-scanning" id="vdScanning" style="display:none">
+              <div class="vd-scan-box">
+                <div class="vd-scan-line"></div>
+                <i class="fa-solid fa-spinner fa-spin" style="font-size:28px;color:#f59e0b"></i>
+                <div style="margin-top:12px;color:#64748b;font-size:14px">OCR识别 + 违规检测中...</div>
+              </div>
+            </div>
+            <!-- 合规通过动画 -->
+            <div class="vd-pass-anim" id="vdPassAnim" style="display:none">
+              <div class="vd-pass-check"><i class="fa-solid fa-circle-check"></i></div>
+              <div class="vd-pass-title">未发现违规，合规通过!</div>
+              <div class="vd-pass-desc">所有图片均未命中违规词库</div>
+            </div>
+            <!-- 结果列表 -->
+            <div class="vd-result-list" id="vdResultList"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <style>
+      .od-cal-wrap{display:flex;gap:16px}
+      .od-cal{width:245px}
+      .od-cal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-weight:600;font-size:13px;color:#1e293b}
+      .od-cal-nav{width:24px;height:24px;border:none;background:#f1f5f9;border-radius:6px;cursor:pointer;color:#475569;font-size:15px;line-height:1}
+      .od-cal-nav:hover{background:#e2e8f0}
+      .od-cal-week{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center;font-size:11px;color:#94a3b8;margin-bottom:4px}
+      .od-cal-days{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+      .od-cal-day{height:28px;border:none;border-radius:6px;cursor:pointer;background:transparent;color:#334155;font-size:12px;font-family:inherit}
+      .od-cal-day:hover{background:#eef2ff}
+      .od-cal-day.blank{visibility:hidden}
+      .od-cal-day.in-range{background:#e0e7ff;color:#4338ca;border-radius:0}
+      .od-cal-day.is-start,.od-cal-day.is-end{background:#6366f1;color:#fff;font-weight:600}
+      .od-cal-day.is-today{box-shadow:inset 0 0 0 1px #6366f1}
+    </style>
+    <!-- ====== 订单详情 - 单链接销售数据 ====== -->
+    <section id="page-order-details" class="page-section hidden">
+      <div class="dashboard-header">
+        <div class="dh-left">
+          <div class="dh-icon" style="background:linear-gradient(135deg,#6366f1,#818cf8);box-shadow:0 2px 8px rgba(99,102,241,.3)"><i class="fa-solid fa-receipt"></i></div>
+          <div class="dh-title-group"><h2 class="dh-title" id="pageTitle">订单详情</h2><span class="dh-subtitle">Order Detail Analytics</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>数据实时 · 每天 <b id="odTotalCount">--</b> 条链接记录</span></div>
+        </div>
+        <div class="dh-filters">
+          <div class="dh-date-shortcuts">
+            <button class="dh-ds-btn od-ds-btn active" data-range="1">昨日</button>
+            <button class="dh-ds-btn od-ds-btn" data-range="7">近7天</button>
+            <button class="dh-ds-btn od-ds-btn" data-range="30">近30天</button>
+          </div>
+          <select id="odPlatform" class="dh-select" style="width:120px;min-width:120px;max-width:120px"><option value="">全部平台</option></select>
+          <select id="odStore" class="dh-select" style="width:150px;min-width:150px;max-width:150px"><option value="">全部店铺</option></select>
+          <div class="dh-date-picker" style="position:relative">
+            <button type="button" id="odDateBtn" onclick="App.toggleOdDatePicker(event)" style="display:flex;align-items:center;gap:6px;background:#fff;border:1px solid oklch(92% 0.01 245);border-radius:9px;padding:5px 12px;height:33px;cursor:pointer;font-size:0.82rem;color:oklch(30% 0.02 245);font-family:inherit">
+              <i class="fa-regular fa-calendar" style="color:oklch(65% 0.02 245);font-size:0.82rem"></i>
+              <span id="odDateLabel" style="white-space:nowrap">选择日期</span>
+              <i class="fa-solid fa-chevron-down" style="color:oklch(65% 0.02 245);font-size:0.7rem"></i>
+            </button>
+            <input type="date" id="odDateStart" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+            <input type="date" id="odDateEnd" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+            <div id="odDatePanel" style="display:none;position:absolute;top:40px;right:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:14px;user-select:none"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 统计卡片：4 张，每张可独立选字段 -->
+      <div class="mkt-cards-grid" style="margin-bottom:18px">
+        <div class="mkt-card mkt-card--emerald">
+          <div class="mkt-card-header" style="display:flex;align-items:center;gap:8px">
+            <div class="mkt-card-icon"><i class="fa-solid fa-chart-simple"></i></div>
+            <select id="odCardSel0" class="od-card-sel" style="flex:1;min-width:0;border:none;background:transparent;font-size:13px;color:#64748b;font-weight:600;cursor:pointer;outline:none"></select>
+          </div>
+          <div class="mkt-card-body"><div class="mkt-card-value" id="odCardValue0">--</div><div id="odCardSub0" style="font-size:11px;color:#94a3b8;margin-top:4px"></div></div>
+        </div>
+        <div class="mkt-card mkt-card--indigo">
+          <div class="mkt-card-header" style="display:flex;align-items:center;gap:8px">
+            <div class="mkt-card-icon"><i class="fa-solid fa-chart-simple"></i></div>
+            <select id="odCardSel1" class="od-card-sel" style="flex:1;min-width:0;border:none;background:transparent;font-size:13px;color:#64748b;font-weight:600;cursor:pointer;outline:none"></select>
+          </div>
+          <div class="mkt-card-body"><div class="mkt-card-value" id="odCardValue1">--</div><div id="odCardSub1" style="font-size:11px;color:#94a3b8;margin-top:4px"></div></div>
+        </div>
+        <div class="mkt-card mkt-card--amber">
+          <div class="mkt-card-header" style="display:flex;align-items:center;gap:8px">
+            <div class="mkt-card-icon"><i class="fa-solid fa-chart-simple"></i></div>
+            <select id="odCardSel2" class="od-card-sel" style="flex:1;min-width:0;border:none;background:transparent;font-size:13px;color:#64748b;font-weight:600;cursor:pointer;outline:none"></select>
+          </div>
+          <div class="mkt-card-body"><div class="mkt-card-value" id="odCardValue2">--</div><div id="odCardSub2" style="font-size:11px;color:#94a3b8;margin-top:4px"></div></div>
+        </div>
+        <div class="mkt-card mkt-card--rose">
+          <div class="mkt-card-header" style="display:flex;align-items:center;gap:8px">
+            <div class="mkt-card-icon"><i class="fa-solid fa-chart-simple"></i></div>
+            <select id="odCardSel3" class="od-card-sel" style="flex:1;min-width:0;border:none;background:transparent;font-size:13px;color:#64748b;font-weight:600;cursor:pointer;outline:none"></select>
+          </div>
+          <div class="mkt-card-body"><div class="mkt-card-value" id="odCardValue3">--</div><div id="odCardSub3" style="font-size:11px;color:#94a3b8;margin-top:4px"></div></div>
+        </div>
+      </div>
+
+      <!-- 搜索栏 -->
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center">
+        <div class="ps-search-wrap" style="flex:1;max-width:360px"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="odSearch" placeholder="搜索商品名称 / 链接ID..."></div>
+        <div id="odLinkTypeToggle" style="display:none;align-items:center;gap:2px;background:#f1f5f9;border-radius:8px;padding:3px">
+          <button id="odLinkAllBtn" type="button" onclick="App.odSetLinkType('all')" style="border:none;background:#fff;color:#1e293b;font-weight:600;padding:5px 14px;border-radius:6px;font-size:13px;cursor:pointer;font-family:inherit;box-shadow:0 1px 2px rgba(0,0,0,.06)">全部商品</button>
+          <button id="odLinkPromoBtn" type="button" onclick="App.odSetLinkType('promo')" style="border:none;background:transparent;color:#64748b;padding:5px 14px;border-radius:6px;font-size:13px;cursor:pointer;font-family:inherit">推广商品</button>
+        </div>
+        <div style="position:relative">
+          <button id="odColBtn" onclick="App.toggleOdColPanel()" style="display:flex;align-items:center;gap:6px;border:1px solid #e2e8f0;background:#fff;border-radius:8px;padding:6px 12px;font-size:13px;color:#475569;cursor:pointer">选择字段 <i class="fa-solid fa-chevron-down"></i></button>
+          <div id="odColPanel" style="display:none;position:absolute;top:38px;right:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.14);padding:10px;min-width:210px;max-height:340px;overflow:auto"></div>
+        </div>
+        <span style="font-size:13px;color:#94a3b8" id="odPageInfo">共 0 条记录</span>
+      </div>
+
+      <!-- 数据表格 -->
+      <div class="ps-table-card">
+        <div class="ps-table-wrap" style="max-height:calc(100vh - 360px);overflow:auto">
+          <table style="min-width:1600px;width:100%;border-collapse:collapse;font-size:13px">
+            <thead style="position:sticky;top:0;z-index:2;background:#f8fafc">
+              <tr id="odTableHead"></tr>
+            </thead>
+            <tbody id="odTableBody"></tbody>
+          </table>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid #e2e8f0">
+          <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:#64748b">
+            <span>每页</span>
+            <select id="odPageSize" style="border:1px solid #e2e8f0;border-radius:6px;padding:4px 8px;font-size:13px">
+              <option value="20">20</option><option value="50">50</option><option value="100">100</option>
+            </select>
+            <span>条</span>
+          </div>
+          <div class="pagination" id="odPagination" style="display:flex;gap:4px"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-admin-permissions" class="page-section hidden">
+      <div class="ap-tabs"><button class="ap-tab active" data-tab="admins">管理员列表</button><button class="ap-tab" data-tab="roles">角色与权限</button></div>
+      <div class="ap-panel active" id="ap-panel-admins">
+        <div class="ap-toolbar">
+          <div class="ap-search-wrap">
+            <i class="fa-solid fa-search"></i>
+            <input class="ap-search-input" id="adminSearch" placeholder="搜索管理员姓名或账号..." oninput="App.filterAdminTable()">
+          </div>
+          <button class="ap-btn-primary" onclick="App.openAdminModal()"><i class="fa-solid fa-plus"></i> 新增管理员</button>
+        </div>
+        <div class="ap-table-wrap">
+          <table class="ap-table" id="adminTable">
+            <thead>
+              <tr>
+                <th style="width:50px">ID</th>
+                <th style="width:100px">姓名</th>
+                <th style="width:130px">账号</th>
+                <th style="width:150px">密码</th>
+                <th style="width:110px">角色</th>
+                <th style="width:80px">状态</th>
+                <th style="width:140px">最后登录</th>
+                <th style="width:160px">操作</th>
+              </tr>
+            </thead>
+            <tbody id="adminTableBody"></tbody>
+          </table>
+        </div>
+        <div class="ap-table-info" id="adminTableInfo"></div>
+      </div>
+      <div class="ap-panel" id="ap-panel-roles">
+        <div style="display:flex;gap:12px;margin-bottom:16px"><button class="btn btn-primary btn-sm" onclick="App.openRoleModal()">+ 新增角色</button></div>
+        <div class="data-table-wrap"><table class="data-table"><thead><tr><th>角色名称</th><th>权限</th><th>成员数</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="roleTableBody"></tbody></table></div>
+      </div>
+    </section>
+    <section id="page-profile" class="page-section hidden">
+      <div class="dashboard-header">
+        <div class="dh-left">
+          <div class="dh-icon" style="background:linear-gradient(135deg,#2563eb,#60a5fa);box-shadow:0 2px 8px rgba(37,99,235,0.25)"><i class="fa-solid fa-id-badge" style="color:#fff;font-size:18px"></i></div>
+          <div class="dh-title-group"><h2 class="dh-title">个人中心设置</h2><span class="dh-subtitle">Account & Profile Settings</span></div>
+        </div>
+      </div>
+      <!-- ====== 标签页导航 ====== -->
+      <div class="ap-tabs" id="profileTabs">
+        <button class="ap-tab active" data-tab="profile-info">个人信息</button>
+        <button class="ap-tab" data-tab="profile-security">账号安全</button>
+        <button class="ap-tab" data-tab="profile-notify">通知设置</button>
+        <button class="ap-tab" data-tab="profile-log">操作日志</button>
+      </div>
+      <!-- ====== 个人信息 ====== -->
+      <div class="ap-panel active" id="pf-panel-profile-info">
+        <div style="display:grid;grid-template-columns:300px 1fr;gap:24px">
+          <!-- 头像区 -->
+          <div style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;padding:32px 24px;text-align:center">
+            <div style="width:100px;height:100px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#60a5fa);display:inline-flex;align-items:center;justify-content:center;font-size:42px;color:#fff;margin-bottom:16px;box-shadow:0 4px 16px rgba(59,130,246,0.3)" id="pfAvatar">管</div>
+            <h3 style="font-size:18px;font-weight:700;color:#1e293b;margin-bottom:4px" id="pfDisplayName">管理员</h3>
+            <p style="font-size:13px;color:#94a3b8;margin-bottom:16px" id="pfRoleBadge">超级管理员</p>
+            <button class="btn btn-sm btn-outline" style="width:100%" onclick="App.showToast('头像上传功能开发中','error')"><i class="fa-solid fa-camera"></i> 更换头像</button>
+            <div style="margin-top:20px;padding-top:16px;border-top:1px solid #f1f5f9;text-align:left">
+              <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span style="color:#94a3b8">账号</span><span style="color:#334155;font-weight:500" id="pfAccount">--</span></div>
+              <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span style="color:#94a3b8">角色</span><span style="color:#334155;font-weight:500" id="pfRole">--</span></div>
+              <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span style="color:#94a3b8">注册时间</span><span style="color:#334155;font-weight:500" id="pfRegDate">--</span></div>
+              <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span style="color:#94a3b8">最后登录</span><span style="color:#334155;font-weight:500" id="pfLastLogin">--</span></div>
+            </div>
+          </div>
+          <!-- 表单区 -->
+          <div style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;padding:24px">
+            <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:20px">基本资料</h3>
+            <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+              <div class="form-group"><label>姓名</label><input class="form-input" id="pfName" placeholder="请输入姓名" value="张经理"></div>
+              <div class="form-group"><label>手机号</label><input class="form-input" id="pfPhone" placeholder="请输入手机号" value="13800138001"></div>
+            </div>
+            <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+              <div class="form-group"><label>邮箱</label><input class="form-input" id="pfEmail" placeholder="请输入邮箱" value="zhangjl@julang.com"></div>
+              <div class="form-group"><label>微信号</label><input class="form-input" id="pfWechat" placeholder="请输入微信号" value="zhang_manager"></div>
+            </div>
+            <div class="form-group"><label>性别</label><select class="form-select" id="pfGender"><option value="male" selected>男</option><option value="female">女</option></select></div>
+            <div style="display:flex;gap:12px;margin-top:24px"><button class="btn btn-primary" onclick="App.saveProfile()">保存修改</button><button class="btn btn-outline" onclick="App.resetProfile()">重置</button></div>
+          </div>
+        </div>
+      </div>
+      <!-- ====== 账号安全 ====== -->
+      <div class="ap-panel" id="pf-panel-profile-security">
+        <div style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;padding:24px;max-width:600px">
+          <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:20px">修改密码</h3>
+          <div class="form-group"><label>当前密码</label><div class="form-input-wrap"><input class="form-input" type="password" id="pfCurPwd" placeholder="请输入当前密码"></div></div>
+          <div class="form-group"><label>新密码</label><div class="form-input-wrap"><input class="form-input" type="password" id="pfNewPwd" placeholder="8-20位，包含字母和数字"></div></div>
+          <div class="form-group"><label>确认新密码</label><div class="form-input-wrap"><input class="form-input" type="password" id="pfNewPwd2" placeholder="再次输入新密码"></div></div>
+          <button class="btn btn-primary" onclick="App.changePassword()">修改密码</button>
+          <hr style="margin:28px 0;border-color:#f1f5f9">
+          <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:16px">安全设置</h3>
+          <div style="display:flex;flex-direction:column;gap:14px">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:#f8fafc;border-radius:10px">
+              <div><div style="font-weight:600;color:#1e293b;font-size:14px">两步验证 (2FA)</div><div style="font-size:12px;color:#94a3b8">通过手机验证码增加账号安全性</div></div>
+              <span class="badge badge-gray">未启用</span>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:#f8fafc;border-radius:10px">
+              <div><div style="font-weight:600;color:#1e293b;font-size:14px">登录设备管理</div><div style="font-size:12px;color:#94a3b8">当前 3 台设备已登录</div></div>
+              <button class="btn btn-sm btn-outline">管理</button>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:#f8fafc;border-radius:10px">
+              <div><div style="font-weight:600;color:#1e293b;font-size:14px">登录IP白名单</div><div style="font-size:12px;color:#94a3b8">限制仅允许指定IP登录后台</div></div>
+              <span class="badge badge-gray">未设置</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- ====== 通知设置 ====== -->
+      <div class="ap-panel" id="pf-panel-profile-notify">
+        <div style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;padding:24px;max-width:600px">
+          <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:20px">通知偏好</h3>
+          <div style="display:flex;flex-direction:column;gap:12px" id="pfNotifyList">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">退款预警通知</div><div style="font-size:12px;color:#94a3b8">退款率超过阈值时发送告警</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" checked style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">差评实时推送</div><div style="font-size:12px;color:#94a3b8">收到差评时立即通知</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" checked style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">每日数据报告</div><div style="font-size:12px;color:#94a3b8">每天早上9点推送昨日数据摘要</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" checked style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">系统更新通知</div><div style="font-size:12px;color:#94a3b8">系统功能更新和维护通知</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">营销活动提醒</div><div style="font-size:12px;color:#94a3b8">大促活动开始/结束前的提醒</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" checked style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
+          </div>
+          <button class="btn btn-primary" style="margin-top:20px" onclick="App.showToast('通知设置已保存','success')">保存设置</button>
+        </div>
+      </div>
+      <!-- ====== 操作日志 ====== -->
+      <div class="ap-panel" id="pf-panel-profile-log">
+        <div style="background:#fff;border-radius:12px;border:1px solid #f1f5f9">
+          <div style="padding:16px 20px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:12px">
+            <span style="font-weight:600;color:#1e293b;font-size:15px">最近操作记录</span>
+            <span style="font-size:12px;color:#94a3b8">共 25 条记录</span>
+          </div>
+          <div style="padding:0">
+            <table class="data-table"><thead><tr><th>时间</th><th>操作类型</th><th>详情</th><th>IP地址</th><th>设备</th></tr></thead>
+            <tbody id="pfLogTbody"></tbody></table>
+          </div>
+          <div class="ps-table-footer"><span>第 1 / 3 页，共 25 条</span><div class="ps-pagination-btns"><button disabled><i class="fa-solid fa-chevron-left"></i></button><button class="active">1</button><button>2</button><button>3</button><button><i class="fa-solid fa-chevron-right"></i></button></div></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="formModal" class="modal hidden">
+  <div class="modal-content"><div class="modal-header" id="modalTitle"></div><div class="modal-body" id="modalBody"></div><div class="modal-footer"><button class="btn btn-outline" onclick="App.closeFormModal()">取消</button><button class="btn btn-primary" id="modalSaveBtn">保存</button></div></div>
+</div>
+<div id="confirmModal" class="modal hidden">
+  <div class="modal-content" style="max-width:420px"><div class="modal-body"><p id="confirmMsg" style="font-size:15px;color:#334155"></p></div><div class="modal-footer"><button class="btn btn-outline" onclick="App.closeConfirmModal()">取消</button><button class="btn btn-danger" id="confirmDeleteBtn">确认删除</button></div></div>
+</div>
+<div id="toast" class="toast hidden"></div>
+<div id="sidebarOverlay" class="overlay hidden" onclick="App.toggleSidebar(false)"></div>
+
+<!-- ====== 智能体助手 - 浪小助 ====== -->
+<div class="ai-float-btn" id="aiFloatBtn" onclick="App.aiToggleChat()">
+  <div class="ai-pulse"></div>
+  <i class="fa-solid fa-robot"></i>
+  <span class="ai-btn-label">浪小助 · 智能助手</span>
+</div>
+<div class="ai-chat-window collapsed" id="aiChatWindow">
+  <div class="ai-chat-header">
+    <div class="ai-chat-avatar"><i class="fa-solid fa-robot"></i></div>
+    <div class="ai-chat-title">
+      <div class="ai-chat-name">浪小助</div>
+      <div class="ai-chat-sub">聚浪网络 · AI 智能助手</div>
+    </div>
+    <button class="ai-chat-close" onclick="App.aiToggleChat()"><i class="fa-solid fa-xmark"></i></button>
+  </div>
+  <div class="ai-chat-body" id="aiChatBody">
+    <div class="ai-msg">
+      <div class="ai-msg-avatar"><i class="fa-solid fa-robot"></i></div>
+      <div class="ai-msg-bubble">
+        <p>你好！我是<strong>浪小助</strong> 👋<br>聚浪网络电商后台的智能助手。有什么可以帮你的？</p>
+      </div>
+    </div>
+  </div>
+  <div class="ai-chat-input-wrap">
+    <input class="ai-chat-input" id="aiChatInput" placeholder="输入问题，Enter 发送..." onkeydown="if(event.key==='Enter')App.aiSendMessage()">
+    <button class="ai-chat-send" id="aiChatSendBtn" onclick="App.aiSendMessage()"><i class="fa-solid fa-paper-plane"></i></button>
+  </div>
+  <div class="ai-chat-footer">聚浪网络科技 · AI 服务可能产生误差，请以实际数据为准</div>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

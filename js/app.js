@@ -1,0 +1,4189 @@
+/**
+ * 电商后台管理系统 - 核心应用逻辑
+ * E-Commerce Admin Panel
+ */
+
+// ==================== API 服务层 ====================
+const ApiService = (() => {
+  // 后端 API 地址（根据实际情况修改 IP 和端口）
+  // 后端 API 地址 — Flask 在本机运行，用 localhost
+  // 如果需要从其他电脑访问，改成 Flask 所在机器的 IP
+  const BASE_URL = '/api';
+
+  async function request(path, options = {}) {
+    try {
+      const res = await fetch(BASE_URL + path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      if (json.code !== 0) throw new Error(json.msg);
+      return json.data;
+    } catch (e) {
+      console.warn('[API] 请求失败:', path, e.message);
+      return null;
+    }
+  }
+
+  return {
+    /** 健康检查 — 判断后端是否可用 */
+    async health() {
+      const data = await request('/health');
+      return data !== null;
+    },
+
+    /** 从远程数据库拉取全部数据并同步到 localStorage */
+    async syncAll() {
+      const [products, orders, customers] = await Promise.all([
+        request('/products'),
+        request('/orders'),
+        request('/customers'),
+      ]);
+      if (products && orders && customers) {
+        const merged = { products, orders, customers };
+        localStorage.setItem('admin_data', JSON.stringify(merged));
+        console.log('[API] ✅ 已从远程数据库同步 %d 商品 / %d 订单 / %d 客户',
+          products.length, orders.length, customers.length);
+        return merged;
+      }
+      return null;
+    },
+
+    /** 获取看板统计数据 */
+    async getDashboardStats() {
+      return request('/dashboard/stats');
+    },
+
+    /** 返回平台和品牌筛选选项 */
+    async getMarketingFilters() {
+      return request('/marketing/filters');
+    },
+
+    /** 获取营销数据总览，支持日期、平台、品牌筛选 */
+    async getMarketingOverview(start, end, platform, brand) {
+      let path = '/marketing/overview';
+      const params = [];
+      if (start) params.push('start=' + encodeURIComponent(start));
+      if (end)   params.push('end=' + encodeURIComponent(end));
+      if (platform) params.push('platform=' + encodeURIComponent(platform));
+      if (brand)   params.push('brand=' + encodeURIComponent(brand));
+      if (params.length) path += '?' + params.join('&');
+      return request(path);
+    },
+
+    /** 管理员 CRUD */
+    async getAdmins() { return request('/admin/accounts'); },
+    async createAdmin(data) { return request('/admin/accounts', { method: 'POST', body: JSON.stringify(data) }); },
+    async updateAdmin(id, data) { return request('/admin/accounts/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
+    async deleteAdmin(id) { return request('/admin/accounts/' + id, { method: 'DELETE' }); },
+
+    /** 分平台/店铺详细数据 */
+    async getPlatformStoreData(start, end, platform) {
+      let path = '/platform-store/data';
+      const params = [];
+      if (start) params.push('start=' + encodeURIComponent(start));
+      if (end)   params.push('end=' + encodeURIComponent(end));
+      if (platform) params.push('platform=' + encodeURIComponent(platform));
+      if (params.length) path += '?' + params.join('&');
+      return request(path);
+    },
+
+    // ---- 每日数据分析 ----
+    async generateDailyReport(date) {
+      var body = date ? JSON.stringify({ date: date }) : undefined;
+      return request('/analysis/generate', { method: 'POST', body: body });
+    },
+    async getAnalysisReport(date) {
+      let path = '/analysis/report';
+      if (date) path += '?date=' + encodeURIComponent(date);
+      return request(path);
+    },
+    async getAnalysisDates() {
+      return request('/analysis/dates');
+    },
+
+    // ---- CRUD 快捷方法 ----
+    create(type, data) {
+      const paths = { product: '/products', order: '/orders', customer: '/customers' };
+      return request(paths[type], { method: 'POST', body: JSON.stringify(data) });
+    },
+    update(type, id, data) {
+      const paths = { product: '/products', order: '/orders', customer: '/customers' };
+      return request(`${paths[type]}/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+    },
+    del(type, id) {
+      const paths = { product: '/products', order: '/orders', customer: '/customers' };
+      return request(`${paths[type]}/${id}`, { method: 'DELETE' });
+    },
+  };
+})();
+
+// ==================== 主应用 ====================
+
+const App = (() => {
+  // ==================== 配置 & 状态 ====================
+  const CONFIG = {
+    adminUser: { username: 'admin', password: 'admin123' },
+    pageSize: 8,
+  };
+
+  let state = {
+    currentPage: 'marketing-overview',
+    currentUser: null,
+    currentRole: null,
+    currentAccount: null,
+    editingType: null,    // 'product' | 'order' | 'customer'
+    editingItem: null,    // 正在编辑的数据对象
+    deleteTarget: null,   // { type, id }
+    sidebarOpen: false,
+    apiAvailable: false,
+    filters: {},
+    charts: { order: null, status: null },
+  };
+
+  // ==================== 模拟数据 ====================
+  function getDefaultData() {
+    const now = new Date();
+    const d = (days) => {
+      const dt = new Date(now);
+      dt.setDate(dt.getDate() - days);
+      return dt.toISOString().slice(0, 10);
+    };
+
+    return {
+      products: [
+        { id: 1, name: '无线蓝牙耳机 Pro', category: '电子产品', price: 299, stock: 150, status: '在售' },
+        { id: 2, name: '轻薄羽绒服', category: '服装鞋帽', price: 599, stock: 80, status: '在售' },
+        { id: 3, name: '有机坚果礼盒', category: '食品饮料', price: 128, stock: 200, status: '在售' },
+        { id: 4, name: '智能台灯', category: '家居生活', price: 189, stock: 95, status: '在售' },
+        { id: 5, name: '运动跑鞋', category: '服装鞋帽', price: 459, stock: 60, status: '在售' },
+        { id: 6, name: '蓝牙音箱', category: '电子产品', price: 199, stock: 0, status: '缺货' },
+        { id: 7, name: '原味酸奶', category: '食品饮料', price: 49, stock: 300, status: '在售' },
+        { id: 8, name: '纯棉四件套', category: '家居生活', price: 349, stock: 45, status: '在售' },
+        { id: 9, name: '手机充电器', category: '电子产品', price: 89, stock: 120, status: '在售' },
+        { id: 10, name: '速干T恤', category: '服装鞋帽', price: 99, stock: 180, status: '在售' },
+        { id: 11, name: '咖啡豆', category: '食品饮料', price: 168, stock: 75, status: '在售' },
+        { id: 12, name: '空气净化器', category: '家居生活', price: 1299, stock: 20, status: '在售' },
+      ],
+      orders: [
+        { id: 'ORD20260101', customer: '张三', product: '无线蓝牙耳机 Pro', qty: 2, amount: 598, status: '已完成', date: d(1) },
+        { id: 'ORD20260102', customer: '李四', product: '轻薄羽绒服', qty: 1, amount: 599, status: '已发货', date: d(2) },
+        { id: 'ORD20260103', customer: '王五', product: '有机坚果礼盒', qty: 3, amount: 384, status: '待发货', date: d(2) },
+        { id: 'ORD20260104', customer: '赵六', product: '运动跑鞋', qty: 1, amount: 459, status: '已完成', date: d(3) },
+        { id: 'ORD20260105', customer: '张三', product: '智能台灯', qty: 2, amount: 378, status: '已发货', date: d(3) },
+        { id: 'ORD20260106', customer: '孙七', product: '蓝牙音箱', qty: 1, amount: 199, status: '已取消', date: d(4) },
+        { id: 'ORD20260107', customer: '李四', product: '纯棉四件套', qty: 1, amount: 349, status: '已完成', date: d(4) },
+        { id: 'ORD20260108', customer: '王五', product: '咖啡豆', qty: 2, amount: 336, status: '待发货', date: d(5) },
+        { id: 'ORD20260109', customer: '周八', product: '空气净化器', qty: 1, amount: 1299, status: '已完成', date: d(5) },
+        { id: 'ORD20260110', customer: '赵六', product: '速干T恤', qty: 5, amount: 495, status: '已发货', date: d(6) },
+        { id: 'ORD20260111', customer: '张三', product: '原味酸奶', qty: 4, amount: 196, status: '待发货', date: d(6) },
+        { id: 'ORD20260112', customer: '孙七', product: '手机充电器', qty: 1, amount: 89, status: '已完成', date: d(7) },
+        { id: 'ORD20260113', customer: '李四', product: '无线蓝牙耳机 Pro', qty: 1, amount: 299, status: '已完成', date: d(7) },
+        { id: 'ORD20260114', customer: '王五', product: '有机坚果礼盒', qty: 2, amount: 256, status: '已取消', date: d(7) },
+      ],
+      customers: [
+        { id: 1, name: '张三', phone: '13800138001', email: 'zhangsan@mail.com', address: '北京市朝阳区', regDate: d(30) },
+        { id: 2, name: '李四', phone: '13800138002', email: 'lisi@mail.com', address: '上海市浦东新区', regDate: d(28) },
+        { id: 3, name: '王五', phone: '13800138003', email: 'wangwu@mail.com', address: '广州市天河区', regDate: d(25) },
+        { id: 4, name: '赵六', phone: '13800138004', email: 'zhaoliu@mail.com', address: '深圳市南山区', regDate: d(20) },
+        { id: 5, name: '孙七', phone: '13800138005', email: 'sunqi@mail.com', address: '杭州市西湖区', regDate: d(18) },
+        { id: 6, name: '周八', phone: '13800138006', email: 'zhouba@mail.com', address: '成都市武侯区', regDate: d(15) },
+        { id: 7, name: '吴九', phone: '13800138007', email: 'wujiu@mail.com', address: '南京市玄武区', regDate: d(12) },
+        { id: 8, name: '郑十', phone: '13800138008', email: 'zhengshi@mail.com', address: '武汉市洪山区', regDate: d(10) },
+        { id: 9, name: '钱十一', phone: '13800138009', email: 'qian@mail.com', address: '重庆市渝中区', regDate: d(8) },
+        { id: 10, name: '刘十二', phone: '13800138010', email: 'liu@mail.com', address: '西安市雁塔区', regDate: d(5) },
+      ],
+    };
+  }
+
+  function loadData() {
+    const saved = localStorage.getItem('admin_data');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { /* fallback */ }
+    }
+    const defaults = getDefaultData();
+    saveData(defaults);
+    return defaults;
+  }
+
+  function saveData(data) {
+    localStorage.setItem('admin_data', JSON.stringify(data));
+  }
+
+  function getStore() {
+    return loadData();
+  }
+
+  // ==================== 数据操作 ====================
+  function getItems(type) {
+    const store = getStore();
+    const keyMap = { product: 'products', order: 'orders', customer: 'customers' };
+    return store[keyMap[type]] || [];
+  }
+
+  function setItems(type, items) {
+    const store = getStore();
+    const keyMap = { product: 'products', order: 'orders', customer: 'customers' };
+    store[keyMap[type]] = items;
+    saveData(store);
+  }
+
+  function addItem(type, item) {
+    const items = getItems(type);
+    if (type !== 'order') {
+      const maxId = items.length > 0 ? Math.max(...items.map(i => i.id)) : 0;
+      item.id = maxId + 1;
+    }
+    items.push(item);
+    setItems(type, items);
+    // 后台同步到远程数据库（不影响本地操作）
+    if (state.apiAvailable) ApiService.create(type, item);
+  }
+
+  function updateItem(type, item) {
+    const items = getItems(type);
+    const idx = items.findIndex(i => i.id === item.id);
+    if (idx !== -1) items[idx] = item;
+    setItems(type, items);
+    if (state.apiAvailable) ApiService.update(type, item.id, item);
+  }
+
+  function deleteItem(type, id) {
+    const items = getItems(type);
+    const filtered = items.filter(i => i.id !== id);
+    setItems(type, filtered);
+    if (state.apiAvailable) ApiService.del(type, id);
+  }
+
+  // ==================== 登录/登出 ====================
+  async function handleLogin(e) {
+    e.preventDefault();
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value.trim();
+    const errEl = document.getElementById('loginError');
+
+    if (!username || !password) {
+      errEl.textContent = '请输入用户名和密码';
+      return;
+    }
+
+    var adminData = null;
+
+    // 始终先走后端数据库验证（不管 health check 结果）
+    try {
+      var resp = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username, password: password }),
+      });
+      var json = await resp.json();
+      if (json.code === 0 && json.data) {
+        adminData = json.data;
+      }
+    } catch (e) {
+      console.warn('后端登录验证失败，降级到本地验证:', e);
+    }
+
+    // 后端不可用或失败时，降级到 localStorage 验证
+    if (!adminData) {
+      var admins = (function () {
+        try { return JSON.parse(localStorage.getItem('admin_permissions_admins')); }
+        catch (e) { return null; }
+      })();
+      if (!admins || !admins.length) { admins = getDefaultAdmins(); }
+
+      var matchedAdmin = admins.find(function(a) { return a.account === username && a.password === password; });
+
+      if (!matchedAdmin) {
+        errEl.textContent = '用户名或密码错误';
+        return;
+      }
+      if (matchedAdmin.status === 'disabled') {
+        errEl.textContent = '该账号已被禁用，请联系超级管理员';
+        return;
+      }
+      adminData = { name: matchedAdmin.name, role: matchedAdmin.role, account: matchedAdmin.account, status: matchedAdmin.status };
+    }
+
+    // 检查禁用状态
+    if (adminData.status === 'disabled') {
+      errEl.textContent = '该账号已被禁用，请联系超级管理员';
+      return;
+    }
+
+    // 登录成功
+    state.currentUser = adminData.name;
+    state.currentRole = adminData.role || '';
+    state.currentAccount = username;
+    state.currentPermissions = adminData.permissions || [];
+
+    if (document.getElementById('remember').checked) {
+      localStorage.setItem('admin_user', username);
+      localStorage.setItem('admin_pass', password);
+    } else {
+      localStorage.removeItem('admin_user');
+      localStorage.removeItem('admin_pass');
+    }
+    sessionStorage.setItem('admin_logged_in', 'true');
+    sessionStorage.setItem('admin_current_user', state.currentUser);
+    sessionStorage.setItem('admin_current_account', username);
+    sessionStorage.setItem('admin_current_role', state.currentRole);
+    if (state.currentPermissions && state.currentPermissions.length) {
+      sessionStorage.setItem('admin_permissions', JSON.stringify(state.currentPermissions));
+    }
+
+    document.getElementById('loginPage').classList.add('hidden');
+    document.getElementById('appPage').classList.remove('hidden');
+    document.getElementById('currentUser').textContent = state.currentUser;
+    initApp();
+  }
+
+  function handleLogout() {
+    localStorage.removeItem('admin_user');
+    sessionStorage.removeItem('admin_logged_in');
+    sessionStorage.removeItem('admin_permissions');
+    sessionStorage.removeItem('admin_current_user');
+    state.currentUser = null;
+    document.getElementById('loginPage').classList.remove('hidden');
+    document.getElementById('appPage').classList.add('hidden');
+    document.getElementById('loginForm').reset();
+  }
+
+  // ==================== 路由 ====================
+  function _showPermissionDenied() {
+    document.querySelectorAll('.page-section').forEach(function(el) { el.classList.add('hidden'); });
+    var denyEl = document.getElementById('page-permission-denied');
+    if (!denyEl) {
+      denyEl = document.createElement('section');
+      denyEl.id = 'page-permission-denied';
+      denyEl.className = 'page-section';
+      denyEl.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:calc(100vh - 180px);flex-direction:column;gap:14px">' +
+        '<div style="width:88px;height:88px;border-radius:50%;background:#f1f5f9;display:flex;align-items:center;justify-content:center">' +
+          '<i class="fa-solid fa-lock" style="font-size:36px;color:#94a3b8"></i>' +
+        '</div>' +
+        '<h2 style="color:#334155;font-weight:600;font-size:18px;margin:0">无权限访问</h2>' +
+        '<p style="color:#94a3b8;font-size:14px;margin:0;text-align:center;max-width:320px;line-height:1.6">当前账号没有访问此页面的权限<br>请向超级管理员申请开通权限</p></div>';
+      document.querySelector('.main-content').appendChild(denyEl);
+    }
+    denyEl.classList.remove('hidden');
+    document.getElementById('pageTitle').textContent = '无权限';
+  }
+
+  function navigateTo(page) {
+    // 权限检查
+    if (_ALLOWED_PAGES !== null && !_ALLOWED_PAGES.includes(page) && page !== 'profile') {
+      _showPermissionDenied();
+      // 高亮当前点击的菜单项
+      document.querySelectorAll('.nav-item').forEach(function(el) {
+        el.classList.toggle('active', el.dataset.page === page);
+      });
+      // 展开对应的导航组和子菜单
+      document.querySelectorAll('.nav-group').forEach(function(group) {
+        var hasActive = group.querySelector('.nav-item[data-page="' + page + '"]');
+        group.classList.toggle('open', !!hasActive);
+      });
+      document.querySelectorAll('.nav-submenu').forEach(function(sub) {
+        var hasActive = sub.querySelector('.nav-item[data-page="' + page + '"]');
+        sub.classList.toggle('open', !!hasActive);
+      });
+      document.getElementById('pageTitle').textContent = '无权限';
+      return;
+    }
+    state.currentPage = page;
+    // Update nav active state
+    document.querySelectorAll('.nav-item').forEach(el => {
+      el.classList.toggle('active', el.dataset.page === page);
+    });
+    // Open parent group for active item
+    document.querySelectorAll('.nav-group').forEach(group => {
+      const hasActive = group.querySelector('.nav-item[data-page="' + page + '"]');
+      group.classList.toggle('open', !!hasActive);
+    });
+    // Open parent submenu for active item
+    document.querySelectorAll('.nav-submenu').forEach(sub => {
+      const hasActive = sub.querySelector('.nav-item[data-page="' + page + '"]');
+      sub.classList.toggle('open', !!hasActive);
+    });
+    // Update page sections
+    document.querySelectorAll('.page-section').forEach(el => el.classList.add('hidden'));
+    const target = document.getElementById('page-' + page);
+    if (target) target.classList.remove('hidden');
+    // Update title
+    const titles = {
+      'marketing-overview': '整体营销数据总览',
+      'platform-store': '分平台 / 店铺详细数据',
+      'daily-analysis': '每日数据分析',
+      'store-account': '店铺账号管理',
+      'operation-performance': '运营业绩面板',
+      finance: '财务中心',
+      hr: '人事中心',
+      'admin-permissions': '管理员与权限',
+      profile: '个人中心设置',
+      'toolbox-violation-check': '违规词检测',
+      'order-details': '订单详情',
+    };
+    document.getElementById('pageTitle').textContent = titles[page] || page;
+    if (page === 'marketing-overview') renderMarketingOverview();
+    if (page === 'platform-store') renderPlatformStore();
+    if (page === 'daily-analysis') renderDailyAnalysis();
+    if (page === 'store-account') renderStoreAccount();
+    if (page === 'operation-performance') renderOperationPerformance();
+    if (page === 'finance') renderFinance();
+    if (page === 'hr') renderHR();
+    if (page === 'admin-permissions') renderAdminPermissions();
+    if (page === 'profile') renderProfile();
+    if (page === 'toolbox-violation-check') renderToolboxViolationCheck();
+    if (page === 'order-details') renderOrderDetails();
+    // Close sidebar on mobile
+    if (window.innerWidth <= 768) toggleSidebar(false);
+  }
+
+  // ==================== 营销数据总览 ====================
+  async function renderMarketingOverview(startDate, endDate) {
+    const dateStart = document.getElementById('mktDateStart');
+    const dateEnd   = document.getElementById('mktDateEnd');
+    const platform  = document.getElementById('mktPlatform');
+    const brand     = document.getElementById('mktBrand');
+
+    // 默认昨天，限制最大日期为昨天（今日无数据，不可选）
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    if (dateStart) { dateStart.max = yesterday; if (!dateStart.value) dateStart.value = startDate || yesterday; }
+    if (dateEnd)   { dateEnd.max   = yesterday; if (!dateEnd.value)   dateEnd.value   = endDate   || yesterday; }
+    _calUpdateLabel('mkt');
+
+    const start = dateStart?.value || '';
+    const end   = dateEnd?.value   || '';
+    const plat  = platform?.value  || '';
+    const brd   = brand?.value     || '';
+
+    // 更新快捷按钮状态
+    updateDateShortcuts(start, end);
+
+    // 从 API 获取数据
+    let metrics = null;
+    console.log('[MKT] renderMarketingOverview apiAvailable=' + state.apiAvailable + ' start=' + start + ' end=' + end);
+    if (state.apiAvailable) {
+      metrics = await ApiService.getMarketingOverview(start, end, plat, brd);
+      console.log('[MKT] API返回:', metrics ? ('netPayment=' + metrics.netPayment + ', trends=' + (metrics.trends||[]).length) : 'null');
+    }
+
+    if (metrics) {
+      populateMarketingCards(metrics, start, end);
+      renderChartsSection(metrics);
+    } else {
+      console.warn('[MKT] 指标为null，显示0。apiAvailable=' + state.apiAvailable);
+      populateMarketingCards({
+        netPayment: 0, payment: 0, refundAmount: 0, refundRate: 0,
+        adSpend: 0, adTotal: 0, roi: 0,
+        visitors: 0, payers: 0, trends: null,
+      }, start, end);
+      clearChartsSection();
+    }
+  }
+
+  function setDateRange(days) {
+    // days = 1 表示昨天, 7 = 近7天, 30 = 近30天
+    const end = new Date(Date.now() - 86400000);
+    const start = new Date(end);
+    start.setDate(start.getDate() - days + 1);
+    const fmt = d => d.toISOString().slice(0, 10);
+    document.getElementById('mktDateStart').value = fmt(start);
+    document.getElementById('mktDateEnd').value   = fmt(end);
+    renderMarketingOverview(fmt(start), fmt(end));
+  }
+
+  function updateDateShortcuts(s, e) {
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    document.querySelectorAll('.dh-ds-btn').forEach(btn => {
+      const range = parseInt(btn.dataset.range);
+      let match = false;
+      if (range === 1) {
+        match = (s === yesterday && e === yesterday);
+      } else {
+        const calcStart = new Date(Date.now() - 86400000 - (range - 1) * 86400000).toISOString().slice(0, 10);
+        match = (s === calcStart && e === yesterday);
+      }
+      btn.classList.toggle('active', match);
+    });
+  }
+
+  function populateMarketingCards(m, dateStart, dateEnd) {
+    if (!m.refundRate && m.netPayment > 0) { m.refundRate = (m.refundAmount || 0) / m.netPayment * 100; }
+    if (!m.roi && m.adSpend > 0) { m.roi = (m.adTotal || 0) / m.adSpend; }
+
+    function fmtMoney(v) { return '¥' + Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function fmtNum(v)   { return Math.round(v).toLocaleString('zh-CN'); }
+
+    document.getElementById('netPayment').textContent  = fmtMoney(m.netPayment);
+    document.getElementById('totalRevenue').textContent = fmtMoney(m.payment);
+    document.getElementById('refundAmount').textContent = fmtMoney(m.refundAmount);
+    document.getElementById('refundRate').textContent   = (m.refundRate || 0).toFixed(2) + '%';
+    document.getElementById('adSpend').textContent      = fmtMoney(m.adSpend);
+    document.getElementById('adRevenue').textContent    = fmtMoney(m.adTotal);
+    document.getElementById('roi').textContent          = (m.roi || 0).toFixed(4);
+    document.getElementById('visitors').textContent     = fmtNum(m.visitors);
+    document.getElementById('payers').textContent       = fmtNum(m.payers);
+
+    function trendIcon(pct, inverted, isDelta) {
+      if (pct === null || pct === undefined) return ['', 'neutral'];
+      const abs = Math.abs(pct);
+      const up = pct > (isDelta ? 0.005 : 0);
+      const down = pct < (isDelta ? -0.005 : 0);
+      if (!up && !down) return ['持平', 'neutral'];
+      let suffix = isDelta ? abs.toFixed(2) + 'pp' : abs + '%';
+      let cls, arrow;
+      if (inverted) { cls = up ? 'down' : 'up'; arrow = up ? '↑ +' : '↓ '; }
+      else { cls = up ? 'up' : 'down'; arrow = up ? '↑ +' : '↓ '; }
+      return [arrow + suffix, cls];
+    }
+    if (m.comparison) {
+      const c = m.comparison;
+      const label = c.isSingleDay ? ' 环比昨日' : ' 环比上期';
+      function setTrend(id, pct, inverted, isDelta) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const [html, cls] = trendIcon(pct, inverted, isDelta);
+        el.innerHTML = html ? '<span>' + html + '</span>' + label : '';
+        el.className = 'mkt-card-trend ' + cls;
+      }
+      setTrend('netPaymentTrend',   c.netPayment,   false, false);
+      setTrend('refundAmountTrend', c.refundAmount, true,  false);
+      setTrend('refundRateTrend',   c.refundRate,   true,  true);
+      setTrend('visitorsTrend',     c.visitors,     false, false);
+      setTrend('adRevenueTrend',    c.adTotal,      false, false);
+      setTrend('adSpendTrend',      c.adSpend,      true,  false);
+      setTrend('roiTrend',          c.roi,          false, true);
+      setTrend('payersTrend',       c.payers,       false, false);
+    }
+
+    // ---- 更新时间 ----
+    const now = new Date();
+    const timeEl = document.getElementById('dhUpdateTime');
+    if (timeEl) {
+      let label = '更新于 ' + now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      if (state.apiAvailable) {
+        if (dateStart && dateEnd && dateStart === dateEnd) {
+          label += ' · ' + dateStart;
+        } else if (dateStart || dateEnd) {
+          label += ' · ' + (dateStart || '...') + ' ~ ' + (dateEnd || '...');
+        }
+        label += ' · 数据库实时';
+      }
+      timeEl.textContent = label;
+    }
+  }
+
+  function drawSparkline(canvasId, data, color) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas || !data.length) return;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = 36 * dpr;
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = '36px';
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    const w = rect.width, h = 36, pad = 2;
+    const max = Math.max(...data, 1);
+    const min = Math.min(...data, 0);
+    const range = max - min || 1;
+
+    ctx.clearRect(0, 0, w, h);
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.8;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
+    const stepX = (w - pad * 2) / (data.length - 1);
+    data.forEach((v, i) => {
+      const x = pad + i * stepX;
+      const y = h - pad - ((v - min) / range) * (h - pad * 2);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // subtle fill
+    ctx.lineTo(pad + (data.length - 1) * stepX, h - pad);
+    ctx.lineTo(pad, h - pad);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, color + '30');
+    grad.addColorStop(1, color + '04');
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
+
+  // ==================== 图表分析区 (ECharts) ====================
+  const _chartInstances = {};
+
+  function _echartsReady() { return typeof echarts !== 'undefined' && echarts.init; }
+
+  function getOrCreateChart(domId) {
+    if (!_echartsReady()) return null;
+    const dom = document.getElementById(domId);
+    if (!dom) return null;
+    if (_chartInstances[domId]) _chartInstances[domId].dispose();
+    const c = echarts.init(dom);
+    _chartInstances[domId] = c;
+    return c;
+  }
+
+  function resizeAllCharts() {
+    Object.values(_chartInstances).forEach(c => { try { c.resize(); } catch(e) {} });
+  }
+
+  function clearChartsSection() {
+    Object.values(_chartInstances).forEach(c => { try { c.dispose(); } catch(e) {} });
+    for (const k of Object.keys(_chartInstances)) delete _chartInstances[k];
+  }
+
+  function renderChartsSection(m) {
+    if (!_echartsReady()) return;
+    try {
+      if (!m.trends || !m.trends.length) { clearChartsSection(); return; }
+      const dates = m.trends.map(t => t.date);
+      chartTrend(dates, m.trends);
+      chartFunnel(m.agg);
+      chartRefund(m);
+      chartAd(dates, m.trends);
+      chartAOV(dates, m.trends);
+      window.addEventListener('resize', resizeAllCharts, { once: true });
+    } catch(e) { console.warn('[Charts] render error:', e.message); }
+  }
+
+  // ── 模块1：核心指标趋势图 ──
+  function chartTrend(dates, trends) {
+    const c = getOrCreateChart('chartTrend');
+    if (!c) return;
+    c.setOption({
+      tooltip: {
+        trigger: 'axis',
+        formatter: function(ps) { return ps.map(p => p.marker + p.seriesName + ': ' + (p.seriesName.includes('率') ? p.value + '%' : '¥' + p.value.toLocaleString())).join('<br/>'); }
+      },
+      legend: { top: 0, right: 0, textStyle: { fontSize: 11 } },
+      grid: { left: 50, right: 55, top: 40, bottom: 30 },
+      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10 } },
+      yAxis: [
+        { type: 'value', name: '金额(元)', nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 10, formatter: v => (v/10000).toFixed(0)+'w' } },
+        { type: 'value', name: '%', nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 10, formatter: v => v+'%' } }
+      ],
+      series: [
+        { name: '支付金额', type: 'line', smooth: true, data: trends.map(t => t.payment), lineStyle: { color: '#3B82F6'}, itemStyle: { color: '#3B82F6'}, areaStyle: { color: 'rgba(59,130,246,0.06)' }, symbol: 'none' },
+        { name: '净支付金额', type: 'line', smooth: true, data: trends.map(t => t.netPayment), lineStyle: { color: '#10B981'}, itemStyle: { color: '#10B981'}, areaStyle: { color: 'rgba(16,185,129,0.06)' }, symbol: 'none' },
+        { name: '退款金额', type: 'line', smooth: true, data: trends.map(t => t.refundAmount), lineStyle: { color: '#EF4444'}, itemStyle: { color: '#EF4444'}, areaStyle: { color: 'rgba(239,68,68,0.04)' }, symbol: 'none' },
+        { name: '推广花费金额', type: 'line', smooth: true, data: trends.map(t => t.adSpend), lineStyle: { color: '#8B5CF6'}, itemStyle: { color: '#8B5CF6'}, areaStyle: { color: 'rgba(139,92,246,0.04)' }, symbol: 'none' },
+        { name: '订单退款率', type: 'line', smooth: true, yAxisIndex: 1, data: trends.map(t => t.orderRefundRate), lineStyle: { color: '#F97316', type: 'dashed' }, itemStyle: { color: '#F97316' }, symbol: 'none' },
+      ]
+    });
+  }
+
+  // ── 模块2：转化漏斗 ──
+  function chartFunnel(agg) {
+    const c = getOrCreateChart('chartFunnel');
+    if (!c) return;
+    const vis = agg.totalVisitors || 0;
+    const cart = agg.totalCart || 0;
+    const payers = agg.totalPayers || 0;
+    const rate = agg.avgConvRate || 0;
+    const cartRate = vis > 0 ? (cart/vis*100).toFixed(1) : '0';
+    const payRate = cart > 0 ? (payers/cart*100).toFixed(1) : '0';
+
+    c.setOption({
+      tooltip: { trigger: 'item', formatter: '{b}: {c}' },
+      series: [{
+        type: 'funnel', left: '15%', right: '15%', top: 10, bottom: 10,
+        minSize: '25%', maxSize: '100%', gap: 4,
+        label: { show: true, position: 'inside', fontSize: 11, formatter: '{b}' },
+        labelLine: { show: false },
+        data: [
+          { value: vis, name: '访客数', itemStyle: { color: '#3B82F6' } },
+          { value: cart, name: '加购人数 (' + cartRate + '%)', itemStyle: { color: '#6366F1' } },
+          { value: payers, name: '支付买家数 (' + payRate + '%)', itemStyle: { color: '#10B981' } },
+          { value: Math.round(rate*10)/10, name: '支付转化率 ' + rate + '%', itemStyle: { color: '#F59E0B' } },
+        ]
+      }]
+    });
+  }
+
+  // ── 模块3：退款分析 ──
+  function chartRefund(m) {
+    const dom = document.getElementById('chartRefund');
+    if (!dom) return;
+    const refundAmount = m.refundAmount || 0;
+    const amountRR = m.refundRate || 0;
+    const orderRR = m.agg?.avgOrderRefundRate || 0;
+    const warn30 = amountRR > 30 || orderRR > 30;
+
+    dom.innerHTML = '<div class="refund-big-num">¥' + refundAmount.toLocaleString('zh-CN', {minimumFractionDigits:2}) + '</div><div class="refund-big-trend">' + (warn30 ? '<span style="color:#e11d48">⚠ 退款率偏高</span>' : '') + '</div><div class="refund-gauges"><div class="refund-gauge"><div class="refund-gauge-chart" id="gaugeAmount"></div><div class="refund-gauge-label" style="font-weight:600">金额退款率 ' + amountRR.toFixed(2) + '%</div><div class="refund-gauge-note">= 退款金额 / 净支付金额</div></div><div class="refund-gauge"><div class="refund-gauge-chart" id="gaugeOrder"></div><div class="refund-gauge-label" style="font-weight:600">订单退款率 ' + orderRR.toFixed(2) + '%</div><div class="refund-gauge-note">= 退款订单数 / 支付订单数</div></div></div><div class="refund-mini-bar" id="refundMiniBar"></div>';
+
+    const gauge = (domId, val, color) => {
+      const gc = echarts.init(document.getElementById(domId));
+      gc.setOption({series:[{type:'gauge',radius:'85%',center:['50%','55%'],startAngle:200,endAngle:-20,min:0,max:100,axisLine:{show:true,lineStyle:{width:8,color:[[val/100,color],[1,'#f1f5f9']]}},pointer:{show:false},axisTick:{show:false},splitLine:{show:false},axisLabel:{show:false},detail:{fontSize:16,fontWeight:700,color:color,offsetCenter:[0,'80%'],formatter:val.toFixed(1)+'%'},data:[{value:val}]}]});
+    };
+    gauge('gaugeAmount', Math.min(amountRR, 100), amountRR > 30 ? '#e11d48' : '#f59e0b');
+    gauge('gaugeOrder', Math.min(orderRR, 100), orderRR > 30 ? '#e11d48' : '#f59e0b');
+
+    if (m.trends && m.trends.length) {
+      const bc = echarts.init(document.getElementById('refundMiniBar'));
+      bc.setOption({grid:{left:0,right:0,top:0,bottom:16},xAxis:{type:'category',data:m.trends.map(t=>t.date.slice(5)),axisLabel:{fontSize:8},axisLine:{show:false},axisTick:{show:false}},yAxis:{type:'value',splitLine:{show:false},axisLabel:{show:false}},series:[{type:'bar',data:m.trends.map(t=>t.refundAmount),itemStyle:{color:'#fca5a5',borderRadius:[3,3,0,0]},barWidth:'60%'}]});
+    }
+  }
+
+  // ── 模块4：推广效果分析 ──
+  function chartAd(dates, trends) {
+    const c = getOrCreateChart('chartAd');
+    if (!c) return;
+    c.setOption({
+      tooltip: { trigger: 'axis' },
+      legend: { top: 0, right: 0, textStyle: { fontSize: 10 } },
+      grid: { left: 50, right: 50, top: 35, bottom: 30 },
+      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 9 } },
+      yAxis: [
+        { type: 'value', name: '金额', axisLabel: { fontSize: 9, formatter: v => (v/10000).toFixed(0)+'w' } },
+        { type: 'value', name: 'ROI', axisLabel: { fontSize: 9 } }
+      ],
+      series: [
+        { name: '推广总成交', type: 'bar', data: trends.map(t => t.adTotal), itemStyle: { color: '#1E40AF' }, barGap: '10%', barWidth: '35%' },
+        { name: '推广花费金额', type: 'bar', data: trends.map(t => t.adSpend), itemStyle: { color: '#A78BFA' }, barWidth: '35%' },
+        { name: 'ROI', type: 'line', yAxisIndex: 1, data: trends.map(t => t.roi), lineStyle: { color: '#F97316' }, itemStyle: { color: '#F97316' }, symbol: 'circle', symbolSize: 4 },
+      ]
+    });
+  }
+
+  // ── 模块5：客单价与支付转化率 ──
+  function chartAOV(dates, trends) {
+    const dom = document.getElementById('chartAOV');
+    if (!dom) return;
+    const latest = trends[trends.length - 1] || {};
+    const aov = latest.aov || 0;
+    const convRate = latest.convRate || 0;
+
+    dom.innerHTML = `
+      <div class="aov-conv-row">
+        <div class="aov-conv-item">
+          <div style="display:flex;justify-content:space-between;align-items:baseline">
+            <span style="font-size:0.85rem;color:#64748b;font-weight:500">客单价</span>
+            <span class="aov-conv-val" style="color:#3B82F6">¥${aov.toFixed(2)}</span>
+            <span class="aov-conv-trend" style="color:#94a3b8">= 支付金额/买家数</span>
+          </div>
+          <div class="aov-conv-chart" id="miniAOV"></div>
+        </div>
+        <div class="aov-conv-item">
+          <div style="display:flex;justify-content:space-between;align-items:baseline">
+            <span style="font-size:0.85rem;color:#64748b;font-weight:500">支付转化率</span>
+            <span class="aov-conv-val" style="color:#10B981">${convRate.toFixed(2)}%</span>
+            <span class="aov-conv-trend" style="color:#94a3b8">= 买家数/访客数</span>
+          </div>
+          <div class="aov-conv-chart" id="miniConv"></div>
+        </div>
+      </div>
+    `;
+
+    const miniLine = (domId, data, color) => {
+      const mc = echarts.init(document.getElementById(domId));
+      mc.setOption({
+        grid: { left: 0, right: 0, top: 4, bottom: 6 },
+        xAxis: { type: 'category', data: dates, show: false },
+        yAxis: { type: 'value', show: false, min: v => v.min - (v.max-v.min)*0.2 },
+        series: [{
+          type: 'line', data: data, smooth: true,
+          lineStyle: { color: color, width: 1.5 }, itemStyle: { color: color },
+          symbol: 'none', areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1, [{offset:0,color:color+'30'},{offset:1,color:color+'02'}])}
+        }]
+      });
+    }
+    miniLine('miniAOV', trends.map(t => t.aov), '#3B82F6');
+    miniLine('miniConv', trends.map(t => t.convRate), '#10B981');
+  }
+
+  function renderMarketingCharts(netPayment, refundAmount, adSpend, adTotal) {
+    // 销毁旧图表
+    if (state.charts.marketingTrend) state.charts.marketingTrend.destroy();
+    if (state.charts.marketingPie)  state.charts.marketingPie.destroy();
+
+    const now = new Date();
+    const days = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      days.push((d.getMonth() + 1) + '/' + d.getDate());
+    }
+
+    // 按日均值拆分每日随机数据
+    function daily(val) {
+      return days.map(() => Math.max(0, Math.round((val / 7) * (0.55 + Math.random() * 0.9))));
+    }
+    state._mktData = {
+      days,
+      revenueDaily: daily(netPayment),
+      adSpendDaily: daily(adSpend),
+      adTotalDaily: daily(adTotal),
+    };
+
+    // ---- 折线图：净支付金额（默认） ----
+    const trendCtx = document.getElementById('marketingTrendChart');
+    if (trendCtx) {
+      state.charts.marketingTrend = new Chart(trendCtx, {
+        type: 'line',
+        data: {
+          labels: days,
+          datasets: [{
+            label: '净支付金额',
+            data: state._mktData.revenueDaily,
+            borderColor: '#1677ff',
+            backgroundColor: 'rgba(22,119,255,0.08)',
+            fill: true, tension: 0.3,
+            pointRadius: 4, pointBackgroundColor: '#1677ff',
+          }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: {
+              ticks: { callback: v => '¥' + (v / 1000).toFixed(0) + 'k' },
+            },
+          },
+        },
+      });
+    }
+
+    // ---- 环形图：花费 vs 退款 vs 净利润 ----
+    const pieCtx = document.getElementById('marketingPieChart');
+    if (pieCtx) {
+      const profit = Math.max(0, adTotal - adSpend);
+      state.charts.marketingPie = new Chart(pieCtx, {
+        type: 'doughnut',
+        data: {
+          labels: ['推广花费', '退款金额', '净利润（成交-花费）'],
+          datasets: [{
+            data: [Math.round(adSpend), Math.round(refundAmount), Math.round(profit)],
+            backgroundColor: ['#f59e0b', '#dc2626', '#16a34a'],
+            borderWidth: 0,
+          }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom', labels: { padding: 16, usePointStyle: true } },
+          },
+        },
+      });
+    }
+
+    // 重置切换按钮
+    document.querySelectorAll('[data-mkt-chart]').forEach((b, i) => b.classList.toggle('active', i === 0));
+  }
+
+  /** 使用 API 返回的趋势数据渲染图表 */
+  function renderMarketingChartsFromTrends(trends, refundAmount, adSpend, adTotal) {
+    if (state.charts.marketingTrend) state.charts.marketingTrend.destroy();
+    if (state.charts.marketingPie)  state.charts.marketingPie.destroy();
+
+    const days  = trends.map(t => t.date.slice(5));          // "MM-DD"
+    const revenueData = trends.map(t => t.revenue || 0);
+    // 按比例估算每日推广花费和成交
+    const ratioSpend  = adTotal > 0 ? adSpend / adTotal : 0.15;
+    const adSpendDaily   = revenueData.map(v => Math.round(v * ratioSpend));
+    const adTotalDaily = revenueData.map(v => Math.round(v * 0.7));
+
+    state._mktData = { days, revenueDaily: revenueData, adSpendDaily, adTotalDaily };
+
+    // 折线图
+    const trendCtx = document.getElementById('marketingTrendChart');
+    if (trendCtx) {
+      state.charts.marketingTrend = new Chart(trendCtx, {
+        type: 'line',
+        data: {
+          labels: days,
+          datasets: [{
+            label: '净支付金额', data: revenueData,
+            borderColor: '#1677ff', backgroundColor: 'rgba(22,119,255,0.08)',
+            fill: true, tension: 0.3, pointRadius: 4, pointBackgroundColor: '#1677ff',
+          }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { y: { ticks: { callback: v => '¥' + (v / 1000).toFixed(0) + 'k' } } },
+        },
+      });
+    }
+
+    // 环形图
+    const pieCtx = document.getElementById('marketingPieChart');
+    if (pieCtx) {
+      const profit = Math.max(0, adTotal - adSpend);
+      state.charts.marketingPie = new Chart(pieCtx, {
+        type: 'doughnut',
+        data: {
+          labels: ['推广花费', '退款金额', '净利润（成交-花费）'],
+          datasets: [{
+            data: [Math.round(adSpend), Math.round(refundAmount), Math.round(profit)],
+            backgroundColor: ['#f59e0b', '#dc2626', '#16a34a'],
+            borderWidth: 0,
+          }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'bottom', labels: { padding: 16, usePointStyle: true } } },
+        },
+      });
+    }
+  }
+
+  function switchMarketingChart(type) {
+    if (!state._mktData || !state.charts.marketingTrend) return;
+    const chart = state.charts.marketingTrend;
+    const { days, adSpendDaily, adTotalDaily } = state._mktData;
+
+    if (type === 'ad') {
+      chart.data.datasets = [
+        {
+          label: '推广花费',
+          data: adSpendDaily,
+          borderColor: '#f59e0b',
+          backgroundColor: 'rgba(245,158,11,0.08)',
+          fill: true, tension: 0.3,
+          pointRadius: 4, pointBackgroundColor: '#f59e0b',
+        },
+        {
+          label: '推广总成交',
+          data: adTotalDaily,
+          borderColor: '#16a34a',
+          backgroundColor: 'rgba(22,163,74,0.06)',
+          fill: true, tension: 0.3,
+          pointRadius: 4, pointBackgroundColor: '#16a34a',
+        },
+      ];
+    } else {
+      chart.data.datasets = [{
+        label: '净支付金额',
+        data: state._mktData.revenueDaily,
+        borderColor: '#1677ff',
+        backgroundColor: 'rgba(22,119,255,0.08)',
+        fill: true, tension: 0.3,
+        pointRadius: 4, pointBackgroundColor: '#1677ff',
+      }];
+    }
+    chart.update();
+  }
+
+  // ==================== 表格渲染 ====================
+  function renderTable(type) {
+    const tbodyId = type + 'TableBody';
+    const paginationId = type + 'Pagination';
+    const tbody = document.getElementById(tbodyId);
+    const paginationEl = document.getElementById(paginationId);
+    if (!tbody || !paginationEl) return;
+
+    let items = getItems(type);
+
+    // Apply filters
+    const filter = state.filters[type] || {};
+    if (filter.search) {
+      const s = filter.search.toLowerCase();
+      if (type === 'product') items = items.filter(i => i.name.toLowerCase().includes(s));
+      else if (type === 'order') items = items.filter(i => i.id.toLowerCase().includes(s) || i.customer.toLowerCase().includes(s));
+      else if (type === 'customer') items = items.filter(i => i.name.toLowerCase().includes(s) || i.phone.toLowerCase().includes(s));
+    }
+    if (filter.status && type === 'order') items = items.filter(i => i.status === filter.status);
+    if (filter.category && type === 'product') items = items.filter(i => i.category === filter.category);
+
+    // Pagination
+    const pageSize = CONFIG.pageSize;
+    const totalPages = Math.ceil(items.length / pageSize) || 1;
+    state.filters[type] = { ...filter, currentPage: Math.min(filter.currentPage || 1, totalPages) };
+    const page = state.filters[type].currentPage;
+    const pageItems = items.slice((page - 1) * pageSize, page * pageSize);
+
+    // Render rows
+    const renderers = {
+      product: (item) => `
+        <tr>
+          <td>${item.id}</td>
+          <td>${escapeHtml(item.name)}</td>
+          <td>${item.category}</td>
+          <td>¥${item.price.toLocaleString()}</td>
+          <td>${item.stock}</td>
+          <td><span class="badge ${item.status === '在售' ? 'badge-success' : 'badge-danger'}">${item.status}</span></td>
+          <td class="actions">
+            <button class="btn btn-sm btn-outline" onclick="App.openFormModal('product', ${item.id})">编辑</button>
+            <button class="btn btn-sm btn-danger" onclick="App.confirmDelete('product', ${item.id})">删除</button>
+          </td>
+        </tr>`,
+      order: (item) => `
+        <tr>
+          <td>${item.id}</td>
+          <td>${escapeHtml(item.customer)}</td>
+          <td>${escapeHtml(item.product)}</td>
+          <td>${item.qty}</td>
+          <td>¥${item.amount.toLocaleString()}</td>
+          <td><span class="badge ${statusBadge(item.status)}">${item.status}</span></td>
+          <td>${item.date}</td>
+          <td class="actions">
+            <button class="btn btn-sm btn-outline" onclick="App.openFormModal('order', '${item.id}')">编辑</button>
+            <button class="btn btn-sm btn-danger" onclick="App.confirmDelete('order', '${item.id}')">删除</button>
+          </td>
+        </tr>`,
+      customer: (item) => `
+        <tr>
+          <td>${item.id}</td>
+          <td>${escapeHtml(item.name)}</td>
+          <td>${item.phone}</td>
+          <td>${item.email}</td>
+          <td>${escapeHtml(item.address)}</td>
+          <td>${item.regDate}</td>
+          <td class="actions">
+            <button class="btn btn-sm btn-outline" onclick="App.openFormModal('customer', ${item.id})">编辑</button>
+            <button class="btn btn-sm btn-danger" onclick="App.confirmDelete('customer', ${item.id})">删除</button>
+          </td>
+        </tr>`,
+    };
+
+    tbody.innerHTML = pageItems.length > 0
+      ? pageItems.map(renderers[type]).join('')
+      : '<tr><td class="empty-state" colspan="10"><div class="empty-icon">&#128230;</div><p>暂无数据</p></td></tr>';
+
+    // Render pagination
+    let paginationHTML = '';
+    if (totalPages > 1) {
+      paginationHTML += `<button ${page <= 1 ? 'disabled' : ''} onclick="App.goToPage('${type}', ${page - 1})">&laquo;</button>`;
+      for (let i = 1; i <= totalPages; i++) {
+        if (totalPages <= 7 || i === 1 || i === totalPages || (i >= page - 1 && i <= page + 1)) {
+          paginationHTML += `<button class="${i === page ? 'active' : ''}" onclick="App.goToPage('${type}', ${i})">${i}</button>`;
+        } else if (i === page - 2 || i === page + 2) {
+          paginationHTML += `<button disabled>...</button>`;
+        }
+      }
+      paginationHTML += `<button ${page >= totalPages ? 'disabled' : ''} onclick="App.goToPage('${type}', ${page + 1})">&raquo;</button>`;
+    }
+    paginationEl.innerHTML = paginationHTML;
+  }
+
+  function renderProductTable() { renderTable('product'); }
+  function renderOrderTable() { renderTable('order'); }
+  function renderCustomerTable() { renderTable('customer'); }
+
+  function goToPage(type, page) {
+    if (!state.filters[type]) state.filters[type] = {};
+    state.filters[type].currentPage = page;
+    renderTable(type);
+  }
+
+  function filterTable(type, searchVal, selectVal) {
+    if (!state.filters[type]) state.filters[type] = {};
+    const filter = state.filters[type];
+    if (searchVal !== null && searchVal !== undefined) filter.search = searchVal;
+    if (selectVal !== null && selectVal !== undefined) {
+      if (type === 'product') filter.category = selectVal;
+      else if (type === 'order') filter.status = selectVal;
+    }
+    filter.currentPage = 1;
+    renderTable(type);
+  }
+
+  // ==================== 表单弹窗 ====================
+  function openFormModal(type, id) {
+    state.editingType = type;
+    const items = getItems(type);
+
+    if (id !== undefined && id !== null) {
+      state.editingItem = type === 'order'
+        ? items.find(i => i.id === id) || null
+        : items.find(i => i.id === id) || null;
+    } else {
+      state.editingItem = null;
+    }
+
+    const titles = { product: '商品', order: '订单', customer: '客户' };
+    const verb = state.editingItem ? '编辑' : '添加';
+    document.getElementById('modalTitle').textContent = verb + titles[type];
+
+    const formHTMLs = {
+      product: `
+        <div class="form-row">
+          <div class="form-group">
+            <label>商品名称 *</label>
+            <input type="text" class="form-input" id="f_name" value="${esc(state.editingItem?.name)}" placeholder="请输入商品名称">
+          </div>
+          <div class="form-group">
+            <label>分类 *</label>
+            <select class="form-select" id="f_category">
+              <option value="电子产品" ${state.editingItem?.category === '电子产品' ? 'selected' : ''}>电子产品</option>
+              <option value="服装鞋帽" ${state.editingItem?.category === '服装鞋帽' ? 'selected' : ''}>服装鞋帽</option>
+              <option value="食品饮料" ${state.editingItem?.category === '食品饮料' ? 'selected' : ''}>食品饮料</option>
+              <option value="家居生活" ${state.editingItem?.category === '家居生活' ? 'selected' : ''}>家居生活</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>价格 (¥) *</label>
+            <input type="number" class="form-input" id="f_price" value="${state.editingItem?.price || ''}" placeholder="0" min="0" step="0.01">
+          </div>
+          <div class="form-group">
+            <label>库存 *</label>
+            <input type="number" class="form-input" id="f_stock" value="${state.editingItem?.stock ?? ''}" placeholder="0" min="0">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>状态</label>
+          <select class="form-select" id="f_status">
+            <option value="在售" ${state.editingItem?.status === '在售' ? 'selected' : ''}>在售</option>
+            <option value="缺货" ${state.editingItem?.status === '缺货' ? 'selected' : ''}>缺货</option>
+          </select>
+        </div>`,
+      order: `
+        <div class="form-row">
+          <div class="form-group">
+            <label>客户 *</label>
+            <input type="text" class="form-input" id="f_customer" value="${esc(state.editingItem?.customer)}" placeholder="客户姓名">
+          </div>
+          <div class="form-group">
+            <label>商品名称 *</label>
+            <input type="text" class="form-input" id="f_product" value="${esc(state.editingItem?.product)}" placeholder="商品名称">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>数量 *</label>
+            <input type="number" class="form-input" id="f_qty" value="${state.editingItem?.qty ?? '1'}" placeholder="1" min="1">
+          </div>
+          <div class="form-group">
+            <label>金额 (¥) *</label>
+            <input type="number" class="form-input" id="f_amount" value="${state.editingItem?.amount || ''}" placeholder="0" min="0" step="0.01">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>状态</label>
+            <select class="form-select" id="f_status">
+              <option value="待发货" ${state.editingItem?.status === '待发货' ? 'selected' : ''}>待发货</option>
+              <option value="已发货" ${state.editingItem?.status === '已发货' ? 'selected' : ''}>已发货</option>
+              <option value="已完成" ${state.editingItem?.status === '已完成' ? 'selected' : ''}>已完成</option>
+              <option value="已取消" ${state.editingItem?.status === '已取消' ? 'selected' : ''}>已取消</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>日期</label>
+            <input type="date" class="form-input" id="f_date" value="${state.editingItem?.date || new Date().toISOString().slice(0, 10)}">
+          </div>
+        </div>`,
+      customer: `
+        <div class="form-row">
+          <div class="form-group">
+            <label>姓名 *</label>
+            <input type="text" class="form-input" id="f_name" value="${esc(state.editingItem?.name)}" placeholder="客户姓名">
+          </div>
+          <div class="form-group">
+            <label>电话 *</label>
+            <input type="text" class="form-input" id="f_phone" value="${state.editingItem?.phone || ''}" placeholder="手机号码">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>邮箱</label>
+          <input type="email" class="form-input" id="f_email" value="${state.editingItem?.email || ''}" placeholder="邮箱地址">
+        </div>
+        <div class="form-group">
+          <label>地址</label>
+          <input type="text" class="form-input" id="f_address" value="${esc(state.editingItem?.address)}" placeholder="收货地址">
+        </div>
+        ${!state.editingItem ? `
+        <div class="form-group">
+          <label>注册时间</label>
+          <input type="date" class="form-input" id="f_regDate" value="${new Date().toISOString().slice(0, 10)}">
+        </div>` : ''}`,
+    };
+
+    document.getElementById('modalBody').innerHTML = formHTMLs[type] || '';
+    document.getElementById('formModal').classList.remove('hidden');
+
+    // Bind save
+    document.getElementById('modalSaveBtn').onclick = () => saveFormModal(type);
+  }
+
+  function closeFormModal() {
+    document.getElementById('formModal').classList.add('hidden');
+    state.editingType = null;
+    state.editingItem = null;
+  }
+
+  function saveFormModal(type) {
+    const getVal = (id) => document.getElementById(id)?.value ?? '';
+    const getNum = (id) => parseFloat(document.getElementById(id)?.value) || 0;
+    const getInt = (id) => parseInt(document.getElementById(id)?.value) || 0;
+
+    let item = {};
+    let isValid = true;
+
+    if (type === 'product') {
+      const name = getVal('f_name');
+      if (!name) { showToast('请输入商品名称', 'error'); return; }
+      item = {
+        id: state.editingItem?.id,
+        name, category: getVal('f_category'), price: getNum('f_price'),
+        stock: getInt('f_stock'), status: getVal('f_status'),
+      };
+    } else if (type === 'order') {
+      const customer = getVal('f_customer');
+      const product = getVal('f_product');
+      if (!customer || !product) { showToast('请填写客户和商品名称', 'error'); return; }
+      item = {
+        id: state.editingItem?.id,
+        customer, product, qty: getInt('f_qty'), amount: getNum('f_amount'),
+        status: getVal('f_status'), date: getVal('f_date'),
+      };
+    } else if (type === 'customer') {
+      const name = getVal('f_name');
+      const phone = getVal('f_phone');
+      if (!name || !phone) { showToast('请填写姓名和电话', 'error'); return; }
+      item = {
+        id: state.editingItem?.id,
+        name, phone, email: getVal('f_email'), address: getVal('f_address'),
+      };
+      if (!state.editingItem) {
+        item.regDate = getVal('f_regDate') || new Date().toISOString().slice(0, 10);
+      } else {
+        item.regDate = state.editingItem.regDate;
+      }
+    }
+
+    if (state.editingItem) {
+      updateItem(type, item);
+      showToast('更新成功', 'success');
+    } else {
+      addItem(type, item);
+      showToast('添加成功', 'success');
+    }
+
+    closeFormModal();
+    // Refresh
+    if (state.currentPage === type) renderTable(type);
+  }
+
+  // ==================== 删除确认 ====================
+  function confirmDelete(type, id) {
+    state.deleteTarget = { type, id };
+    const labels = { product: '商品', order: '订单', customer: '客户' };
+    document.getElementById('confirmMsg').textContent = `确定要删除该${labels[type]}吗？此操作不可撤销。`;
+    document.getElementById('confirmModal').classList.remove('hidden');
+    document.getElementById('confirmDeleteBtn').onclick = () => executeDelete();
+  }
+
+  function closeConfirmModal() {
+    document.getElementById('confirmModal').classList.add('hidden');
+    state.deleteTarget = null;
+  }
+
+  function executeDelete() {
+    if (!state.deleteTarget) return;
+    const { type, id } = state.deleteTarget;
+    deleteItem(type, id);
+    showToast('删除成功', 'success');
+    closeConfirmModal();
+    if (state.currentPage === type) renderTable(type);
+  }
+
+  // ==================== Toast ====================
+  function showToast(message, type = 'success') {
+    const toast = document.getElementById('toast');
+    toast.textContent = message;
+    toast.className = `toast toast-${type}`;
+    toast.classList.remove('hidden');
+    clearTimeout(toast._timeout);
+    toast._timeout = setTimeout(() => toast.classList.add('hidden'), 2500);
+  }
+
+  // ==================== 侧边栏 ====================
+  function toggleSidebar(force) {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.querySelector('.sidebar-overlay');
+    const open = force !== undefined ? force : !state.sidebarOpen;
+    state.sidebarOpen = open;
+    sidebar.classList.toggle('open', open);
+    if (overlay) overlay.classList.toggle('show', open);
+  }
+
+  // ==================== 时间更新 ====================
+  function updateTime() {
+    const now = new Date();
+    const str = now.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const el = document.getElementById('topbarTime');
+    if (el) el.textContent = str;
+  }
+
+  // ==================== 辅助函数 ====================
+  function statusBadge(status) {
+    const map = { '已完成': 'badge-success', '待发货': 'badge-warning', '已发货': 'badge-info', '已取消': 'badge-gray' };
+    return map[status] || 'badge-gray';
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function esc(val) {
+    return val !== undefined && val !== null ? escapeHtml(String(val)) : '';
+  }
+
+
+  // ==================== 分平台/店铺详细数据 ====================
+  const _psCharts = {};
+  let _psData = null;
+  let _psPage = 1;
+  let _psSortBy = 'netPayment';
+  let _psSortDir = 'desc';
+  let _psSearch = '';
+  let _psExpandedStore = null;
+  const PS_PAGE_SIZE = 15;
+
+  function _psDisposeCharts() {
+    Object.values(_psCharts).forEach(function(c) { try { c.dispose(); } catch(e) {} });
+    for (var k in _psCharts) delete _psCharts[k];
+  }
+
+  function _psGetChart(domId) {
+    if (typeof echarts === 'undefined' || !echarts.init) return null;
+    var dom = document.getElementById(domId);
+    if (!dom) return null;
+    if (_psCharts[domId]) _psCharts[domId].dispose();
+    var c = echarts.init(dom);
+    _psCharts[domId] = c;
+    return c;
+  }
+
+  function _psColorForPlatform(name) {
+    var map = { '淘宝': '#FF6A00', '天猫': '#FF6A00', '千牛': '#FF6A00', '京东': '#3B82F6', '拼多多': '#E8453C', '抖音': '#8B5CF6', '抖店': '#8B5CF6', '快手': '#FF4906', '小红书': '#FE2C55', '微信小程序': '#07C160' };
+    return map[name] || '#6366F1';
+  }
+
+  function _psFmtMoney(v) { return '\u00a5' + Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 0 }); }
+  function _psFmtMoneyD(v) { return '\u00a5' + Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function _psFmtNum(v) { return Math.round(v).toLocaleString('zh-CN'); }
+  function _psFmtPct(v) { return Number(v).toFixed(2) + '%'; }
+
+  async function renderPlatformStore(startDate, endDate) {
+    var dateStart = document.getElementById('psDateStart');
+    var dateEnd = document.getElementById('psDateEnd');
+    var platform = document.getElementById('psPlatform');
+    var yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+
+    if (dateStart) { dateStart.max = yesterday; if (!dateStart.value) dateStart.value = startDate || yesterday; }
+    if (dateEnd) { dateEnd.max = yesterday; if (!dateEnd.value) dateEnd.value = endDate || yesterday; }
+    _calUpdateLabel('ps');
+
+    var start = dateStart ? dateStart.value : '';
+    var end = dateEnd ? dateEnd.value : '';
+    var plat = platform ? platform.value : '';
+
+    _psUpdateDateShortcuts(start, end);
+
+    var data = null;
+    if (state.apiAvailable) {
+      data = await ApiService.getPlatformStoreData(start, end, plat);
+    }
+
+    if (data) {
+      _psData = data;
+      _psPage = 1;
+      _psExpandedStore = null;
+      document.getElementById('psDetailPanel').classList.add('hidden');
+      _psRenderHeader(data);
+      _psRenderPlatformBars(data);
+      _psRenderCharts(data);
+      _psRenderTable(data);
+    } else {
+      _psData = null;
+      document.getElementById('psPlatformCount').textContent = '--';
+      document.getElementById('psStoreCount').textContent = '--';
+      document.getElementById('psTotalNet').textContent = '--';
+      document.getElementById('psPlatformBars').innerHTML = '<div style="text-align:center;padding:24px;color:#94a3b8">\u6682\u65e0\u6570\u636e\uff0c\u8bf7\u68c0\u67e5\u6570\u636e\u5e93\u8fde\u63a5</div>';
+      document.getElementById('psStoreTbody').innerHTML = '<tr><td colspan="14" class="empty-state">\u6682\u65e0\u6570\u636e</td></tr>';
+    }
+  }
+
+  function _psSetDateRange(days) {
+    var end = new Date(Date.now() - 86400000);
+    var start = new Date(end);
+    start.setDate(start.getDate() - days + 1);
+    var fmt = function(d) { return d.toISOString().slice(0, 10); };
+    document.getElementById('psDateStart').value = fmt(start);
+    document.getElementById('psDateEnd').value = fmt(end);
+    renderPlatformStore(fmt(start), fmt(end));
+  }
+
+  function _psUpdateDateShortcuts(s, e) {
+    var yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    document.querySelectorAll('.ps-ds-btn').forEach(function(btn) {
+      var range = parseInt(btn.dataset.range);
+      var match = false;
+      if (range === 1) {
+        match = (s === yesterday && e === yesterday);
+      } else {
+        var calcStart = new Date(Date.now() - 86400000 - (range - 1) * 86400000).toISOString().slice(0, 10);
+        match = (s === calcStart && e === yesterday);
+      }
+      btn.classList.toggle('active', match);
+    });
+  }
+
+  function _psRenderHeader(data) {
+    document.getElementById('psPlatformCount').textContent = data.platforms.length;
+    document.getElementById('psStoreCount').textContent = data.totalStores;
+    document.getElementById('psTotalNet').textContent = _psFmtMoney(data.totalNetPayment);
+    // 显示/隐藏返回按钮
+    var backBtn = document.getElementById('psBackBtn');
+    var currentPlat = document.getElementById('psPlatform').value;
+    if (backBtn) backBtn.classList.toggle('hidden', !currentPlat);
+  }
+
+  function _psRenderPlatformBars(data) {
+    var container = document.getElementById('psPlatformBars');
+    if (!data.platforms || !data.platforms.length) {
+      container.innerHTML = '<div style="text-align:center;padding:24px;color:#94a3b8">\u6682\u65e0\u5e73\u53f0\u6570\u636e</div>';
+      return;
+    }
+    var maxShare = Math.max.apply(null, data.platforms.map(function(p) { return p.share; }));
+    var currentPlat = document.getElementById('psPlatform').value;
+
+    container.innerHTML = data.platforms.map(function(p) {
+      var color = _psColorForPlatform(p.name);
+      var isActive = currentPlat === p.name;
+      return '<div class="ps-platform-bar' + (isActive ? ' active' : '') + '" onclick="App.filterByPlatform(\'' + p.name + '\')">' +
+        '<div class="ps-pb-color" style="background:' + color + '"></div>' +
+        '<div class="ps-pb-info"><div class="ps-pb-name">' + p.name + '</div><div class="ps-pb-stores">' + p.storeCount + ' \u5bb6\u5e97\u94fa</div></div>' +
+        '<div class="ps-pb-metrics">' +
+          '<div class="ps-pb-metric"><span class="ps-pb-metric-label">\u603b\u652f\u4ed8\u91d1\u989d</span><span class="ps-pb-metric-value">' + _psFmtMoney(p.payment) + '</span></div>' +
+          '<div class="ps-pb-metric"><span class="ps-pb-metric-label">\u51c0\u652f\u4ed8</span><span class="ps-pb-metric-value">' + _psFmtMoney(p.netPayment) + '</span></div>' +
+          '<div class="ps-pb-metric"><span class="ps-pb-metric-label">\u8bbf\u5ba2</span><span class="ps-pb-metric-value">' + _psFmtNum(p.visitors) + '</span></div>' +
+          '<div class="ps-pb-metric"><span class="ps-pb-metric-label">\u4e70\u5bb6</span><span class="ps-pb-metric-value">' + _psFmtNum(p.payers) + '</span></div>' +
+          '<div class="ps-pb-metric"><span class="ps-pb-metric-label">\u63a8\u5e7f\u82b1\u8d39</span><span class="ps-pb-metric-value">' + _psFmtMoney(p.adSpend) + '</span></div>' +
+          '<div class="ps-pb-metric"><span class="ps-pb-metric-label">ROI</span><span class="ps-pb-metric-value">' + (p.adSpend > 0 ? (p.adTotal / p.adSpend).toFixed(2) : '-') + '</span></div>' +
+        '</div>' +
+        '<div class="ps-pb-share"><div class="ps-pb-share-top"><span class="ps-pb-share-pct">' + p.share.toFixed(1) + '%</span><span class="ps-pb-share-label">\u5360\u6bd4</span></div>' +
+          '<div class="ps-pb-share-bar"><div class="ps-pb-share-fill" style="width:' + (p.share / maxShare * 100) + '%;background:' + color + '"></div></div></div>' +
+        '<div class="ps-pb-trend neutral">--</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function _psRenderCharts(data) {
+    _psRenderCompareChart(data);
+    _psRenderPieChart(data);
+  }
+
+  function _psRenderCompareChart(data) {
+    var c = _psGetChart('chartPlatformCompare');
+    if (!c || !data.platforms || !data.platforms.length) return;
+    var sel = document.getElementById('psCompareMetric');
+    var metric = sel ? sel.value : 'netPayment';
+    var opt = sel ? sel.selectedOptions[0] : null;
+    var metricLabel = opt ? opt.text : '\u51c0\u652f\u4ed8\u91d1\u989d';
+    var platforms = data.platforms.map(function(p) { return p.name; });
+    var values = data.platforms.map(function(p) { return p[metric] || 0; });
+    var colors = data.platforms.map(function(p) { return _psColorForPlatform(p.name); });
+    var isMoney = metricLabel.indexOf('\u91d1\u989d') >= 0 || metricLabel.indexOf('\u82b1\u8d39') >= 0 || metricLabel.indexOf('\u6210\u4ea4') >= 0;
+
+    c.setOption({
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
+        formatter: function(ps) {
+          return ps.map(function(p) { return p.marker + p.name + ': ' + (isMoney ? _psFmtMoneyD(p.value) : _psFmtNum(p.value)); }).join('<br/>');
+        }
+      },
+      grid: { left: 100, right: 50, top: 10, bottom: 20 },
+      xAxis: { type: 'value', axisLabel: { fontSize: 10, formatter: function(v) { return isMoney ? (v/10000).toFixed(0)+'w' : _psFmtNum(v); } } },
+      yAxis: { type: 'category', data: platforms.slice().reverse(), axisLabel: { fontSize: 11, fontWeight: 600 }, inverse: true },
+      series: [{
+        type: 'bar', data: values.slice().reverse().map(function(v, i) {
+          return { value: v, itemStyle: { color: colors.slice().reverse()[i], borderRadius: [0, 4, 4, 0] } };
+        }), barWidth: '55%', label: { show: true, position: 'right', fontSize: 10, color: '#64748b',
+          formatter: function(p) { return isMoney ? _psFmtMoney(p.value) : _psFmtNum(p.value); }
+        }
+      }]
+    });
+  }
+
+  function _psRenderPieChart(data) {
+    var c = _psGetChart('chartPlatformPie');
+    if (!c || !data.platforms || !data.platforms.length) return;
+    var pieData = data.platforms.map(function(p) {
+      return { name: p.name, value: p.netPayment, itemStyle: { color: _psColorForPlatform(p.name) } };
+    });
+
+    c.setOption({
+      tooltip: { trigger: 'item', formatter: '{b}: {d}%' },
+      series: [{
+        type: 'pie', radius: ['50%', '78%'], center: ['50%', '48%'],
+        emphasis: { label: { fontSize: 16, fontWeight: 'bold' } },
+        label: { formatter: '{b}\n{d}%', fontSize: 11 },
+        data: pieData,
+        itemStyle: { borderColor: '#fff', borderWidth: 2 }
+      }]
+    });
+  }
+
+  function _psRenderTable(data) {
+    var stores = (data.stores || []).slice();
+    if (_psSearch) {
+      var kw = _psSearch.toLowerCase();
+      stores = stores.filter(function(s) {
+        return s.name.toLowerCase().indexOf(kw) >= 0 || s.platform.toLowerCase().indexOf(kw) >= 0 || s.fullName.toLowerCase().indexOf(kw) >= 0;
+      });
+    }
+    stores.sort(function(a, b) {
+      var va = a[_psSortBy] || 0;
+      var vb = b[_psSortBy] || 0;
+      return _psSortDir === 'desc' ? vb - va : va - vb;
+    });
+    stores.forEach(function(s, i) { s.rank = i + 1; });
+
+    document.getElementById('psStoreTotal').textContent = '\u5171 ' + stores.length + ' \u5bb6\u5e97\u94fa';
+
+    var totalPages = Math.ceil(stores.length / PS_PAGE_SIZE) || 1;
+    if (_psPage > totalPages) _psPage = totalPages;
+    var pageStores = stores.slice((_psPage - 1) * PS_PAGE_SIZE, _psPage * PS_PAGE_SIZE);
+
+    var maxNet = Math.max.apply(null, stores.map(function(s) { return s.netPayment; })) || 1;
+    var maxVisitors = Math.max.apply(null, stores.map(function(s) { return s.visitors; })) || 1;
+
+    var tbody = document.getElementById('psStoreTbody');
+    tbody.innerHTML = pageStores.map(function(s) {
+      var rankCls = s.rank === 1 ? 'top1' : (s.rank === 2 ? 'top2' : (s.rank === 3 ? 'top3' : ''));
+      var platformCls = 'ps-platform-' + (s.platform || '\u5176\u4ed6');
+      var isExpanded = _psExpandedStore && _psExpandedStore.fullName === s.fullName;
+      var safeName = s.fullName.replace(/'/g, '\\x27').replace(/"/g, '&quot;');
+      return '<tr class="' + (isExpanded ? 'expanded' : '') + '" data-store="' + safeName + '" onclick="App.toggleStoreDetail(\'' + s.fullName.replace(/'/g, '\\x27') + '\')">' +
+        '<td><span class="ps-rank ' + rankCls + '">' + s.rank + '</span></td>' +
+        '<td><span class="ps-store-name">' + s.name + '</span></td>' +
+        '<td><span class="ps-store-platform ' + platformCls + '">' + s.platform + '</span></td>' +
+        '<td class="ps-col-num">' + _psFmtMoney(s.netPayment) + '<span class="ps-inline-bar" style="width:' + Math.max(4, (s.netPayment / maxNet * 80)) + 'px;background:#6366f1"></span></td>' +
+        '<td class="ps-col-num">' + _psFmtNum(s.visitors) + '<span class="ps-inline-bar" style="width:' + Math.max(4, (s.visitors / maxVisitors * 80)) + 'px;background:#10b981"></span></td>' +
+        '<td class="ps-col-num">' + _psFmtNum(s.payers) + '</td>' +
+        '<td class="ps-col-num">' + _psFmtMoney(s.adSpend) + '</td>' +
+        '<td class="ps-col-num">' + _psFmtMoney(s.adTotal) + '</td>' +
+        '<td class="ps-col-num">' + (s.roi || 0).toFixed(2) + '</td>' +
+        '<td class="ps-col-num">' + _psFmtPct(s.convRate) + '</td>' +
+        '<td class="ps-col-num">' + _psFmtMoneyD(s.aov) + '</td>' +
+        '<td class="ps-col-num">' + _psFmtPct(s.refundRate) + '</td>' +
+        '<td><div class="ps-sparkline-cell"><canvas id="spark-' + s.rank + '" width="100" height="36"></canvas></div></td>' +
+        '<td><button class="ps-expand-btn' + (isExpanded ? ' active' : '') + '" onclick="event.stopPropagation();App.toggleStoreDetail(\'' + s.fullName.replace(/'/g, '\\x27') + '\')"><i class="fa-solid fa-' + (isExpanded ? 'chevron-up' : 'chevron-down') + '"></i></button></td>' +
+      '</tr>';
+    }).join('');
+
+    var footer = document.getElementById('psPagination');
+    var pageInfo = '\u7b2c ' + _psPage + ' / ' + totalPages + ' \u9875\uff0c\u5171 ' + stores.length + ' \u6761';
+    var btnsHtml = '';
+    btnsHtml += '<button ' + (_psPage <= 1 ? 'disabled' : '') + ' onclick="App.psGoPage(' + (_psPage - 1) + ')"><i class="fa-solid fa-chevron-left"></i></button>';
+    for (var i = 1; i <= totalPages; i++) {
+      if (totalPages <= 7 || i === 1 || i === totalPages || (i >= _psPage - 1 && i <= _psPage + 1)) {
+        btnsHtml += '<button class="' + (i === _psPage ? 'active' : '') + '" onclick="App.psGoPage(' + i + ')">' + i + '</button>';
+      } else if (i === _psPage - 2 || i === _psPage + 2) {
+        btnsHtml += '<button disabled>...</button>';
+      }
+    }
+    btnsHtml += '<button ' + (_psPage >= totalPages ? 'disabled' : '') + ' onclick="App.psGoPage(' + (_psPage + 1) + ')"><i class="fa-solid fa-chevron-right"></i></button>';
+    footer.innerHTML = '<span>' + pageInfo + '</span><div class="ps-pagination-btns">' + btnsHtml + '</div>';
+
+    setTimeout(function() {
+      pageStores.forEach(function(s) {
+        var canvas = document.getElementById('spark-' + s.rank);
+        if (!canvas) return;
+        var trends = (data.storeTrends && data.storeTrends[s.fullName]) || [];
+        _psDrawSparkline(canvas, trends.map(function(t) { return t.netPayment; }), '#6366f1');
+      });
+    }, 50);
+  }
+
+  function _psDrawSparkline(canvas, values, color) {
+    if (!canvas || !values || !values.length) return;
+    var dpr = window.devicePixelRatio || 1;
+    var w = 100, h = 36;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    var ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    var pad = 4;
+    var max = Math.max.apply(null, values) || 1;
+    var min = Math.min.apply(null, values) || 0;
+    var range = max - min || 1;
+
+    ctx.clearRect(0, 0, w, h);
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
+    var stepX = (w - pad * 2) / (values.length - 1);
+    values.forEach(function(v, i) {
+      var x = pad + i * stepX;
+      var y = h - pad - ((v - min) / range) * (h - pad * 2);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    ctx.lineTo(pad + (values.length - 1) * stepX, h - pad);
+    ctx.lineTo(pad, h - pad);
+    ctx.closePath();
+    var grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, color + '25');
+    grad.addColorStop(1, color + '02');
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
+
+  function toggleStoreDetail(fullName) {
+    if (!_psData) return;
+    if (_psExpandedStore && _psExpandedStore.fullName === fullName) {
+      closePsDetail();
+      return;
+    }
+    var store = _psData.stores.find(function(s) { return s.fullName === fullName; });
+    if (!store) return;
+    _psExpandedStore = store;
+
+    document.getElementById('psDetailPlatform').textContent = store.platform;
+    document.getElementById('psDetailPlatform').className = 'ps-detail-platform ps-platform-' + (store.platform || '\u5176\u4ed6');
+    document.getElementById('psDetailName').textContent = store.name;
+
+    var metricsHtml = [
+      { label: '\u51c0\u652f\u4ed8\u91d1\u989d', value: _psFmtMoney(store.netPayment) },
+      { label: '\u9000\u6b3e\u91d1\u989d', value: _psFmtMoney(store.refundAmount) },
+      { label: '\u9000\u6b3e\u7387', value: _psFmtPct(store.refundRate) },
+      { label: '\u8bbf\u5ba2\u6570', value: _psFmtNum(store.visitors) },
+      { label: '\u652f\u4ed8\u4e70\u5bb6\u6570', value: _psFmtNum(store.payers) },
+      { label: '\u652f\u4ed8\u8f6c\u5316\u7387', value: _psFmtPct(store.convRate) },
+      { label: '\u63a8\u5e7f\u82b1\u8d39', value: _psFmtMoney(store.adSpend) },
+      { label: '\u63a8\u5e7f\u603b\u6210\u4ea4', value: _psFmtMoney(store.adTotal) },
+      { label: 'ROI', value: (store.roi || 0).toFixed(4) },
+      { label: '\u5ba2\u5355\u4ef7', value: _psFmtMoneyD(store.aov) },
+      { label: '\u52a0\u8d2d\u4eba\u6570', value: _psFmtNum(store.cart || 0) },
+    ].map(function(m) {
+      return '<div class="ps-dm-item"><span class="ps-dm-label">' + m.label + '</span><span class="ps-dm-value">' + m.value + '</span></div>';
+    }).join('');
+    document.getElementById('psDetailMetrics').innerHTML = metricsHtml;
+
+    document.getElementById('psDetailPanel').classList.remove('hidden');
+    document.getElementById('psDetailPanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    _psUpdateExpandedRow();
+    _psRenderStoreDetailCharts(store);
+  }
+
+  function closePsDetail() {
+    _psExpandedStore = null;
+    document.getElementById('psDetailPanel').classList.add('hidden');
+    // 只销毁店铺详情图表，保留平台上方的对比图和饼图
+    ['chartStoreTrend','chartStoreTraffic'].forEach(function(id) {
+      if (_psCharts[id]) { try { _psCharts[id].dispose(); } catch(e) {} delete _psCharts[id]; }
+    });
+    _psUpdateExpandedRow();
+  }
+
+  function _psUpdateExpandedRow() {
+    var rows = document.querySelectorAll('#psStoreTbody tr');
+    rows.forEach(function(row) {
+      row.classList.remove('expanded');
+      var btn = row.querySelector('.ps-expand-btn');
+      if (btn) {
+        btn.classList.remove('active');
+        btn.innerHTML = '<i class="fa-solid fa-chevron-down"></i>';
+      }
+    });
+    if (_psExpandedStore) {
+      var safeName = _psExpandedStore.fullName.replace(/'/g, '\\x27').replace(/"/g, '&quot;');
+      var targetRow = document.querySelector('#psStoreTbody tr[data-store="' + safeName + '"]');
+      if (targetRow) {
+        targetRow.classList.add('expanded');
+        var btn = targetRow.querySelector('.ps-expand-btn');
+        if (btn) {
+          btn.classList.add('active');
+          btn.innerHTML = '<i class="fa-solid fa-chevron-up"></i>';
+        }
+      }
+    }
+  }
+
+  function _psRenderStoreDetailCharts(store) {
+    if (typeof echarts === 'undefined' || !echarts.init) return;
+    var trends = (_psData.storeTrends && _psData.storeTrends[store.fullName]) || [];
+    if (!trends.length) return;
+
+    // 只销毁店铺详情图表，保留平台上方的对比图和饼图
+    ['chartStoreTrend','chartStoreTraffic'].forEach(function(id) {
+      if (_psCharts[id]) { try { _psCharts[id].dispose(); } catch(e) {} delete _psCharts[id]; }
+    });
+    var dates = trends.map(function(t) { return t.date.slice(5); });
+
+    var c1 = _psGetChart('chartStoreTrend');
+    if (c1) {
+      c1.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { top: 0, right: 0, textStyle: { fontSize: 10 } },
+        grid: { left: 50, right: 20, top: 35, bottom: 25 },
+        xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 9 } },
+        yAxis: [
+          { type: 'value', name: '\u91d1\u989d', axisLabel: { fontSize: 9, formatter: function(v) { return (v/10000).toFixed(0)+'w'; } } }
+        ],
+        series: [
+          { name: '\u51c0\u652f\u4ed8', type: 'line', smooth: true, data: trends.map(function(t) { return t.netPayment; }), lineStyle: { color: '#6366f1' }, itemStyle: { color: '#6366f1' }, symbol: 'circle', symbolSize: 4, areaStyle: { color: 'rgba(99,102,241,0.06)' } },
+          { name: '\u9000\u6b3e', type: 'line', smooth: true, data: trends.map(function(t) { return t.refundAmount; }), lineStyle: { color: '#ef4444' }, itemStyle: { color: '#ef4444' }, symbol: 'circle', symbolSize: 4, areaStyle: { color: 'rgba(239,68,68,0.04)' } },
+          { name: '\u63a8\u5e7f\u82b1\u8d39', type: 'line', smooth: true, data: trends.map(function(t) { return t.adSpend; }), lineStyle: { color: '#f59e0b', type: 'dashed' }, itemStyle: { color: '#f59e0b' }, symbol: 'diamond', symbolSize: 3 }
+        ]
+      });
+    }
+
+    var c2 = _psGetChart('chartStoreTraffic');
+    if (c2) {
+      c2.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { top: 0, right: 0, textStyle: { fontSize: 10 } },
+        grid: { left: 50, right: 20, top: 35, bottom: 25 },
+        xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 9 } },
+        yAxis: [
+          { type: 'value', name: '\u4eba\u6570', axisLabel: { fontSize: 9 } }
+        ],
+        series: [
+          { name: '\u8bbf\u5ba2\u6570', type: 'bar', data: trends.map(function(t) { return t.visitors; }), itemStyle: { color: '#818cf8', borderRadius: [4,4,0,0] }, barGap: '15%', barWidth: '35%' },
+          { name: '\u4e70\u5bb6\u6570', type: 'bar', data: trends.map(function(t) { return t.payers; }), itemStyle: { color: '#34d399', borderRadius: [4,4,0,0] }, barWidth: '35%' }
+        ]
+      });
+    }
+  }
+
+  function psGoPage(page) {
+    _psPage = page;
+    if (_psData) _psRenderTable(_psData);
+    _psExpandedStore = null;
+    document.getElementById('psDetailPanel').classList.add('hidden');
+  }
+
+  function filterByPlatform(plat) {
+    document.getElementById('psPlatform').value = plat;
+    _psPage = 1;
+    _psExpandedStore = null;
+    document.getElementById('psDetailPanel').classList.add('hidden');
+    renderPlatformStore();
+  }
+
+  // ==================== 每日数据分析 ====================
+  async function renderDailyAnalysis() {
+    if (state.apiAvailable) {
+      var dates = await ApiService.getAnalysisDates();
+      var sel = document.getElementById('daDateSelect');
+      if (sel && dates) {
+        sel.innerHTML = '<option value="">选择历史报告...</option>';
+        dates.forEach(function(d) {
+          var opt = document.createElement('option');
+          opt.value = d.date;
+          opt.textContent = d.date + (d.status === 'success' ? '' : ' (生成失败)');
+          sel.appendChild(opt);
+        });
+      }
+
+      var latest = await ApiService.getAnalysisReport();
+      if (latest) {
+        showReport(latest);
+      } else {
+        showEmpty();
+      }
+    } else {
+      showEmpty();
+    }
+  }
+
+  async function generateDailyReport() {
+    if (!state.apiAvailable) {
+      showToast('后端API不可用，请检查服务连接', 'error');
+      return;
+    }
+
+    // 读取选中的日期
+    var sel = document.getElementById('daDateSelect');
+    var selectedDate = sel && sel.value ? sel.value : null;
+
+    var dateLabel = selectedDate || '昨日';
+    document.getElementById('daEmpty').classList.add('hidden');
+    document.getElementById('daReportContainer').innerHTML = '';
+    document.getElementById('daLoading').classList.remove('hidden');
+    var btn = document.getElementById('daGenerateBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 分析中...';
+
+    try {
+      var result = await ApiService.generateDailyReport(selectedDate);
+      document.getElementById('daLoading').classList.add('hidden');
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> 生成' + dateLabel + '数据分析文档';
+
+      if (result) {
+        showReport(result);
+        // 更新日期下拉为刚生成的日期
+        if (sel && result.reportDate) sel.value = result.reportDate;
+        renderDailyAnalysis(); // 刷新日期列表
+        var label = result.generatedBy === 'ai' ? '已生成' : '已生成（模板模式）';
+        showToast('分析报告' + label, 'success');
+      } else {
+        showError('生成失败，请检查后端日志或数据状态。');
+      }
+    } catch (e) {
+      document.getElementById('daLoading').classList.add('hidden');
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> 生成' + dateLabel + '数据分析文档';
+      showError('请求异常: ' + (e.message || '未知错误'));
+    }
+  }
+
+  function showReport(data) {
+    document.getElementById('daEmpty').classList.add('hidden');
+    document.getElementById('daLoading').classList.add('hidden');
+    document.getElementById('daReportContainer').innerHTML = data.report || '';
+    // 显示下载按钮
+    var downloadBtn = document.getElementById('daDownloadBtn');
+    if (downloadBtn) { downloadBtn.classList.remove('hidden'); downloadBtn.dataset.reportDate = data.reportDate || ''; }
+  }
+
+  function downloadReport() {
+    var btn = document.getElementById('daDownloadBtn');
+    var reportDate = btn ? btn.dataset.reportDate : '';
+    var url = '/api/analysis/download';
+    if (reportDate) url += '?date=' + encodeURIComponent(reportDate);
+    // 用隐藏 <a download> 触发下载，避免 window.open 打开空白页
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    showToast('报告下载已开始', 'success');
+  }
+
+  function showEmpty() {
+    document.getElementById('daLoading').classList.add('hidden');
+    document.getElementById('daReportContainer').innerHTML = '';
+    document.getElementById('daEmpty').classList.remove('hidden');
+    var downloadBtn = document.getElementById('daDownloadBtn');
+    if (downloadBtn) downloadBtn.classList.add('hidden');
+  }
+
+  function showError(msg) {
+    document.getElementById('daLoading').classList.add('hidden');
+    document.getElementById('daEmpty').classList.add('hidden');
+    var downloadBtn = document.getElementById('daDownloadBtn');
+    if (downloadBtn) downloadBtn.classList.add('hidden');
+    document.getElementById('daReportContainer').innerHTML =
+      '<div class="da-error-card">' +
+      '<i class="fa-solid fa-circle-exclamation"></i>' +
+      '<h3>报告生成失败</h3>' +
+      '<p>' + (msg || '未知错误') + '</p>' +
+      '</div>';
+  }
+
+  // ==================== 角色权限配置（数据库驱动） ====================
+  var _ALLOWED_PAGES = null;  // null = 全部页面，array = 限定页面
+
+  function _initPermissions() {
+    // 优先从 sessionStorage 读取（由登录 API 返回的 permissions 数组）
+    var perms = state.currentPermissions;
+    if (!perms || !perms.length) {
+      try { perms = JSON.parse(sessionStorage.getItem('admin_permissions')); }
+      catch (e) { perms = null; }
+    }
+    if (!perms || !perms.length) { _ALLOWED_PAGES = null; return; }
+    // '*' 表示全部权限
+    if (perms === '*' || (Array.isArray(perms) && perms[0] === '*')) {
+      _ALLOWED_PAGES = null;
+      return;
+    }
+    _ALLOWED_PAGES = perms;
+    // 保存到 sessionStorage
+    sessionStorage.setItem('admin_permissions', JSON.stringify(perms));
+  }
+
+  // 所有可用页面及其分组（用于权限分配 UI）
+  var PAGE_CATEGORIES = [
+    { group: '营销数据', pages: [
+      { id: 'marketing-overview', name: '整体营销数据总览' },
+      { id: 'platform-store', name: '分平台/店铺详细数据' },
+      { id: 'daily-analysis', name: '每日数据分析' },
+      { id: 'order-details', name: '订单详情' },
+    ]},
+    { group: '店铺运营', pages: [
+      { id: 'store-account', name: '店铺账号管理' },
+      { id: 'operation-performance', name: '运营业绩面板' },
+    ]},
+    { group: '财务中心', pages: [
+      { id: 'finance', name: '财务中心' },
+    ]},
+    { group: '人事中心', pages: [
+      { id: 'hr', name: '人事中心' },
+    ]},
+    { group: '工具箱', pages: [
+      { id: 'toolbox-violation-check', name: '违规词检测' },
+    ]},
+    { group: '系统管理', pages: [
+      { id: 'admin-permissions', name: '管理员与权限' },
+      { id: 'profile', name: '个人中心设置' },
+    ]},
+  ];
+
+  // ==================== 管理员与权限 ====================
+  const ADMIN_KEY = 'admin_permissions_admins';
+  const ROLE_KEY = 'admin_permissions_roles';
+  let _apAdmins = [];
+  let _apPwdVisible = {};
+  let _apRoles = [];  // 数据库加载的角色列表
+
+  function getDefaultAdmins() {
+    return [
+      { id: 1, name: '张经理', account: 'admin', password: 'admin123', role: '超级管理员', status: 'enabled', lastLogin: '2026-07-30 09:15' },
+      { id: 2, name: '李运营', account: 'liyunying', password: '123456', role: '运营主管', status: 'enabled', lastLogin: '2026-07-29 17:40' },
+      { id: 3, name: '王财务', account: 'wangcaiwu', password: '123456', role: '财务专员', status: 'disabled', lastLogin: '2026-07-20 14:22' },
+    ];
+  }
+
+  function getDefaultRoles() {
+    return [
+      { id: 1, name: '超级管理员', desc: '拥有系统全部权限，可管理所有模块', count: 1, createdAt: '2026-06-01' },
+      { id: 2, name: '运营主管', desc: '可管理商品、订单、营销数据，查看运营报表', count: 3, createdAt: '2026-06-15' },
+      { id: 3, name: '财务专员', desc: '可查看财务中心、导出财务报表、处理退款', count: 2, createdAt: '2026-07-01' },
+      { id: 4, name: '客服人员', desc: '可查看订单详情、处理售后、回复评价', count: 5, createdAt: '2026-07-10' },
+    ];
+  }
+
+  function getRoles() {
+    try { return JSON.parse(localStorage.getItem(ROLE_KEY)) || getDefaultRoles(); }
+    catch (e) { return getDefaultRoles(); }
+  }
+  function saveRoles(roles) { localStorage.setItem(ROLE_KEY, JSON.stringify(roles)); }
+
+  function syncRoleCounts() {
+    if (_apRoles.length > 0) {
+      _apRoles.forEach(function(r) { r.count = _apAdmins.filter(function(a) { return a.role === r.name; }).length; });
+    } else {
+      var roles = getRoles();
+      roles.forEach(function(r) { r.count = _apAdmins.filter(function(a) { return a.role === r.name; }).length; });
+      saveRoles(roles);
+    }
+  }
+
+  async function renderAdminPermissions() {
+    // 加载管理员
+    if (state.apiAvailable) {
+      var dbAdmins = await ApiService.getAdmins();
+      if (dbAdmins && dbAdmins.length) {
+        _apAdmins = dbAdmins;
+      } else {
+        try { _apAdmins = JSON.parse(localStorage.getItem(ADMIN_KEY)) || getDefaultAdmins(); }
+        catch (e) { _apAdmins = getDefaultAdmins(); }
+      }
+      // 同时加载角色
+      try {
+        var rolesResp = await fetch('/api/admin/roles');
+        var rolesJson = await rolesResp.json();
+        if (rolesJson.code === 0 && rolesJson.data) {
+          _apRoles = rolesJson.data;
+        }
+      } catch (e) { console.warn('加载角色列表失败'); }
+    } else {
+      try { _apAdmins = JSON.parse(localStorage.getItem(ADMIN_KEY)) || getDefaultAdmins(); }
+      catch (e) { _apAdmins = getDefaultAdmins(); }
+      _apRoles = [];
+    }
+    syncRoleCounts();
+    renderAdminTable();
+    renderRoleTable();
+    var activeTab = document.querySelector('.ap-tab.active');
+    if (!activeTab) {
+      var tab = document.querySelector('.ap-tab[data-tab="admins"]');
+      if (tab) tab.classList.add('active');
+      var panel = document.getElementById('ap-panel-admins');
+      if (panel) panel.classList.add('active');
+    }
+  }
+
+  function switchAdminTab(tabName) {
+    document.querySelectorAll('.ap-tab').forEach(function(t) { t.classList.toggle('active', t.dataset.tab === tabName); });
+    document.querySelectorAll('.ap-panel').forEach(function(p) { p.classList.toggle('active', p.id === 'ap-panel-' + tabName); });
+  }
+
+  function renderAdminTable(filter) {
+    var admins = _apAdmins.slice();
+    if (filter) {
+      var kw = filter.toLowerCase();
+      admins = admins.filter(function(a) { return a.name.toLowerCase().indexOf(kw) >= 0 || a.account.toLowerCase().indexOf(kw) >= 0 || a.role.toLowerCase().indexOf(kw) >= 0; });
+    }
+    var tbody = document.getElementById('adminTableBody');
+    if (!tbody) return;
+    var isSuperAdmin = state.currentRole === '超级管理员' || state.currentAccount === 'admin';
+
+    tbody.innerHTML = admins.map(function(a) {
+      var pwdVisible = _apPwdVisible[a.id] || false;
+      var pwdDisplay = isSuperAdmin ? (pwdVisible ? a.password : '●●●●●●') : '●●●●●●';
+      return '<tr>' +
+        '<td>' + a.id + '</td>' +
+        '<td><strong>' + esc(a.name) + '</strong></td>' +
+        '<td>' + esc(a.account) + '</td>' +
+        '<td><div class="ap-pwd-cell">' +
+          '<span class="ap-pwd-text">' + pwdDisplay + '</span>' +
+          (isSuperAdmin ? '<button class="ap-pwd-toggle' + (pwdVisible ? ' showing' : '') + '" onclick="App.togglePwdVis(' + a.id + ')" title="显示/隐藏密码"><i class="fa-solid fa-' + (pwdVisible ? 'eye-slash' : 'eye') + '"></i></button>' : '') +
+        '</div></td>' +
+        '<td>' + esc(a.role) + '</td>' +
+        '<td><span class="status-badge ' + a.status + '">' + (a.status === 'enabled' ? '已启用' : '已禁用') + '</span></td>' +
+        '<td>' + esc(a.lastLogin || '-') + '</td>' +
+        '<td><div class="ap-actions">' +
+          (isSuperAdmin ? '<button class="ap-btn-sm pwd" onclick="App.openPwdModal(' + a.id + ')" title="修改密码"><i class="fa-solid fa-key"></i> 密码</button>' : '') +
+          '<button class="ap-btn-sm edit" onclick="App.openAdminModal(' + a.id + ')"><i class="fa-solid fa-pen"></i> 编辑</button>' +
+          (a.account !== 'admin' ? '<button class="ap-btn-sm toggle" onclick="App.toggleAdmin(' + a.id + ')" title="' + (a.status === 'enabled' ? '禁用' : '启用') + '"><i class="fa-solid fa-power-off"></i></button>' : '') +
+          (a.account !== 'admin' ? '<button class="ap-btn-sm delete" onclick="App.deleteAdmin(' + a.id + ')"><i class="fa-solid fa-trash"></i></button>' : '') +
+        '</div></td>' +
+      '</tr>';
+    }).join('');
+
+    document.getElementById('adminTableInfo').textContent = '共 ' + admins.length + ' 位管理员';
+  }
+
+  function renderRoleTable() {
+    var tbody = document.getElementById('roleTableBody');
+    if (!tbody) return;
+    var isSuperAdmin = state.currentRole === '超级管理员';
+    // 优先显示数据库角色，降级到本地
+    var roles = _apRoles.length > 0 ? _apRoles : getRoles();
+    tbody.innerHTML = roles.map(function(r) {
+      var perms = r.permissions || [];
+      var permDisplay = '';
+      if (Array.isArray(perms) && perms[0] === '*') {
+        permDisplay = '<span style="color:#16a34a;font-weight:600">全部权限</span>';
+      } else if (perms.length > 0) {
+        permDisplay = '<span style="color:#6366f1">' + perms.length + ' 项</span>';
+      } else {
+        permDisplay = '<span style="color:#94a3b8">无权限</span>';
+      }
+      return '<tr>' +
+        '<td><strong>' + esc(r.name) + '</strong></td>' +
+        '<td>' + permDisplay + '</td>' +
+        '<td>' + (r.count || 0) + '</td>' +
+        '<td>' + esc(r.createdAt || '') + '</td>' +
+        '<td>' +
+          (isSuperAdmin ? '<button class="btn btn-sm btn-outline" onclick="App.openRolePermModal(' + r.id + ')"><i class="fa-solid fa-pen"></i> 权限</button>' : '') +
+          (isSuperAdmin && r.name !== '超级管理员' ? '<button class="btn btn-sm btn-outline" onclick="App.deleteRole(' + r.id + ')" style="color:var(--danger)"><i class="fa-solid fa-trash"></i></button>' : '') +
+        '</td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  function togglePwdVis(id) {
+    _apPwdVisible[id] = !_apPwdVisible[id];
+    renderAdminTable(document.getElementById('adminSearch').value);
+  }
+
+  function openPwdModal(id) {
+    var admin = _apAdmins.find(function(a) { return a.id === id; });
+    if (!admin) return;
+    var html = '<div class="ap-form-group"><label>管理员</label><div style="padding:9px 0;font-weight:600;color:#1e293b">' + esc(admin.name) + '（' + esc(admin.account) + '）</div></div>' +
+      '<div class="ap-form-group"><label>新密码</label><input class="ap-form-input" type="text" id="apNewPwd" placeholder="请输入新密码"></div>' +
+      '<input type="hidden" id="apPwdId" value="' + admin.id + '">';
+
+    document.getElementById('modalTitle').textContent = '修改密码';
+    document.getElementById('modalBody').innerHTML = html;
+    document.getElementById('modalSaveBtn').onclick = savePwd;
+    document.getElementById('formModal').classList.remove('hidden');
+  }
+
+  async function savePwd() {
+    var id = parseInt(document.getElementById('apPwdId').value);
+    var pwd = document.getElementById('apNewPwd').value.trim();
+    if (!pwd) { showToast('请输入新密码', 'error'); return; }
+
+    if (state.apiAvailable) {
+      var result = await ApiService.updateAdmin(id, { password: pwd });
+      if (result !== null) {
+        document.getElementById('formModal').classList.add('hidden');
+        showToast('密码已更新');
+        renderAdminPermissions();
+        return;
+      }
+    }
+    // 回退 localStorage
+    var admins = getDefaultAdmins();
+    try { admins = JSON.parse(localStorage.getItem(ADMIN_KEY)) || getDefaultAdmins(); } catch(e) {}
+    var idx = admins.findIndex(function(a) { return a.id === id; });
+    if (idx >= 0) { admins[idx].password = pwd; localStorage.setItem(ADMIN_KEY, JSON.stringify(admins)); }
+    document.getElementById('formModal').classList.add('hidden');
+    showToast('密码已更新');
+    renderAdminPermissions();
+  }
+
+  function openAdminModal(id) {
+    var admin = id ? _apAdmins.find(function(a) { return a.id === id; }) : null;
+    var title = admin ? '编辑管理员' : '新增管理员';
+    // 优先用数据库角色
+    var roles = _apRoles.length > 0 ? _apRoles : getRoles();
+    var roleOpts = roles.map(function(r) { return '<option value="' + esc(r.name) + '" ' + (admin && admin.role === r.name ? 'selected' : '') + '>' + esc(r.name) + '</option>'; }).join('');
+
+    var html = '<div class="ap-form-row"><div class="ap-form-group"><label>姓名</label><input class="ap-form-input" id="apAdminName" value="' + esc(admin ? admin.name : '') + '" placeholder="请输入姓名"></div>' +
+      '<div class="ap-form-group"><label>账号</label><input class="ap-form-input" id="apAdminAccount" value="' + esc(admin ? admin.account : '') + '" placeholder="请输入账号" ' + (admin ? 'readonly' : '') + '></div></div>' +
+      '<div class="ap-form-row"><div class="ap-form-group"><label>密码</label><input class="ap-form-input" type="text" id="apAdminPwd" placeholder="' + (admin ? '留空则不修改' : '请输入密码') + '"></div>' +
+      '<div class="ap-form-group"><label>角色</label><select class="ap-form-input" id="apAdminRole">' + roleOpts + '</select></div></div>' +
+      '<div class="ap-form-group"><label>状态</label><select class="ap-form-input" id="apAdminStatus">' +
+        '<option value="enabled" ' + (admin && admin.status === 'enabled' ? 'selected' : '') + '>已启用</option>' +
+        '<option value="disabled" ' + (admin && admin.status === 'disabled' ? 'selected' : '') + '>已禁用</option>' +
+      '</select></div>' +
+      '<input type="hidden" id="apAdminId" value="' + (admin ? admin.id : '') + '">';
+
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalBody').innerHTML = html;
+    document.getElementById('modalSaveBtn').onclick = saveAdmin;
+    document.getElementById('formModal').classList.remove('hidden');
+  }
+
+  function editAdmin(id) { openAdminModal(id); }
+
+  async function saveAdmin() {
+    var id = document.getElementById('apAdminId').value;
+    var name = document.getElementById('apAdminName').value.trim();
+    var account = document.getElementById('apAdminAccount').value.trim();
+    var pwd = document.getElementById('apAdminPwd').value.trim();
+    var role = document.getElementById('apAdminRole').value;
+    var status = document.getElementById('apAdminStatus').value;
+
+    if (!name || !account || (!id && !pwd)) { showToast('请填写完整信息', 'error'); return; }
+
+    if (state.apiAvailable) {
+      var result;
+      if (id) {
+        var data = { name: name, role: role, status: status };
+        if (pwd) data.password = pwd;
+        result = await ApiService.updateAdmin(parseInt(id), data);
+      } else {
+        result = await ApiService.createAdmin({ name: name, account: account, password: pwd, role: role, status: status });
+      }
+      if (result !== null) {
+        document.getElementById('formModal').classList.add('hidden');
+        showToast(id ? '管理员已更新' : '管理员已创建');
+        renderAdminPermissions();
+        return;
+      }
+    }
+
+    // 回退 localStorage
+    var admins = getDefaultAdmins();
+    try { admins = JSON.parse(localStorage.getItem(ADMIN_KEY)) || getDefaultAdmins(); } catch(e) {}
+    if (!id && admins.find(function(a) { return a.account === account; })) { showToast('账号已存在', 'error'); return; }
+    if (id) {
+      var idx = admins.findIndex(function(a) { return a.id === parseInt(id); });
+      if (idx >= 0) { admins[idx].name = name; admins[idx].role = role; admins[idx].status = status; if (pwd) admins[idx].password = pwd; }
+    } else {
+      var newId = admins.length ? Math.max.apply(null, admins.map(function(a) { return a.id; })) + 1 : 1;
+      admins.push({ id: newId, name: name, account: account, password: pwd, role: role, status: status, lastLogin: '-' });
+    }
+    localStorage.setItem(ADMIN_KEY, JSON.stringify(admins));
+    _apAdmins = admins;
+    document.getElementById('formModal').classList.add('hidden');
+    showToast(id ? '管理员已更新' : '管理员已创建');
+    renderAdminPermissions();
+  }
+
+  async function deleteAdmin(id) {
+    var a = _apAdmins.find(function(x) { return x.id === id; });
+    if (!a) return;
+    if (a.account === 'admin') { showToast('不能删除超级管理员账号', 'error'); return; }
+    document.getElementById('confirmMsg').textContent = '确定删除管理员「' + a.name + '」吗？此操作不可恢复。';
+    document.getElementById('confirmDeleteBtn').onclick = async function() {
+      if (state.apiAvailable) {
+        await ApiService.deleteAdmin(id);
+      } else {
+        var admins = getDefaultAdmins();
+        try { admins = JSON.parse(localStorage.getItem(ADMIN_KEY)) || getDefaultAdmins(); } catch(e) {}
+        admins = admins.filter(function(x) { return x.id !== id; });
+        localStorage.setItem(ADMIN_KEY, JSON.stringify(admins));
+        _apAdmins = admins;
+      }
+      closeConfirmModal();
+      renderAdminPermissions();
+      showToast('管理员已删除');
+    };
+    document.getElementById('confirmModal').classList.remove('hidden');
+  }
+
+  async function toggleAdmin(id) {
+    var a = _apAdmins.find(function(x) { return x.id === id; });
+    if (!a) return;
+    if (a.account === 'admin') { showToast('不能禁用超级管理员账号', 'error'); return; }
+    var newStatus = a.status === 'enabled' ? 'disabled' : 'enabled';
+    if (state.apiAvailable) {
+      await ApiService.updateAdmin(id, { status: newStatus });
+    } else {
+      a.status = newStatus;
+      var admins = getDefaultAdmins();
+      try { admins = JSON.parse(localStorage.getItem(ADMIN_KEY)) || getDefaultAdmins(); } catch(e) {}
+      var idx = admins.findIndex(function(x) { return x.id === id; });
+      if (idx >= 0) { admins[idx].status = newStatus; localStorage.setItem(ADMIN_KEY, JSON.stringify(admins)); }
+    }
+    renderAdminPermissions();
+    showToast('管理员已' + (newStatus === 'enabled' ? '启用' : '禁用'));
+  }
+
+  function openRolePermModal(id) {
+    var role = id ? _apRoles.find(function(r) { return r.id === id; }) : null;
+    var isNew = !role;
+    var title = isNew ? '新增角色' : '编辑角色 - ' + esc(role.name);
+    var perms = role && role.permissions ? role.permissions : [];
+    var isAll = Array.isArray(perms) && perms[0] === '*';
+
+    // Build permission checkbox groups from PAGE_CATEGORIES
+    var permGroupsHtml = '';
+    var allPageIds = [];
+    PAGE_CATEGORIES.forEach(function(cat) {
+      var checksHtml = cat.pages.map(function(p) {
+        allPageIds.push(p.id);
+        var checked = isAll || perms.indexOf(p.id) >= 0 ? ' checked' : '';
+        return '<label class="ap-perm-check"><input type="checkbox" value="' + p.id + '"' + checked + '> ' + esc(p.name) + '</label>';
+      }).join('');
+      permGroupsHtml += '<div class="ap-perm-group"><div class="ap-perm-group-title">' + esc(cat.group) + '</div><div class="ap-perm-group-checks">' + checksHtml + '</div></div>';
+    });
+
+    var html = '<div class="form-group"><label>角色名称</label><input class="form-input" id="apRoleName" value="' + esc(role ? role.name : '') + '" placeholder="请输入角色名称"></div>' +
+      '<div class="ap-perm-header"><span>权限分配</span>' +
+        '<button type="button" class="ap-perm-toggle-btn" onclick="App.apToggleAllPerms(this)">全选</button>' +
+      '</div>' +
+      '<div class="ap-perm-scroll" id="apPermCheckboxes">' + permGroupsHtml + '</div>' +
+      '<input type="hidden" id="apRoleId" value="' + (role ? role.id : '') + '">';
+
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalBody').innerHTML = html;
+    document.getElementById('modalSaveBtn').onclick = saveRolePerm;
+    document.getElementById('formModal').classList.remove('hidden');
+  }
+
+  function apToggleAllPerms(el) {
+    var container = document.getElementById('apPermCheckboxes');
+    if (!container) return;
+    var checkboxes = container.querySelectorAll('input[type="checkbox"]');
+    var allChecked = el.textContent === '全选';
+    checkboxes.forEach(function(cb) { cb.checked = allChecked; });
+    el.textContent = allChecked ? '取消全选' : '全选';
+  }
+
+  async function saveRolePerm() {
+    var id = document.getElementById('apRoleId').value;
+    var name = document.getElementById('apRoleName').value.trim();
+    if (!name) { showToast('请输入角色名称', 'error'); return; }
+    var container = document.getElementById('apPermCheckboxes');
+    var perms = [];
+    if (container) {
+      container.querySelectorAll('input[type="checkbox"]:checked').forEach(function(cb) {
+        perms.push(cb.value);
+      });
+    }
+    if (state.apiAvailable) {
+      try {
+        var resp;
+        if (id) {
+          resp = await fetch('/api/admin/roles/' + id, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, permissions: perms }),
+          });
+        } else {
+          resp = await fetch('/api/admin/roles', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, permissions: perms }),
+          });
+        }
+        var json = await resp.json();
+        if (json.code === 0) {
+          document.getElementById('formModal').classList.add('hidden');
+          showToast(id ? '角色已更新' : '角色已创建');
+          renderAdminPermissions();
+          return;
+        } else {
+          showToast(json.msg || '操作失败', 'error');
+          return;
+        }
+      } catch (e) {
+        showToast('请求失败: ' + e.message, 'error');
+        return;
+      }
+    }
+    // 降级 localStorage
+    var roles = getRoles();
+    if (id) {
+      var idx = roles.findIndex(function(r) { return r.id === parseInt(id); });
+      if (idx >= 0) { roles[idx].name = name; roles[idx].permissions = perms; }
+    } else {
+      var newId = roles.length ? Math.max.apply(null, roles.map(function(r) { return r.id; })) + 1 : 1;
+      roles.push({ id: newId, name: name, permissions: perms, count: 0, createdAt: new Date().toISOString().slice(0, 10) });
+    }
+    saveRoles(roles);
+    _apRoles = roles;
+    document.getElementById('formModal').classList.add('hidden');
+    showToast(id ? '角色已更新' : '角色已创建');
+    renderAdminPermissions();
+  }
+
+  async function deleteRole(id) {
+    if (state.apiAvailable) {
+      var a = _apRoles.find(function(r) { return r.id === id; });
+      if (!a) return;
+      if (a.name === '超级管理员') { showToast('不能删除超级管理员角色', 'error'); return; }
+      document.getElementById('confirmMsg').textContent = '确定删除角色「' + a.name + '」吗？';
+      document.getElementById('confirmDeleteBtn').onclick = async function() {
+        try {
+          var resp = await fetch('/api/admin/roles/' + id, { method: 'DELETE' });
+          var json = await resp.json();
+          if (json.code === 0) {
+            closeConfirmModal();
+            renderAdminPermissions();
+            showToast('角色已删除');
+          } else {
+            closeConfirmModal();
+            showToast(json.msg || '删除失败', 'error');
+          }
+        } catch (e) {
+          closeConfirmModal();
+          showToast('删除失败: ' + e.message, 'error');
+        }
+      };
+      document.getElementById('confirmModal').classList.remove('hidden');
+      return;
+    }
+    // 降级 localStorage
+    var roles = getRoles();
+    var r = roles.find(function(x) { return x.id === id; });
+    if (!r) return;
+    if (r.name === '超级管理员') { showToast('不能删除超级管理员角色', 'error'); return; }
+    document.getElementById('confirmDeleteBtn').onclick = function() {
+      saveRoles(roles.filter(function(x) { return x.id !== id; }));
+      syncRoleCounts();
+      closeConfirmModal();
+      renderAdminPermissions();
+      showToast('角色已删除');
+    };
+    document.getElementById('confirmMsg').textContent = '确定删除角色「' + r.name + '」吗？删除后对应管理员将失去角色关联。';
+    document.getElementById('confirmModal').classList.remove('hidden');
+  }
+
+  function filterAdminTable() {
+    var kw = document.getElementById('adminSearch').value;
+    renderAdminTable(kw);
+  }
+
+  // ==================== 初始化 ====================
+  async function initApp() {
+    // ---- 清除旧的 localStorage 假数据（迁移到数据库直读）----
+    if (localStorage.getItem('admin_data') && !localStorage.getItem('admin_data_migrated')) {
+      console.log('[App] 清除旧的本地模拟数据，改用数据库直读');
+      localStorage.removeItem('admin_data');
+      localStorage.setItem('admin_data_migrated', '1');
+    }
+
+    // ---- 检测后端 API 是否可用（重试2次） ----
+    for (let retry = 0; retry < 3; retry++) {
+      state.apiAvailable = await ApiService.health();
+      if (state.apiAvailable) break;
+      if (retry < 2) await new Promise(r => setTimeout(r, 600));
+    }
+    console.log('[App] API状态:', state.apiAvailable ? '已连接' : '不可用（3次重试后）');
+
+    // Nav click events
+    document.querySelectorAll('.nav-item').forEach(el => {
+      el.addEventListener('click', function(e) {
+        e.preventDefault();
+        navigateTo(this.dataset.page);
+      });
+    });
+
+    // Nav group expand/collapse
+    document.querySelectorAll('.nav-group-title').forEach(el => {
+      el.addEventListener('click', function(e) {
+        e.preventDefault();
+        this.closest('.nav-group').classList.toggle('open');
+      });
+    });
+
+    // Nav submenu expand/collapse
+    document.querySelectorAll('.nav-submenu-toggle').forEach(el => {
+      el.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.closest('.nav-submenu').classList.toggle('open');
+      });
+    });
+
+    // Menu toggle
+    document.getElementById('menuToggle').addEventListener('click', () => toggleSidebar());
+
+    // Sidebar overlay
+    let overlay = document.querySelector('.sidebar-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.className = 'sidebar-overlay';
+      document.getElementById('appPage').appendChild(overlay);
+      overlay.addEventListener('click', () => toggleSidebar(false));
+    }
+
+    // Admin-Permissions tab clicks
+    document.querySelectorAll('.ap-tab').forEach(tab => {
+      tab.addEventListener('click', function () {
+        switchAdminTab(this.dataset.tab);
+      });
+    });
+
+    // Marketing date shortcuts
+    document.querySelectorAll('.dh-ds-btn').forEach(btn => {
+      btn.addEventListener('click', function () {
+        setDateRange(parseInt(this.dataset.range));
+      });
+    });
+    // Marketing filter selects - load options & bind changes
+    const platSel = document.getElementById('mktPlatform');
+    const brandSel = document.getElementById('mktBrand');
+    if (platSel) platSel.addEventListener('change', function () { renderMarketingOverview(); });
+    if (brandSel) brandSel.addEventListener('change', function () { renderMarketingOverview(); });
+    // 加载平台/品牌选项
+    if (state.apiAvailable) {
+      ApiService.getMarketingFilters().then(filters => {
+        if (filters) {
+          if (platSel) {
+            platSel.innerHTML = '<option value="">全部平台</option>';
+            filters.platforms.forEach(p => { const o = document.createElement('option'); o.value = p; o.textContent = p; platSel.appendChild(o); });
+          }
+          if (brandSel) {
+            brandSel.innerHTML = '<option value="">全部品牌</option>';
+            filters.brands.forEach(b => { const o = document.createElement('option'); o.value = b; o.textContent = b; brandSel.appendChild(o); });
+          }
+        }
+      });
+    }
+
+    // Platform-store date shortcuts
+    document.querySelectorAll('.ps-ds-btn').forEach(function(btn) {
+      btn.addEventListener('click', function () {
+        _psSetDateRange(parseInt(this.dataset.range));
+      });
+    });
+    // Platform-store platform filter
+    var psPlat = document.getElementById('psPlatform');
+    if (psPlat) {
+      psPlat.addEventListener('change', function () { _psPage = 1; _psExpandedStore = null; document.getElementById('psDetailPanel').classList.add('hidden'); renderPlatformStore(); });
+      // Load platform options
+      if (state.apiAvailable) {
+        ApiService.getMarketingFilters().then(function(filters) {
+          if (filters && psPlat) {
+            psPlat.innerHTML = '<option value="">全部平台</option>';
+            filters.platforms.forEach(function(p) { var o = document.createElement('option'); o.value = p; o.textContent = p; psPlat.appendChild(o); });
+          }
+        });
+      }
+    }
+    // Platform-store compare metric change
+    var psMetric = document.getElementById('psCompareMetric');
+    if (psMetric) psMetric.addEventListener('change', function () { if (_psData) _psRenderCompareChart(_psData); });
+    // Platform-store search
+    var psSearch = document.getElementById('psStoreSearch');
+    if (psSearch) psSearch.addEventListener('input', function () { _psSearch = this.value; _psPage = 1; if (_psData) _psRenderTable(_psData); });
+    // Platform-store sort
+    var psSort = document.getElementById('psSortBy');
+    if (psSort) psSort.addEventListener('change', function () { _psSortBy = this.value; _psPage = 1; if (_psData) _psRenderTable(_psData); });
+
+    // Daily analysis date selector
+    var daDateSel = document.getElementById('daDateSelect');
+    if (daDateSel) {
+      daDateSel.addEventListener('change', async function() {
+        var dt = this.value;
+        // 更新按钮文字
+        var btn = document.getElementById('daGenerateBtn');
+        if (btn) {
+          btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> 生成' + (dt || '昨日') + '数据分析文档';
+        }
+        if (!dt) { renderDailyAnalysis(); return; }
+        if (state.apiAvailable) {
+          var report = await ApiService.getAnalysisReport(dt);
+          if (report) { showReport(report); }
+          else { showError('未找到 ' + dt + ' 的分析报告，点击生成按钮即可创建'); }
+        }
+      });
+    }
+
+    // ---- 初始化权限 ----
+    _initPermissions();
+
+    // Hash routing（权限受限用户跳转到首个允许的页面）
+    const validPages = [
+      'marketing-overview', 'platform-store',
+      'store-account', 'operation-performance', 'finance', 'hr',
+      'admin-permissions', 'profile', 'daily-analysis', 'toolbox-violation-check', 'order-details',
+    ];
+    const hash = window.location.hash.replace('#', '');
+    if (validPages.includes(hash)) {
+      navigateTo(hash);
+    } else {
+      var defaultPage = (_ALLOWED_PAGES !== null && _ALLOWED_PAGES.length > 0)
+        ? _ALLOWED_PAGES[0]
+        : 'marketing-overview';
+      navigateTo(defaultPage);
+    }
+
+    window.addEventListener('hashchange', () => {
+      const h = window.location.hash.replace('#', '');
+      if (validPages.includes(h)) navigateTo(h);
+    });
+
+    // Violation word search（仅当旧版元素存在时绑定）
+    var vwSearch = document.getElementById('violationWordSearch');
+    if (vwSearch) {
+      vwSearch.addEventListener('input', function() { _renderViolationWordTable(); });
+    }
+
+    // Order Details date shortcuts
+    document.querySelectorAll('.od-ds-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() { _odSetDateRange(parseInt(this.dataset.range)); });
+    });
+    // Order Details filters
+    var odPlat = document.getElementById('odPlatform');
+    var odStore = document.getElementById('odStore');
+    var odSearch = document.getElementById('odSearch');
+    var odPageSize = document.getElementById('odPageSize');
+    var odDateStart = document.getElementById('odDateStart');
+    var odDateEnd = document.getElementById('odDateEnd');
+    if (odPlat) {
+      odPlat.addEventListener('change', function() {
+        _odPage = 1;
+        _odCardFields = [];
+        _odTableCols = [];
+        _odSortBy = '';
+        _odSortDir = 'desc';
+        _odLinkType = 'all';
+        // 切换平台时先清空店铺选择，避免用旧平台的店铺值过滤新平台数据
+        if (odStore) { odStore.innerHTML = '<option value="">全部店铺</option>'; odStore.value = ''; }
+        _odUpdateLinkTypeToggle();
+        _odFetchData();
+        // 联动加载店铺列表
+        var plat = this.value;
+        if (plat) {
+          fetch('/api/order-details/stores?platform=' + encodeURIComponent(plat) + '&linkType=all')
+            .then(function(r) { return r.json(); })
+            .then(function(j) {
+              if (j.code === 0 && j.data && odStore) {
+                odStore.innerHTML = '<option value="">全部店铺</option>' + j.data.map(function(s) { return '<option value="' + s + '">' + s + '</option>'; }).join('');
+              }
+            });
+        }
+      });
+      // 初始加载平台列表
+      fetch('/api/order-details/stores').then(function(r) { return r.json(); }).then(function(j) {
+        if (j.code === 0 && j.data && odPlat) {
+          var platforms = ['抖店','京东','千牛'];
+          platforms.forEach(function(p) { var o = document.createElement('option'); o.value = p; o.textContent = p; odPlat.appendChild(o); });
+        }
+      });
+    }
+    if (odStore) odStore.addEventListener('change', function() { _odPage = 1; _odFetchData(); });
+    if (odSearch) { odSearch.addEventListener('input', function() { _odPage = 1; _odFetchData(); }); }
+    if (odPageSize) odPageSize.addEventListener('change', function() { _odPageSize = parseInt(this.value); _odPage = 1; _odFetchData(); });
+    if (odDateStart) odDateStart.addEventListener('change', function() { _odUpdateDateLabel(); _odPage = 1; _odFetchData(); });
+    if (odDateEnd) odDateEnd.addEventListener('change', function() { _odUpdateDateLabel(); _odPage = 1; _odFetchData(); });
+    // 点击别处关闭日期/字段悬浮框
+    document.addEventListener('click', function(e) {
+      [['odDatePanel', 'odDateBtn'], ['mktDatePanel', 'mktDateBtn'], ['psDatePanel', 'psDateBtn']].forEach(function(pair) {
+        var panel = document.getElementById(pair[0]);
+        var btn = document.getElementById(pair[1]);
+        if (panel && btn && !panel.contains(e.target) && !btn.contains(e.target)) panel.style.display = 'none';
+      });
+      var colPanel = document.getElementById('odColPanel');
+      var colBtn = document.getElementById('odColBtn');
+      if (colPanel && colBtn && !colPanel.contains(e.target) && !colBtn.contains(e.target)) colPanel.style.display = 'none';
+    });
+    // Order Details 卡片字段下拉（4 个，绑定 change）
+    for (var ci = 0; ci < 4; ci++) {
+      (function(idx) {
+        var sel = document.getElementById('odCardSel' + idx);
+        if (sel) sel.addEventListener('change', function() { _odCardFields[idx] = this.value; _odFetchData(); });
+      })(ci);
+    }
+
+    // Time
+    updateTime();
+    setInterval(updateTime, 30000);
+  }
+
+  function init() {
+    // Login form
+    document.getElementById('loginForm').addEventListener('submit', handleLogin);
+    document.getElementById('logoutBtn').addEventListener('click', handleLogout);
+
+    // Auto-fill remembered user
+    const remembered = localStorage.getItem('admin_user');
+    const rememberedPwd = localStorage.getItem('admin_pass');
+    if (remembered) {
+      document.getElementById('username').value = remembered;
+      document.getElementById('remember').checked = true;
+    }
+    if (rememberedPwd) {
+      document.getElementById('password').value = rememberedPwd;
+    }
+
+    // 刷新后自动恢复登录状态
+    if (sessionStorage.getItem('admin_logged_in') === 'true') {
+      const user = sessionStorage.getItem('admin_current_user') || '管理员';
+      state.currentUser = user;
+      state.currentRole = sessionStorage.getItem('admin_current_role') || '';
+      state.currentAccount = sessionStorage.getItem('admin_current_account') || '';
+      try { state.currentPermissions = JSON.parse(sessionStorage.getItem('admin_permissions') || 'null') || []; }
+      catch (e) { state.currentPermissions = []; }
+      document.getElementById('loginPage').classList.add('hidden');
+      document.getElementById('appPage').classList.remove('hidden');
+      document.getElementById('currentUser').textContent = user;
+      initApp();
+      return;
+    }
+  }
+
+  // ==================== 店铺账号管理 ====================
+  function getMockStoreAccounts() {
+    var platforms = ['淘宝','京东','拼多多','抖音','快手','小红书','微信小程序'];
+    var authTypes = ['OAuth2.0','API Key','账号密码','扫码授权'];
+    var stores = [
+      {name:'聚浪旗舰店', plat:'淘宝'},{name:'聚浪户外专营店', plat:'淘宝'},{name:'聚浪运动旗舰店', plat:'京东'},
+      {name:'聚浪自营店', plat:'京东'},{name:'聚浪优选', plat:'拼多多'},{name:'聚浪官方旗舰店', plat:'抖音'},
+      {name:'聚浪好物店', plat:'抖音'},{name:'聚浪快品牌', plat:'快手'},{name:'聚浪精选', plat:'小红书'},
+      {name:'聚浪小程序商城', plat:'微信小程序'},{name:'聚浪奥莱折扣店', plat:'拼多多'},{name:'聚浪潮品店', plat:'淘宝'}
+    ];
+    var now = new Date();
+    return stores.map(function(s,i){
+      var statuses = ['enabled','enabled','enabled','enabled','enabled','expired','pending'];
+      var status = statuses[Math.floor(Math.random()*statuses.length)];
+      var expDate = new Date(now); expDate.setDate(expDate.getDate() + Math.floor(Math.random()*180 - 30));
+      var syncDate = new Date(now); syncDate.setHours(syncDate.getHours() - Math.floor(Math.random()*48));
+      return {
+        id: i+1, name: s.name, platform: s.plat,
+        account: 'acct_'+s.plat.toLowerCase()+'_'+(1000+i),
+        authType: authTypes[Math.floor(Math.random()*authTypes.length)],
+        expireDate: expDate.toISOString().slice(0,10),
+        status: status,
+        lastSync: syncDate.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})
+      };
+    });
+  }
+
+  var _saData = [];
+  function renderStoreAccount() {
+    _saData = getMockStoreAccounts();
+    document.getElementById('saTotalStores').textContent = _saData.length;
+    document.getElementById('saEnabled').textContent = _saData.filter(function(a){return a.status==='enabled';}).length;
+    document.getElementById('saExpired').textContent = _saData.filter(function(a){return a.status==='expired';}).length;
+    document.getElementById('saPending').textContent = _saData.filter(function(a){return a.status==='pending';}).length;
+    _saRenderTable();
+  }
+
+  function filterSATable() {
+    _saRenderTable();
+  }
+
+  function _saRenderTable(filter) {
+    var accounts = _saData.slice();
+    var searchKw = (document.getElementById('saSearch')?.value || '').toLowerCase();
+    var platFilter = document.getElementById('saPlatformFilter')?.value || '';
+    var statusFilter = document.getElementById('saStatusFilter')?.value || '';
+    if (searchKw) accounts = accounts.filter(function(a){return a.name.toLowerCase().indexOf(searchKw)>=0||a.account.toLowerCase().indexOf(searchKw)>=0||a.platform.toLowerCase().indexOf(searchKw)>=0;});
+    if (platFilter) accounts = accounts.filter(function(a){return a.platform===platFilter;});
+    if (statusFilter) accounts = accounts.filter(function(a){return a.status===statusFilter;});
+    document.getElementById('saTableInfo').textContent = '共 '+accounts.length+' 个店铺账号';
+    var tbody = document.getElementById('saTableBody');
+    tbody.innerHTML = accounts.map(function(a){
+      var statusCls = a.status==='enabled'?'status-badge enabled':(a.status==='expired'?'status-badge disabled':'badge badge-warning');
+      var statusText = a.status==='enabled'?'启用中':(a.status==='expired'?'已过期':'待授权');
+      return '<tr><td>'+a.id+'</td><td><strong>'+a.name+'</strong></td><td><span class="ps-store-platform ps-platform-'+a.platform+'">'+a.platform+'</span></td><td style="font-family:monospace;font-size:12px">'+a.account+'</td><td>'+a.authType+'</td><td>'+(a.status==='expired'?'<span style="color:#dc2626">'+a.expireDate+'</span>':a.expireDate)+'</td><td><span class="'+statusCls+'">'+statusText+'</span></td><td>'+a.lastSync+'</td><td><div class="ap-actions"><button class="ap-btn-sm edit" onclick="App.showToast(\'编辑功能开发中\',\'error\')"><i class="fa-solid fa-pen"></i></button><button class="ap-btn-sm toggle" onclick="App.showToast(\'重新授权功能开发中\',\'error\')"><i class="fa-solid fa-rotate"></i></button><button class="ap-btn-sm delete" onclick="App.showToast(\'删除功能开发中\',\'error\')"><i class="fa-solid fa-trash"></i></button></div></td></tr>';
+    }).join('');
+  }
+
+  function openSAModal() { App.showToast('新增店铺账号功能开发中', 'error'); }
+
+  // ==================== 运营业绩面板 ====================
+  function getMockOpData() {
+    var depts = ['淘宝运营部','京东运营部','抖音运营部','拼多多运营部','快手运营部'];
+    var names = ['张伟','李娜','王磊','赵敏','陈强','刘洋','周静','吴鹏','郑丽','钱浩','孙悦','马超','黄蕾','林峰','何琳','罗刚'];
+    var persons = [];
+    for (var i = 0; i < 16; i++) {
+      var dept = depts[Math.floor(Math.random()*depts.length)];
+      var gmv = Math.floor(Math.random()*800000 + 150000);
+      var target = gmv * (0.85 + Math.random()*0.3);
+      var rate = (gmv/target*100);
+      var grade = rate >= 110 ? 'S' : (rate >= 100 ? 'A' : (rate >= 85 ? 'B' : 'C'));
+      persons.push({ name: names[i], dept: dept, gmv: gmv, target: target, targetRate: rate, roi: (Math.random()*5+1.5).toFixed(2), convRate: (Math.random()*4+2), aov: (Math.random()*200+100).toFixed(2), grade: grade });
+    }
+    persons.sort(function(a,b){return b.gmv - a.gmv;});
+    var totalGMV = persons.reduce(function(s,p){return s+p.gmv;},0);
+    var deptData = depts.map(function(d){ var dp=persons.filter(function(p){return p.dept===d;}); return {name:d,gmv:dp.reduce(function(s,p){return s+p.gmv;},0),count:dp.length,targetRate:(dp.reduce(function(s,p){return s+p.targetRate;},0)/dp.length)}; });
+    var months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+    var trends = months.map(function(m,i){ return {month:m,gmv:Math.floor(Math.random()*3000000+2000000+ i*100000),growth:(Math.random()*15-3)}; });
+    return { persons:persons, totalGMV:totalGMV, targetRate:(persons.reduce(function(s,p){return s+p.targetRate;},0)/persons.length), teamSize:persons.length, avgGMV:totalGMV/persons.length, deptData:deptData, trends:trends };
+  }
+
+  var _opData = null; var _opPage = 1; var _opSearch = ''; var _opSortBy = 'gmv'; var _opDeptFilter = '';
+  var _opCharts = {};
+  function _opDisposeCharts() { Object.values(_opCharts).forEach(function(c){try{c.dispose();}catch(e){}}); for(var k in _opCharts) delete _opCharts[k]; }
+  function _opGetChart(domId){ if(typeof echarts==='undefined'||!echarts.init)return null; var dom=document.getElementById(domId); if(!dom)return null; if(_opCharts[domId])_opCharts[domId].dispose(); var c=echarts.init(dom); _opCharts[domId]=c; return c; }
+
+  function renderOperationPerformance() {
+    _opData = getMockOpData(); _opPage = 1;
+    var d = _opData;
+    document.getElementById('opGMV').textContent = '¥'+(d.totalGMV/10000).toFixed(0)+'万';
+    document.getElementById('opTargetRate').textContent = d.targetRate.toFixed(1)+'%';
+    document.getElementById('opTeamSize').textContent = d.teamSize+' 人';
+    document.getElementById('opAvgGMV').textContent = '¥'+(d.avgGMV/10000).toFixed(1)+'万';
+    _opRenderCharts();
+    _opRenderTable();
+    _opBindEvents();
+  }
+
+  function _opBindEvents() {
+    var searchEl = document.getElementById('opSearch'); if(searchEl) searchEl.oninput=function(){_opSearch=this.value;_opPage=1;_opRenderTable();};
+    var sortEl = document.getElementById('opSortBy'); if(sortEl) sortEl.onchange=function(){_opSortBy=this.value;_opPage=1;_opRenderTable();};
+    var deptEl = document.getElementById('opDepartment'); if(deptEl) deptEl.onchange=function(){_opDeptFilter=this.value;_opPage=1;_opRenderTable();};
+  }
+
+  function _opRenderCharts() {
+    if(typeof echarts==='undefined'||!echarts.init)return;
+    _opDisposeCharts();
+    var d=_opData;
+    // Dept bar
+    var c1=_opGetChart('chartOPDept');
+    if(c1){c1.setOption({tooltip:{trigger:'axis',axisPointer:{type:'shadow'}},grid:{left:100,right:60,top:10,bottom:20},xAxis:{type:'value',axisLabel:{fontSize:10,formatter:function(v){return(v/10000).toFixed(0)+'w'}}},yAxis:{type:'category',data:d.deptData.map(function(x){return x.name;}),axisLabel:{fontSize:10},inverse:true},series:[{type:'bar',data:d.deptData.map(function(x,i){return{value:x.gmv,itemStyle:{color:['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6'][i]||'#6366f1',borderRadius:[0,4,4,0]}};}),barWidth:'55%',label:{show:true,position:'right',fontSize:10,formatter:function(p){return'¥'+(p.value/10000).toFixed(0)+'w'}}}]});}
+
+    // Trend
+    var c2=_opGetChart('chartOPTrend');
+    if(c2){c2.setOption({tooltip:{trigger:'axis'},legend:{top:0,right:0,textStyle:{fontSize:10}},grid:{left:50,right:60,top:35,bottom:25},xAxis:{type:'category',data:d.trends.map(function(t){return t.month;}),axisLabel:{fontSize:10}},yAxis:[{type:'value',name:'GMV',axisLabel:{fontSize:9,formatter:function(v){return(v/10000).toFixed(0)+'w'}}},{type:'value',name:'增长率%',axisLabel:{fontSize:9,formatter:function(v){return v+'%'}}}],series:[{name:'GMV',type:'bar',data:d.trends.map(function(t){return t.gmv;}),itemStyle:{color:'#3b82f6',borderRadius:[4,4,0,0]},barWidth:'50%'},{name:'环比增长',type:'line',yAxisIndex:1,data:d.trends.map(function(t){return t.growth;}),lineStyle:{color:'#10b981'},itemStyle:{color:'#10b981'},symbol:'circle',symbolSize:5}]});}
+  }
+
+  function _opRenderTable() {
+    var persons = (_opData.persons||[]).slice();
+    if (_opSearch) { var kw=_opSearch.toLowerCase(); persons=persons.filter(function(p){return p.name.toLowerCase().indexOf(kw)>=0||p.dept.toLowerCase().indexOf(kw)>=0;}); }
+    if (_opDeptFilter) { persons=persons.filter(function(p){return p.dept===_opDeptFilter;}); }
+    if (_opSortBy==='targetRate') persons.sort(function(a,b){return b.targetRate-a.targetRate;});
+    else if (_opSortBy==='roi') persons.sort(function(a,b){return b.roi-a.roi;});
+    else persons.sort(function(a,b){return b.gmv-a.gmv;});
+    persons.forEach(function(p,i){p.rank=i+1;});
+
+    var pageSize=10, totalPages=Math.ceil(persons.length/pageSize)||1;
+    if (_opPage>totalPages)_opPage=totalPages;
+    var pageItems=persons.slice((_opPage-1)*pageSize,_opPage*pageSize);
+    document.getElementById('opRankTotal').textContent='共 '+persons.length+' 人';
+    document.getElementById('opRankTbody').innerHTML=pageItems.map(function(p){
+      var rankCls=p.rank===1?'top1':(p.rank===2?'top2':(p.rank===3?'top3':''));
+      return '<tr><td><span class="ps-rank '+rankCls+'">'+p.rank+'</span></td><td><strong>'+p.name+'</strong></td><td>'+p.dept+'</td><td class="ps-col-num">¥'+p.gmv.toLocaleString()+'</td><td class="ps-col-num"><div style="display:flex;align-items:center;gap:6px"><div style="flex:1;height:6px;background:#f1f5f9;border-radius:3px;overflow:hidden"><div style="height:100%;border-radius:3px;background:'+(p.targetRate>=100?'#16a34a':(p.targetRate>=85?'#f59e0b':'#dc2626'))+';width:'+Math.min(100,p.targetRate)+'%"></div></div><span style="font-size:12px;font-weight:600">'+p.targetRate.toFixed(1)+'%</span></div></td><td class="ps-col-num">'+p.roi+'</td><td class="ps-col-num">'+p.convRate.toFixed(2)+'%</td><td class="ps-col-num">¥'+p.aov+'</td><td><span class="op-grade op-grade-'+p.grade.toLowerCase()+'">'+p.grade+'</span></td></tr>';
+    }).join('');
+    var footer=document.getElementById('opRankPagination');
+    var btns='';btns+='<button '+(_opPage<=1?'disabled':'')+' onclick="App.opGoPage('+(_opPage-1)+')"><i class="fa-solid fa-chevron-left"></i></button>';
+    for(var i=1;i<=totalPages;i++){if(totalPages<=7||i===1||i===totalPages||(i>=_opPage-1&&i<=_opPage+1)){btns+='<button class="'+(i===_opPage?'active':'')+'" onclick="App.opGoPage('+i+')">'+i+'</button>';}else if(i===_opPage-2||i===_opPage+2){btns+='<button disabled>...</button>';}}
+    btns+='<button '+(_opPage>=totalPages?'disabled':'')+' onclick="App.opGoPage('+(_opPage+1)+')"><i class="fa-solid fa-chevron-right"></i></button>';
+    footer.innerHTML='<span>第 '+_opPage+' / '+totalPages+' 页，共 '+persons.length+' 条</span><div class="ps-pagination-btns">'+btns+'</div>';
+  }
+
+  function opGoPage(page){_opPage=page;_opRenderTable();}
+
+  // ==================== 财务中心 ====================
+  function getMockFinanceData() {
+    var months=['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+    var revenue=0,cost=0,profit=0,refund=0,adSpend=0,logistics=0,receivable=0;
+    var monthlyData=months.map(function(m,i){
+      var r=Math.floor(Math.random()*2000000+1500000+i*80000);
+      var c=r*(0.55+Math.random()*0.2);
+      var p=r-c;
+      revenue+=r;cost+=c;profit+=p;
+      refund+=r*(0.03+Math.random()*0.05);
+      adSpend+=r*(0.08+Math.random()*0.12);
+      logistics+=r*(0.04+Math.random()*0.04);
+      receivable+=r*(0.05+Math.random()*0.08);
+      return {month:m,revenue:r,cost:c,profit:p};
+    });
+    var margin=revenue>0?(profit/revenue*100):0;
+
+    // Transactions
+    var txTypes=['income','income','income','expense','expense','refund'];
+    var txPlatforms=['淘宝','京东','拼多多','抖音','快手'];
+    var payMethods=['支付宝','微信支付','银行卡','花呗','京东支付'];
+    var txStatuses=['已完成','已完成','已完成','处理中','待审核'];
+    var summaries=['商品销售收入','平台推广费','物流运费','退款-质量问题','退款-物流','包装耗材','仓储费','技术服务费','营销活动费','佣金支出'];
+    var transactions=[];
+    for(var i=0;i<40;i++){
+      var type=txTypes[Math.floor(Math.random()*txTypes.length)];
+      var amt=type==='refund'?Math.floor(Math.random()*500+30):(type==='expense'?Math.floor(Math.random()*8000+500):Math.floor(Math.random()*30000+1000));
+      var date=new Date();date.setDate(date.getDate()-Math.floor(Math.random()*90));
+      transactions.push({date:date.toISOString().slice(0,10),type:type,orderId:type==='income'?'ORD'+Math.floor(Math.random()*90000+10000):(type==='refund'?'RF'+Math.floor(Math.random()*90000+10000):'—'),summary:summaries[Math.floor(Math.random()*summaries.length)],platform:txPlatforms[Math.floor(Math.random()*txPlatforms.length)],amount:amt,payMethod:payMethods[Math.floor(Math.random()*payMethods.length)],status:txStatuses[Math.floor(Math.random()*txStatuses.length)]});
+    }
+    transactions.sort(function(a,b){return b.date.localeCompare(a.date);});
+    return {revenue:revenue,cost:cost,profit:profit,margin:margin,refund:refund,adSpend:adSpend,logistics:logistics,receivable:receivable,monthlyData:monthlyData,transactions:transactions};
+  }
+
+  var _finData=null; var _finPage=1; var _finSearch=''; var _finTxType='';
+  var _finCharts={};
+  function _finDisposeCharts(){Object.values(_finCharts).forEach(function(c){try{c.dispose();}catch(e){}});for(var k in _finCharts)delete _finCharts[k];}
+  function _finGetChart(domId){if(typeof echarts==='undefined'||!echarts.init)return null;var dom=document.getElementById(domId);if(!dom)return null;if(_finCharts[domId])_finCharts[domId].dispose();var c=echarts.init(dom);_finCharts[domId]=c;return c;}
+
+  function renderFinance(){
+    _finData=getMockFinanceData();_finPage=1;
+    var d=_finData;
+    document.getElementById('finUpdateTime').textContent=new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    document.getElementById('finRevenue').textContent='¥'+(d.revenue/10000).toFixed(1)+'万';
+    document.getElementById('finCost').textContent='¥'+(d.cost/10000).toFixed(1)+'万';
+    document.getElementById('finProfit').textContent='¥'+(d.profit/10000).toFixed(1)+'万';
+    document.getElementById('finMargin').textContent=d.margin.toFixed(2)+'%';
+    document.getElementById('finRefund').textContent='¥'+(d.refund/10000).toFixed(1)+'万';
+    document.getElementById('finAdSpend').textContent='¥'+(d.adSpend/10000).toFixed(1)+'万';
+    document.getElementById('finLogistics').textContent='¥'+(d.logistics/10000).toFixed(1)+'万';
+    document.getElementById('finReceivable').textContent='¥'+(d.receivable/10000).toFixed(1)+'万';
+    _finRenderCharts();
+    _finRenderTable();
+    var searchEl=document.getElementById('finSearch');if(searchEl)searchEl.oninput=function(){_finSearch=this.value;_finPage=1;_finRenderTable();};
+    var typeEl=document.getElementById('finTxType');if(typeEl)typeEl.onchange=function(){_finTxType=this.value;_finPage=1;_finRenderTable();};
+  }
+
+  function _finRenderCharts(){
+    if(typeof echarts==='undefined'||!echarts.init)return;
+    _finDisposeCharts();
+    var d=_finData;
+    var c1=_finGetChart('chartFinTrend');
+    if(c1){c1.setOption({tooltip:{trigger:'axis'},legend:{top:0,right:0,textStyle:{fontSize:10}},grid:{left:55,right:60,top:35,bottom:25},xAxis:{type:'category',data:d.monthlyData.map(function(m){return m.month;}),axisLabel:{fontSize:10}},yAxis:{type:'value',axisLabel:{fontSize:9,formatter:function(v){return(v/10000).toFixed(0)+'w'}}},series:[{name:'营收',type:'bar',data:d.monthlyData.map(function(m){return m.revenue;}),itemStyle:{color:'#3b82f6',borderRadius:[4,4,0,0]},barWidth:'35%'},{name:'成本',type:'bar',data:d.monthlyData.map(function(m){return m.cost;}),itemStyle:{color:'#f87171',borderRadius:[4,4,0,0]},barWidth:'35%'},{name:'利润',type:'line',data:d.monthlyData.map(function(m){return m.profit;}),lineStyle:{color:'#10b981',width:2},itemStyle:{color:'#10b981'},symbol:'circle',symbolSize:5}]});}
+
+    var c2=_finGetChart('chartFinCost');
+    if(c2){
+      var costBreakdown=[{name:'推广费用',value:d.adSpend},{name:'物流成本',value:d.logistics},{name:'退款损失',value:d.refund},{name:'商品成本',value:d.cost*0.55},{name:'平台佣金',value:d.cost*0.2},{name:'人员成本',value:d.cost*0.15},{name:'其他费用',value:d.cost*0.1}];
+      c2.setOption({tooltip:{trigger:'item',formatter:'{b}: ¥{c} ({d}%)'},series:[{type:'pie',radius:['45%','75%'],center:['50%','50%'],data:costBreakdown,label:{fontSize:10,formatter:'{b}\n{d}%'},emphasis:{label:{fontSize:14,fontWeight:'bold'}},itemStyle:{borderColor:'#fff',borderWidth:2}}],color:['#ef4444','#f59e0b','#f97316','#6366f1','#8b5cf6','#ec4899','#06b6d4']});
+    }
+  }
+
+  function _finRenderTable(){
+    var txs=(_finData.transactions||[]).slice();
+    if(_finSearch){var kw=_finSearch.toLowerCase();txs=txs.filter(function(t){return t.summary.toLowerCase().indexOf(kw)>=0||t.orderId.toLowerCase().indexOf(kw)>=0;});}
+    if(_finTxType){txs=txs.filter(function(t){return t.type===_finTxType;});}
+    var pageSize=10,totalPages=Math.ceil(txs.length/pageSize)||1;
+    if(_finPage>totalPages)_finPage=totalPages;
+    var pageItems=txs.slice((_finPage-1)*pageSize,_finPage*pageSize);
+    document.getElementById('finTxTotal').textContent='共 '+txs.length+' 条';
+    document.getElementById('finTbody').innerHTML=pageItems.map(function(t){
+      var typeCls=t.type==='income'?'fin-income':(t.type==='expense'?'fin-expense':'fin-refund');
+      var typeText=t.type==='income'?'收入':(t.type==='expense'?'支出':'退款');
+      var statusCls=t.status==='已完成'?'badge-success':(t.status==='处理中'?'badge-info':'badge-warning');
+      var amtPrefix=t.type==='income'?'+':(t.type==='expense'?'-':'-');
+      return '<tr><td>'+t.date+'</td><td><span class="'+typeCls+'">'+typeText+'</span></td><td style="font-family:monospace;font-size:12px">'+t.orderId+'</td><td>'+t.summary+'</td><td>'+t.platform+'</td><td class="ps-col-num '+typeCls+'">'+amtPrefix+'¥'+t.amount.toLocaleString()+'</td><td>'+t.payMethod+'</td><td><span class="badge '+statusCls+'">'+t.status+'</span></td></tr>';
+    }).join('');
+    var footer=document.getElementById('finPagination');
+    var btns='';btns+='<button '+(_finPage<=1?'disabled':'')+' onclick="App.finGoPage('+(_finPage-1)+')"><i class="fa-solid fa-chevron-left"></i></button>';
+    for(var i=1;i<=totalPages;i++){if(totalPages<=7||i===1||i===totalPages||(i>=_finPage-1&&i<=_finPage+1)){btns+='<button class="'+(i===_finPage?'active':'')+'" onclick="App.finGoPage('+i+')">'+i+'</button>';}else if(i===_finPage-2||i===_finPage+2){btns+='<button disabled>...</button>';}}
+    btns+='<button '+(_finPage>=totalPages?'disabled':'')+' onclick="App.finGoPage('+(_finPage+1)+')"><i class="fa-solid fa-chevron-right"></i></button>';
+    footer.innerHTML='<span>第 '+_finPage+' / '+totalPages+' 页，共 '+txs.length+' 条</span><div class="ps-pagination-btns">'+btns+'</div>';
+  }
+  function finGoPage(page){_finPage=page;_finRenderTable();}
+
+  // ==================== 人事中心 ====================
+  function getMockHRData(){
+    var depts=['淘宝运营部','京东运营部','抖音运营部','拼多多运营部','财务部','人事行政部','技术部','客服部'];
+    var positions=['运营经理','运营主管','高级运营','运营专员','财务经理','会计','人事经理','行政专员','前端工程师','后端工程师','客服主管','客服专员'];
+    var names=['张伟','李娜','王磊','赵敏','陈强','刘洋','周静','吴鹏','郑丽','钱浩','孙悦','马超','黄蕾','林峰','何琳','罗刚','宋雨','唐亮','韩雪','冯凯'];
+    var employees=[];
+    var now=new Date();
+    for(var i=0;i<20;i++){
+      var dept=depts[Math.floor(Math.random()*depts.length)];
+      var joinDate=new Date(now);joinDate.setFullYear(joinDate.getFullYear()-Math.floor(Math.random()*5));
+      joinDate.setMonth(Math.floor(Math.random()*12));joinDate.setDate(Math.floor(Math.random()*28+1));
+      employees.push({id:'EMP'+(1000+i),name:names[i],dept:dept,position:positions[Math.floor(Math.random()*positions.length)],phone:'138'+(10000000+Math.floor(Math.random()*90000000)),email:names[i].replace(/[a-zA-Z]/g,'').toLowerCase()+'_'+names[i].charAt(0).toLowerCase()+'@julang.com',joinDate:joinDate.toISOString().slice(0,10),status:Math.random()>0.15?'在职':(Math.random()>0.5?'试用期':'离职')});
+    }
+    employees.sort(function(a,b){return a.dept.localeCompare(b.dept);});
+    var deptDist=depts.map(function(d){return{name:d,count:employees.filter(function(e){return e.dept===d&&e.status!=='离职';}).length};}).filter(function(d){return d.count>0;});
+    var activeCount=employees.filter(function(e){return e.status==='在职';}).length;
+    var probationCount=employees.filter(function(e){return e.status==='试用期';}).length;
+    var newHires=employees.filter(function(e){return e.joinDate>='2026-07-01'&&e.status!=='离职';}).length;
+    var resigned=employees.filter(function(e){return e.status==='离职';}).length;
+    // Attendance trend
+    var attendanceMonths=['3月','4月','5月','6月','7月','8月'];
+    var attendanceTrend=attendanceMonths.map(function(m,i){return{month:m,rate:94+Math.random()*5};});
+    return {employees:employees,totalEmp:employees.length,activeCount:activeCount,probationCount:probationCount,newHires:newHires,resigned:resigned,attendance:95.8,avgHours:'8.5h',birthdays:3,training:87.5,deptDist:deptDist,attendanceTrend:attendanceTrend};
+  }
+
+  var _hrData=null; var _hrPage=1; var _hrSearch=''; var _hrDeptFilter='';
+  var _hrCharts={};
+  function _hrDisposeCharts(){Object.values(_hrCharts).forEach(function(c){try{c.dispose();}catch(e){}});for(var k in _hrCharts)delete _hrCharts[k];}
+  function _hrGetChart(domId){if(typeof echarts==='undefined'||!echarts.init)return null;var dom=document.getElementById(domId);if(!dom)return null;if(_hrCharts[domId])_hrCharts[domId].dispose();var c=echarts.init(dom);_hrCharts[domId]=c;return c;}
+
+  function renderHR(){
+    _hrData=getMockHRData();_hrPage=1;
+    var d=_hrData;
+    document.getElementById('hrTotalEmp').textContent=d.totalEmp;
+    document.getElementById('hrActive').textContent=d.activeCount;
+    document.getElementById('hrProbation').textContent=d.probationCount;
+    document.getElementById('hrNewHires').textContent=d.newHires;
+    document.getElementById('hrResigned').textContent=d.resigned;
+    document.getElementById('hrAttendance').textContent=d.attendance.toFixed(1)+'%';
+    document.getElementById('hrAvgHours').textContent=d.avgHours;
+    document.getElementById('hrBirthdays').textContent=d.birthdays+' 人';
+    document.getElementById('hrTraining').textContent=d.training.toFixed(1)+'%';
+    _hrRenderCharts();
+    _hrRenderTable();
+    var searchEl=document.getElementById('hrSearch');if(searchEl)searchEl.oninput=function(){_hrSearch=this.value;_hrPage=1;_hrRenderTable();};
+    var deptEl=document.getElementById('hrDeptFilter');if(deptEl)deptEl.onchange=function(){_hrDeptFilter=this.value;_hrPage=1;_hrRenderTable();};
+  }
+
+  function _hrRenderCharts(){
+    if(typeof echarts==='undefined'||!echarts.init)return;
+    _hrDisposeCharts();
+    var d=_hrData;
+    var c1=_hrGetChart('chartHRDept');
+    if(c1){c1.setOption({tooltip:{trigger:'item',formatter:'{b}: {c} 人 ({d}%)'},series:[{type:'pie',radius:['50%','78%'],center:['50%','48%'],data:d.deptDist.map(function(x){return{name:x.name,value:x.count};}),label:{formatter:'{b}\n{d}%',fontSize:10},emphasis:{label:{fontSize:14,fontWeight:'bold'}},itemStyle:{borderColor:'#fff',borderWidth:2}}],color:['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#f97316']});}
+
+    var c2=_hrGetChart('chartHRAttendance');
+    if(c2){c2.setOption({tooltip:{trigger:'axis'},grid:{left:45,right:20,top:10,bottom:25},xAxis:{type:'category',data:d.attendanceTrend.map(function(a){return a.month;}),axisLabel:{fontSize:10}},yAxis:{type:'value',name:'出勤率%',min:85,max:100,axisLabel:{fontSize:9,formatter:function(v){return v+'%'}}},series:[{type:'line',data:d.attendanceTrend.map(function(a){return a.rate;}),smooth:true,lineStyle:{color:'#7c3aed',width:2.5},itemStyle:{color:'#7c3aed'},symbol:'circle',symbolSize:7,areaStyle:{color:'rgba(124,58,237,0.08)'}}]});}
+  }
+
+  function _hrRenderTable(){
+    var employees=(_hrData.employees||[]).slice();
+    if(_hrSearch){var kw=_hrSearch.toLowerCase();employees=employees.filter(function(e){return e.name.toLowerCase().indexOf(kw)>=0||e.id.toLowerCase().indexOf(kw)>=0||e.dept.toLowerCase().indexOf(kw)>=0;});}
+    if(_hrDeptFilter){employees=employees.filter(function(e){return e.dept===_hrDeptFilter;});}
+    var pageSize=10,totalPages=Math.ceil(employees.length/pageSize)||1;
+    if(_hrPage>totalPages)_hrPage=totalPages;
+    var pageItems=employees.slice((_hrPage-1)*pageSize,_hrPage*pageSize);
+    document.getElementById('hrEmpTotal').textContent='共 '+employees.length+' 人';
+    document.getElementById('hrTbody').innerHTML=pageItems.map(function(e){
+      var statusCls=e.status==='在职'?'badge-success':(e.status==='试用期'?'badge-warning':'badge-danger');
+      return '<tr><td style="font-family:monospace;font-size:12px">'+e.id+'</td><td><strong>'+e.name+'</strong></td><td>'+e.dept+'</td><td>'+e.position+'</td><td>'+e.phone+'</td><td>'+e.email+'</td><td>'+e.joinDate+'</td><td><span class="badge '+statusCls+'">'+e.status+'</span></td></tr>';
+    }).join('');
+    var footer=document.getElementById('hrPagination');
+    var btns='';btns+='<button '+(_hrPage<=1?'disabled':'')+' onclick="App.hrGoPage('+(_hrPage-1)+')"><i class="fa-solid fa-chevron-left"></i></button>';
+    for(var i=1;i<=totalPages;i++){if(totalPages<=7||i===1||i===totalPages||(i>=_hrPage-1&&i<=_hrPage+1)){btns+='<button class="'+(i===_hrPage?'active':'')+'" onclick="App.hrGoPage('+i+')">'+i+'</button>';}else if(i===_hrPage-2||i===_hrPage+2){btns+='<button disabled>...</button>';}}
+    btns+='<button '+(_hrPage>=totalPages?'disabled':'')+' onclick="App.hrGoPage('+(_hrPage+1)+')"><i class="fa-solid fa-chevron-right"></i></button>';
+    footer.innerHTML='<span>第 '+_hrPage+' / '+totalPages+' 页，共 '+employees.length+' 条</span><div class="ps-pagination-btns">'+btns+'</div>';
+  }
+  function hrGoPage(page){_hrPage=page;_hrRenderTable();}
+
+  // ==================== 个人中心设置 ====================
+  function renderProfile() {
+    document.getElementById('pfDisplayName').textContent = state.currentUser || '管理员';
+    document.getElementById('pfAccount').textContent = state.currentAccount || 'admin';
+    document.getElementById('pfRole').textContent = state.currentRole || '超级管理员';
+    document.getElementById('pfRoleBadge').textContent = state.currentRole || '超级管理员';
+    document.getElementById('pfLastLogin').textContent = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+    document.getElementById('pfRegDate').textContent = '2026-06-01';
+    document.getElementById('pfName').value = state.currentUser || '张经理';
+    // Avatar initial
+    var avatarEl = document.getElementById('pfAvatar');
+    if (avatarEl && state.currentUser) avatarEl.textContent = state.currentUser.charAt(0);
+
+    // Profile tabs
+    document.querySelectorAll('#profileTabs .ap-tab').forEach(function(tab){
+      tab.onclick = function(){
+        document.querySelectorAll('#profileTabs .ap-tab').forEach(function(t){t.classList.remove('active');});
+        this.classList.add('active');
+        var tabName = this.dataset.tab;
+        document.querySelectorAll('[id^="pf-panel-"]').forEach(function(p){p.classList.remove('active');});
+        var panel = document.getElementById('pf-panel-'+tabName);
+        if (panel) { panel.classList.add('active');
+          if (tabName === 'profile-log') _pfRenderLog(); }
+      };
+    });
+    _pfRenderLog();
+  }
+
+  function saveProfile() {
+    var name = document.getElementById('pfName').value.trim();
+    if (!name) { showToast('请输入姓名','error'); return; }
+    state.currentUser = name;
+    document.getElementById('pfDisplayName').textContent = name;
+    document.getElementById('pfAvatar').textContent = name.charAt(0);
+    document.getElementById('currentUser').textContent = name;
+    sessionStorage.setItem('admin_current_user', name);
+    showToast('个人信息已保存','success');
+  }
+
+  function resetProfile() {
+    document.getElementById('pfName').value = state.currentUser || '张经理';
+    document.getElementById('pfPhone').value = '13800138001';
+    document.getElementById('pfEmail').value = 'zhangjl@julang.com';
+    document.getElementById('pfWechat').value = 'zhang_manager';
+    showToast('已重置为原始数据','success');
+  }
+
+  function changePassword() {
+    var cur = document.getElementById('pfCurPwd').value;
+    var n1 = document.getElementById('pfNewPwd').value;
+    var n2 = document.getElementById('pfNewPwd2').value;
+    if (!cur) { showToast('请输入当前密码','error'); return; }
+    if (!n1 || n1.length < 6) { showToast('新密码至少6位','error'); return; }
+    if (n1 !== n2) { showToast('两次密码不一致','error'); return; }
+    showToast('密码修改成功','success');
+    document.getElementById('pfCurPwd').value = '';
+    document.getElementById('pfNewPwd').value = '';
+    document.getElementById('pfNewPwd2').value = '';
+  }
+
+  function _pfRenderLog() {
+    var tbody = document.getElementById('pfLogTbody');
+    if (!tbody) return;
+    var logs = [
+      {time:'2026-08-04 09:15:32',type:'登录',detail:'管理员登录后台系统',ip:'192.168.1.100',device:'Chrome / Windows'},
+      {time:'2026-08-03 17:40:12',type:'修改',detail:'修改管理员「李运营」的角色为运营主管',ip:'192.168.1.100',device:'Chrome / Windows'},
+      {time:'2026-08-03 14:22:08',type:'新增',detail:'新增管理员账号「wangcaiwu」',ip:'192.168.1.100',device:'Chrome / Windows'},
+      {time:'2026-08-03 11:05:45',type:'导出',detail:'导出营销数据报表（2026-07-01 ~ 2026-07-31）',ip:'192.168.1.100',device:'Chrome / Windows'},
+      {time:'2026-08-02 16:30:18',type:'设置',detail:'修改系统通知设置',ip:'192.168.1.100',device:'Chrome / Windows'},
+      {time:'2026-08-02 10:12:55',type:'登录',detail:'管理员登录后台系统',ip:'192.168.1.100',device:'Chrome / Windows'},
+      {time:'2026-08-01 15:48:33',type:'操作',detail:'生成每日数据分析报告（2026-07-31）',ip:'192.168.1.100',device:'Chrome / Windows'},
+      {time:'2026-08-01 09:00:01',type:'登录',detail:'管理员登录后台系统',ip:'192.168.1.100',device:'Chrome / Windows'},
+      {time:'2026-07-31 18:20:10',type:'修改',detail:'修改了个人基本资料',ip:'192.168.1.105',device:'Safari / macOS'},
+      {time:'2026-07-31 14:55:40',type:'删除',detail:'删除商品「旧版充电线」',ip:'192.168.1.100',device:'Chrome / Windows'},
+    ];
+    tbody.innerHTML = logs.map(function(l){
+      var typeCls = l.type==='登录'?'badge-info':(l.type==='修改'||l.type==='新增'?'badge-success':(l.type==='删除'?'badge-danger':'badge-gray'));
+      return '<tr><td>'+l.time+'</td><td><span class="badge '+typeCls+'">'+l.type+'</span></td><td>'+l.detail+'</td><td style="font-family:monospace;font-size:12px">'+l.ip+'</td><td>'+l.device+'</td></tr>';
+    }).join('');
+  }
+
+  // ==================== 工具箱 - 违规词检测（图片OCR） ====================
+  var _vdImages = [];        // {id, file, name, dataUrl, ocrText, violations}
+  var _vdNextImgId = 1;
+  var _vdOcrRunning = false;
+
+  var _violationWords = [
+    { id: 1, word: '违禁品', level: '严重', time: '2026-08-01 10:30:00' },
+    { id: 2, word: '假货', level: '严重', time: '2026-08-01 10:32:00' },
+    { id: 3, word: '虚假宣传', level: '严重', time: '2026-08-02 14:15:00' },
+    { id: 4, word: '绝对化用语', level: '一般', time: '2026-08-03 09:20:00' },
+    { id: 5, word: '侵权', level: '严重', time: '2026-08-04 11:00:00' },
+    { id: 6, word: '低俗', level: '一般', time: '2026-08-05 16:45:00' },
+  ];
+  var _violationNextId = 7;
+
+  // ========== 页面渲染入口 ==========
+  function renderToolboxViolationCheck() {
+    // 检测进行中不重置，保留已有数据
+    if (_vdOcrRunning) {
+      // 检测还在跑：显示扫描动画 + 已有缩略图
+      setTimeout(function() {
+        _vdRenderThumbs();
+        var scanning = document.getElementById('vdScanning');
+        var resultEmpty = document.getElementById('vdResultEmpty');
+        var resultPass = document.getElementById('vdPassAnim');
+        var resultList = document.getElementById('vdResultList');
+        if (scanning) scanning.style.display = 'flex';
+        if (resultEmpty) resultEmpty.style.display = 'none';
+        if (resultPass) resultPass.style.display = 'none';
+        if (resultList) resultList.innerHTML = '';
+      }, 100);
+    } else if (_vdImages.some(function(img) { return img.ocrText !== null; })) {
+      // 检测已完成：恢复缩略图和结果
+      setTimeout(function() { _vdRenderThumbs(); _vdUpdateResults(); }, 100);
+    } else {
+      _vdResetState();
+    }
+    // 兼容旧版违规词库表格（如果存在）
+    var vwTbody = document.getElementById('violationWordTbody');
+    if (vwTbody) _renderViolationWordTable();
+  }
+
+  function _vdResetState() {
+    _vdImages = [];
+    _vdNextImgId = 1;
+    _vdOcrRunning = false;
+    // 缩略图区
+    document.getElementById('vdThumbList').innerHTML = '';
+    var emptyEl = document.getElementById('vdThumbEmpty');
+    if (emptyEl) emptyEl.style.display = '';
+    // 结果区
+    var resultEmpty = document.getElementById('vdResultEmpty');
+    var resultList = document.getElementById('vdResultList');
+    var passAnim = document.getElementById('vdPassAnim');
+    var scanning = document.getElementById('vdScanning');
+    if (resultEmpty) resultEmpty.style.display = '';
+    if (resultList) resultList.innerHTML = '';
+    if (passAnim) passAnim.style.display = 'none';
+    if (scanning) scanning.style.display = 'none';
+    // 摘要 & 按钮
+    var summary = document.getElementById('vdResultSummary');
+    if (summary) { summary.textContent = '等待检测'; summary.style.color = '#94a3b8'; }
+    var startBtn = document.getElementById('vdStartBtn');
+    if (startBtn) startBtn.disabled = false;
+    // 重置统计卡片
+    var statTotal = document.getElementById('vdStatTotal');
+    var statProcessing = document.getElementById('vdStatProcessing');
+    var statHits = document.getElementById('vdStatHits');
+    var statPassRate = document.getElementById('vdStatPassRate');
+    if (statTotal) statTotal.textContent = '0';
+    if (statProcessing) statProcessing.textContent = '0';
+    if (statHits) statHits.textContent = '0';
+    if (statPassRate) statPassRate.textContent = '--';
+  }
+
+  // ========== 图片选择 ==========
+  function vdHandleFiles(files) {
+    if (!files || files.length === 0) return;
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      if (!f.type.match(/image\/(jpeg|png|webp)/)) continue;
+      // 避免重复
+      if (_vdImages.some(function(img) { return img.name === f.name && img.file.size === f.size; })) continue;
+      var reader = new FileReader();
+      reader.onload = (function(file, name) {
+        return function(e) {
+          _vdImages.push({
+            id: _vdNextImgId++,
+            file: file,
+            name: name,
+            dataUrl: e.target.result,
+            ocrText: null,
+            violations: null
+          });
+          _vdRenderThumbs();
+        };
+      })(f, f.name);
+      reader.readAsDataURL(f);
+    }
+    // 重置 file input 允许重复选同一个文件
+    document.getElementById('vdFileInput').value = '';
+  }
+
+  function vdHandleDrop(e) {
+    e.preventDefault();
+    e.target.style.borderColor = '#e2e8f0';
+    e.target.style.background = '#fafbfc';
+    var items = e.dataTransfer.items;
+    var files = [];
+    // 递归遍历文件夹
+    function scanEntries(entries, cb) {
+      var pending = entries.length;
+      if (pending === 0) cb([]);
+      var results = [];
+      for (var i = 0; i < entries.length; i++) {
+        (function(entry) {
+          if (entry.isFile) {
+            entry.file(function(f) { results.push(f); pending--; if (pending === 0) cb(results); });
+          } else if (entry.isDirectory) {
+            var reader = entry.createReader();
+            reader.readEntries(function(entries) { scanEntries(entries, function(sub) { results = results.concat(sub); pending--; if (pending === 0) cb(results); }); });
+          } else { pending--; if (pending === 0) cb(results); }
+        })(entries[i]);
+      }
+    }
+    if (items) {
+      var entries = [];
+      for (var i = 0; i < items.length; i++) {
+        var entry = items[i].webkitGetAsEntry ? items[i].webkitGetAsEntry() : null;
+        if (entry) entries.push(entry);
+      }
+      if (entries.length > 0) {
+        scanEntries(entries, function(fs) { vdHandleFiles(fs); });
+        return;
+      }
+    }
+    // 回退：直接处理文件
+    vdHandleFiles(e.dataTransfer.files);
+  }
+
+  function _vdRenderThumbs() {
+    var container = document.getElementById('vdThumbList');
+    // 不在违规词检测页面时跳过 DOM 操作
+    if (!container) return;
+    var emptyEl = document.getElementById('vdThumbEmpty');
+
+    // 更新统计卡片
+    var statTotal = document.getElementById('vdStatTotal');
+    if (statTotal) statTotal.textContent = _vdImages.length;
+
+    // 切换空状态 / 图片列表
+    if (_vdImages.length === 0) {
+      container.innerHTML = '';
+      if (emptyEl) emptyEl.style.display = '';
+    } else {
+      if (emptyEl) emptyEl.style.display = 'none';
+      var html = '';
+      for (var i = 0; i < _vdImages.length; i++) {
+        var img = _vdImages[i];
+        var statusIcon = '';
+        var statusStyle = '';
+        if (img.violations && img.violations.length > 0) {
+          statusIcon = '<i class="fa-solid fa-circle-exclamation"></i> ';
+          statusStyle = 'border-color:#ef4444';
+        } else if (img.ocrText !== null) {
+          statusIcon = '<i class="fa-solid fa-circle-check"></i> ';
+          statusStyle = 'border-color:#16a34a';
+        }
+        html += '<div style="position:relative;width:64px;height:64px;border-radius:8px;overflow:hidden;border:2px solid ' + (statusStyle ? statusStyle.replace('border-color:','') : '#e2e8f0') + ';flex-shrink:0;cursor:pointer" onclick="App.vdRemoveImage(' + img.id + ')" title="' + img.name + ' (点击移除)">' +
+          '<img src="' + img.dataUrl + '" style="width:100%;height:100%;object-fit:cover">' +
+          '<span style="position:absolute;top:2px;right:2px;font-size:10px;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.6)">' + statusIcon + '</span>' +
+          '<span style="position:absolute;bottom:0;left:0;right:0;font-size:9px;color:#fff;background:rgba(0,0,0,0.5);padding:1px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + img.name + '</span>' +
+          '</div>';
+      }
+      container.innerHTML = html;
+    }
+  }
+
+  function vdRemoveImage(id) {
+    _vdImages = _vdImages.filter(function(img) { return img.id !== id; });
+    _vdRenderThumbs();
+    _vdUpdateResults();
+  }
+
+  // ========== OCR 检测核心 ==========
+  // 图片预处理：仅放大 + 去色，保留原始细节，让 Tesseract 内部二值化处理
+  function _vdPreprocessImage(dataUrl) {
+    return new Promise(function(resolve) {
+      var img = new Image();
+      img.onload = function() {
+        var w = img.width, h = img.height;
+        // 缩放：确保短边至少 800px，给 Tesseract 足够像素
+        var minSide = Math.min(w, h);
+        if (minSide < 800) {
+          var scale = 800 / minSide;
+          w = Math.round(w * scale);
+          h = Math.round(h * scale);
+        }
+
+        var canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        var ctx = canvas.getContext('2d');
+        // 使用高质量缩放
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, w, h);
+
+        // 仅做去色处理：保留亮度，移除色彩（Tesseract 内部会自己二值化）
+        var imageData = ctx.getImageData(0, 0, w, h);
+        var data = imageData.data;
+        for (var i = 0; i < w * h; i++) {
+          var r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
+          // 加权灰度：人眼感知权重
+          var gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+          data[i * 4] = gray;
+          data[i * 4 + 1] = gray;
+          data[i * 4 + 2] = gray;
+        }
+        ctx.putImageData(imageData, 0, 0);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.onerror = function() { resolve(dataUrl); };
+      img.src = dataUrl;
+    });
+  }
+
+  // OCR 结果清洗：清理明显的乱码，保留正常文本
+  function _vdCleanOcrText(text) {
+    if (!text) return '';
+    // 1. 移除 Unicode 替换字符和各种控制字符
+    var cleaned = text.replace(/[� --​-‏- ﻿]/g, '');
+    // 2. 将连续空白统一为单个空格/换行
+    cleaned = cleaned.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n');
+    // 3. 按行处理
+    var lines = cleaned.split('\n');
+    var result = [];
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) { result.push(''); continue; }
+      // 移除行内乱码：保留中文、英文、数字、常见标点
+      // 中文范围: 一-鿿 (基本) + 㐀-䶿 (扩展A)
+      line = line.replace(/[^一-鿿㐀-䶿a-zA-Z0-9\s.,;:!?()\[\]{}"'\-+/=<>@#$%&*_|~\\^`'"，。；：？！…—·《》【】「」『』、（）％＃＠＆￥]/g, '');
+      line = line.trim();
+      if (!line) { result.push(''); continue; }
+      // 跳过纯符号/数字行（大概率噪声）
+      var hasCJK = /[一-鿿㐀-䶿]/.test(line);
+      var hasWord = /[a-zA-Z0-9]{2,}/.test(line);
+      if (!hasCJK && !hasWord && line.length < 6) { result.push(''); continue; }
+      result.push(line);
+    }
+    // 4. 收尾：去掉首尾空行，合并连续空行
+    var finalText = result.join('\n').replace(/^\n+/, '').replace(/\n+$/, '').replace(/\n{3,}/g, '\n\n');
+    return finalText;
+  }
+
+  async function vdStartOCR() {
+    if (_vdOcrRunning) return;
+    if (_vdImages.length === 0) {
+      showToast('请先选择图片', 'warning');
+      return;
+    }
+
+    _vdOcrRunning = true;
+    var startBtn = document.getElementById('vdStartBtn');
+    var scanningEl = document.getElementById('vdScanning');
+    var resultEmpty = document.getElementById('vdResultEmpty');
+    var passAnim = document.getElementById('vdPassAnim');
+
+    if (startBtn) startBtn.disabled = true;
+    if (scanningEl) scanningEl.style.display = 'flex';
+    if (resultEmpty) resultEmpty.style.display = 'none';
+    if (passAnim) passAnim.style.display = 'none';
+
+    // 更新统计：检测中
+    var statProcessing = document.getElementById('vdStatProcessing');
+    if (statProcessing) statProcessing.textContent = _vdImages.length;
+
+    // 收集所有图片的 base64 dataUrl
+    var imageDataUrls = _vdImages.map(function(img) { return img.dataUrl; });
+
+    try {
+      var resp = await fetch('/api/ocr/detect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ images: imageDataUrls }),
+      });
+      var json = await resp.json();
+      var data = (json && json.results) ? json.results : [];
+
+      for (var i = 0; i < _vdImages.length; i++) {
+        var img = _vdImages[i];
+        var result = data[i];
+        img.ocrText = (result && result.text) ? result.text : '';
+        img.ocrLines = (result && result.lines) ? result.lines : 0;
+        img.ocrConfidence = (result && result.confidence) ? result.confidence : 0;
+        img.ocrFallback = (result && result.fallback) ? result.fallback : false;
+        img.ocrError = (result && result.error) ? result.error : null;
+
+        // 调用后端违规词检测
+        img.violations = [];
+        img.suspectedWords = [];
+        if (img.ocrText && img.ocrText.trim()) {
+          try {
+            var vResp = await fetch('/api/violation/detect', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: img.ocrText }),
+            });
+            var vJson = await vResp.json();
+            if (vJson && vJson.success) {
+              img.violations = vJson.confirmed || [];
+              img.suspectedWords = vJson.suspected || [];
+            }
+          } catch (ve) {
+            console.warn('违规词检测失败:', ve);
+          }
+        }
+
+        if (img.violations.length > 0 || img.suspectedWords.length > 0) {
+          totalViolations += img.violations.length + img.suspectedWords.length;
+          totalImagesWithViolations++;
+        }
+      }
+    } catch (e) {
+      console.error('OCR API error:', e);
+      for (var i = 0; i < _vdImages.length; i++) {
+        _vdImages[i].ocrText = '';
+        _vdImages[i].ocrError = e.message;
+        _vdImages[i].violations = [];
+        _vdImages[i].suspectedWords = [];
+      }
+      showToast('OCR识别失败: ' + e.message, 'error');
+    }
+
+    _vdOcrRunning = false;
+
+    // 如果已切换到其他页面，只更新数据不操作 DOM
+    if (state.currentPage !== 'toolbox-violation-check') return;
+
+    if (startBtn) startBtn.disabled = false;
+    if (scanningEl) scanningEl.style.display = 'none';
+    _vdRenderThumbs();
+    _vdUpdateResults();
+
+    showToast('检测完成：' + _vdImages.length + ' 张图片，' + totalImagesWithViolations + ' 张含违规词', totalImagesWithViolations > 0 ? 'warning' : 'success');
+  }
+
+  function _vdUpdateResults() {
+    var resultList = document.getElementById('vdResultList');
+    var resultEmpty = document.getElementById('vdResultEmpty');
+    var resultPass = document.getElementById('vdPassAnim');
+    var resultSummary = document.getElementById('vdResultSummary');
+
+    if (!resultList) return;
+
+    if (_vdImages.length === 0) {
+      resultList.innerHTML = '';
+      if (resultEmpty) resultEmpty.style.display = '';
+      if (resultPass) resultPass.style.display = 'none';
+      if (resultSummary) { resultSummary.textContent = '等待检测'; resultSummary.style.color = '#94a3b8'; }
+      return;
+    }
+
+    var allProcessed = _vdImages.every(function(img) { return img.ocrText !== null; });
+    if (!allProcessed) {
+      resultList.innerHTML = '';
+      if (resultEmpty) resultEmpty.style.display = '';
+      if (resultPass) resultPass.style.display = 'none';
+      if (resultSummary) { resultSummary.textContent = _vdImages.length + ' 张待检测'; resultSummary.style.color = '#94a3b8'; }
+      return;
+    }
+
+    var totalConfirmed = 0;
+    var totalSuspected = 0;
+    var totalImagesWithViolations = 0;
+    var html = '';
+
+    for (var i = 0; i < _vdImages.length; i++) {
+      var img = _vdImages[i];
+      var hasViolations = (img.violations && img.violations.length > 0);
+      var hasSuspected = (img.suspectedWords && img.suspectedWords.length > 0);
+
+      if (hasViolations || hasSuspected) {
+        totalConfirmed += img.violations ? img.violations.length : 0;
+        totalSuspected += img.suspectedWords ? img.suspectedWords.length : 0;
+        totalImagesWithViolations++;
+      }
+
+      // 高亮标记：精确违规（红色）+ 疑似违规（橙色）
+      var highlightedText = img.ocrText || '<span style="color:#94a3b8;font-style:italic">[未检测到文字]</span>';
+      var allMarks = [];
+      if (img.violations) {
+        img.violations.forEach(function(v) {
+          if (v.position !== undefined && v.length) {
+            allMarks.push({ type: 'confirmed', start: v.position, end: v.position + v.length, word: v.word });
+          }
+        });
+      }
+      if (img.suspectedWords) {
+        img.suspectedWords.forEach(function(v) {
+          if (v.position !== undefined && v.length) {
+            allMarks.push({ type: 'suspected', start: v.position, end: v.position + v.length, word: v.word });
+          }
+        });
+      }
+      // 按位置从后往前替换，避免偏移
+      allMarks.sort(function(a, b) { return b.start - a.start; });
+      allMarks.forEach(function(mk) {
+        var match = highlightedText.slice(mk.start, mk.end);
+        var title = mk.type === 'confirmed' ? '精确违规: ' + mk.word : '疑似违规: ' + mk.word;
+        if (mk.type === 'confirmed') {
+          highlightedText = highlightedText.slice(0, mk.start) +
+            '<mark style="background:#fee2e2;color:#dc2626;padding:1px 3px;border-radius:3px;border:1px solid #fecaca;font-weight:600;cursor:help" title="' + title + '">' + match + '</mark>' +
+            highlightedText.slice(mk.end);
+        } else {
+          highlightedText = highlightedText.slice(0, mk.start) +
+            '<mark style="background:#fff7ed;color:#ea580c;padding:1px 3px;border-radius:3px;border:1px solid #fed7aa;font-weight:600;cursor:help" title="' + title + '">' + match + '</mark>' +
+            highlightedText.slice(mk.end);
+        }
+      });
+
+      var hasAnyIssue = hasViolations || hasSuspected;
+      var headerColor = hasAnyIssue ? '#ef4444' : '#16a34a';
+      var headerIcon = hasAnyIssue ? 'fa-circle-exclamation' : 'fa-circle-check';
+      var statusParts = [];
+      if (hasViolations) statusParts.push('<b style="color:#dc2626">' + img.violations.length + '</b> 个精确违规');
+      if (hasSuspected) statusParts.push('<b style="color:#ea580c">' + img.suspectedWords.length + '</b> 个疑似');
+      var statusText = hasAnyIssue ? '发现 ' + statusParts.join('，') : '未发现违规词';
+
+      html += '<div style="margin-bottom:16px;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">' +
+        '<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0">' +
+          '<img src="' + img.dataUrl + '" style="width:40px;height:40px;border-radius:6px;object-fit:cover">' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:13px;font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + img.name + '">' + img.name + '</div>' +
+            '<div style="font-size:12px;color:' + headerColor + '"><i class="fa-solid ' + headerIcon + '"></i> ' + statusText + '</div>' +
+          '</div>' +
+          '<div style="font-size:11px;color:#94a3b8">' + (img.ocrConfidence ? '置信度 ' + Math.round(img.ocrConfidence * 100) + '%' : '') + (img.ocrFallback ? ' · 降级识别' : '') + '</div>' +
+        '</div>' +
+        '<div style="padding:10px 14px;font-size:13px;line-height:1.8;max-height:200px;overflow-y:auto;word-break:break-all">' + highlightedText + '</div>' +
+      '</div>';
+    }
+
+    // 更新统计卡片
+    var statHits = document.getElementById('vdStatHits');
+    var statPassRate = document.getElementById('vdStatPassRate');
+    var statProcessing = document.getElementById('vdStatProcessing');
+    if (statHits) statHits.textContent = totalImagesWithViolations;
+    if (statProcessing) statProcessing.textContent = '0';
+    if (statPassRate) {
+      var passRate = _vdImages.length > 0 ? Math.round((_vdImages.length - totalImagesWithViolations) / _vdImages.length * 100) : 100;
+      statPassRate.textContent = passRate + '%';
+    }
+
+    // 隐藏空状态，显示结果
+    if (resultEmpty) resultEmpty.style.display = 'none';
+
+    if (totalImagesWithViolations > 0) {
+      if (resultPass) resultPass.style.display = 'none';
+      resultList.innerHTML = html || '<div style="padding:20px;text-align:center;color:#94a3b8">无检测结果</div>';
+      var parts = [];
+      if (totalConfirmed > 0) parts.push(totalConfirmed + ' 处精确违规');
+      if (totalSuspected > 0) parts.push(totalSuspected + ' 处疑似违规');
+      if (resultSummary) { resultSummary.textContent = _vdImages.length + ' 张图片 · ' + totalImagesWithViolations + ' 张命中 · ' + parts.join(' + '); resultSummary.style.color = '#ef4444'; }
+    } else {
+      // 全部合规 — 显示合规横幅 + 提取的文字
+      if (resultPass) resultPass.style.display = '';
+      resultList.innerHTML = html || '<div style="padding:20px;text-align:center;color:#94a3b8">无检测结果</div>';
+      if (resultSummary) { resultSummary.textContent = _vdImages.length + ' 张图片 · 全部合规'; resultSummary.style.color = '#16a34a'; }
+    }
+  }
+
+  function vdClearAll() {
+    _vdResetState();
+  }
+
+  // ========== 违规词库管理 ==========
+  function _renderViolationWordTable() {
+    var tbody = document.getElementById('violationWordTbody');
+    var searchTerm = (document.getElementById('violationWordSearch') || {}).value || '';
+    var filtered = _violationWords.filter(function(item) {
+      return !searchTerm || item.word.indexOf(searchTerm) !== -1;
+    });
+    document.getElementById('violationWordCount').textContent = '共 ' + _violationWords.length + ' 条';
+    if (filtered.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:32px">暂无违规词数据</td></tr>';
+    } else {
+      tbody.innerHTML = filtered.map(function(item, i) {
+        var levelBadge = item.level === '严重' ? 'badge-danger' : 'badge-warning';
+        return '<tr>' +
+          '<td>' + (i + 1) + '</td>' +
+          '<td><strong>' + item.word + '</strong></td>' +
+          '<td><span class="badge ' + levelBadge + '">' + item.level + '</span></td>' +
+          '<td>' + item.time + '</td>' +
+          '<td><button class="btn btn-sm" style="color:#dc2626;background:none;border:none;cursor:pointer" onclick="App.vdDeleteWord(' + item.id + ')"><i class="fa-solid fa-trash"></i> 删除</button></td>' +
+          '</tr>';
+      }).join('');
+    }
+  }
+
+  function vdOpenAddWordModal() {
+    var word = prompt('请输入要添加的违规词：');
+    if (!word || !word.trim()) return;
+    var level = confirm('是否为严重级别？（确定=严重，取消=一般）') ? '严重' : '一般';
+    _violationWords.push({
+      id: _violationNextId++,
+      word: word.trim(),
+      level: level,
+      time: new Date().toISOString().replace('T', ' ').substring(0, 19)
+    });
+    _renderViolationWordTable();
+    showToast('违规词「' + word.trim() + '」已添加', 'success');
+  }
+
+  function vdDeleteWord(id) {
+    var item = _violationWords.find(function(w) { return w.id === id; });
+    if (!item) return;
+    if (!confirm('确定要删除违规词「' + item.word + '」吗？')) return;
+    _violationWords = _violationWords.filter(function(w) { return w.id !== id; });
+    _renderViolationWordTable();
+    showToast('违规词「' + item.word + '」已删除', 'success');
+  }
+
+  // ==================== 订单详情 - 单链接销售数据 ====================
+  var _odPage = 1;
+  var _odPageSize = 20;
+  var _odSortBy = '';
+  var _odSortDir = 'desc';
+  var _odData = null;
+  var _odFields = [];
+  var _odCardFields = [];
+  var _odTableCols = [];
+  var _odLinkType = 'all';
+
+  function _odFmtMoney(v) { return '¥' + Number(v).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
+  function _odFmtInt(v) { return Math.round(v).toLocaleString('zh-CN'); }
+  function _odFmtPct(v) { return Number(v).toFixed(2) + '%'; }
+  function _odFmtByType(v, type) {
+    if (v === null || v === undefined || v === '') return '—';
+    if (type === 'money') return _odFmtMoney(v);
+    if (type === 'pct') return _odFmtPct(v);
+    if (type === 'int') return _odFmtInt(v);
+    if (type === 'decimal') return Number(v).toFixed(2);
+    return v;
+  }
+  function _odPlatformBadge(p) {
+    if (p === '抖店') return 'badge-warning';
+    if (p === '京东') return 'badge-danger';
+    if (p === '千牛') return 'badge-info';
+    return 'badge-gray';
+  }
+
+  async function renderOrderDetails() {
+    var yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    var dateStart = document.getElementById('odDateStart');
+    var dateEnd = document.getElementById('odDateEnd');
+    if (dateStart) { dateStart.max = yesterday; if (!dateStart.value) dateStart.value = yesterday; }
+    if (dateEnd) { dateEnd.max = yesterday; if (!dateEnd.value) dateEnd.value = yesterday; }
+    _odUpdateDateLabel();
+    _odUpdateLinkTypeToggle();
+    await _odFetchData();
+  }
+
+  function _odUpdateLinkTypeToggle() {
+    var toggle = document.getElementById('odLinkTypeToggle');
+    if (!toggle) return;
+    var plat = (document.getElementById('odPlatform') || {}).value || '';
+    toggle.style.display = (plat === '千牛') ? 'flex' : 'none';
+    _odStyleLinkTypeButtons();
+  }
+
+  function _odStyleLinkTypeButtons() {
+    var allBtn = document.getElementById('odLinkAllBtn');
+    var promoBtn = document.getElementById('odLinkPromoBtn');
+    if (allBtn) {
+      allBtn.style.background = (_odLinkType === 'all') ? '#fff' : 'transparent';
+      allBtn.style.color = (_odLinkType === 'all') ? '#1e293b' : '#64748b';
+      allBtn.style.fontWeight = (_odLinkType === 'all') ? '600' : '400';
+      allBtn.style.boxShadow = (_odLinkType === 'all') ? '0 1px 2px rgba(0,0,0,.06)' : 'none';
+    }
+    if (promoBtn) {
+      promoBtn.style.background = (_odLinkType === 'promo') ? '#fff' : 'transparent';
+      promoBtn.style.color = (_odLinkType === 'promo') ? '#1e293b' : '#64748b';
+      promoBtn.style.fontWeight = (_odLinkType === 'promo') ? '600' : '400';
+      promoBtn.style.boxShadow = (_odLinkType === 'promo') ? '0 1px 2px rgba(0,0,0,.06)' : 'none';
+    }
+  }
+
+  function odSetLinkType(type) {
+    if (type !== 'all' && type !== 'promo') type = 'all';
+    if (_odLinkType === type) return;
+    _odLinkType = type;
+    _odStyleLinkTypeButtons();
+    _odPage = 1;
+    _odCardFields = [];
+    _odTableCols = [];
+    _odSortBy = '';
+    _odSortDir = 'desc';
+    // 切换商品类型时同步刷新店铺列表
+    var plat = (document.getElementById('odPlatform') || {}).value || '';
+    var odStore = document.getElementById('odStore');
+    if (odStore) { odStore.innerHTML = '<option value="">全部店铺</option>'; odStore.value = ''; }
+    if (plat === '千牛') {
+      fetch('/api/order-details/stores?platform=' + encodeURIComponent(plat) + '&linkType=' + encodeURIComponent(type))
+        .then(function(r) { return r.json(); })
+        .then(function(j) {
+          if (j.code === 0 && j.data && odStore) {
+            odStore.innerHTML = '<option value="">全部店铺</option>' + j.data.map(function(s) { return '<option value="' + s + '">' + s + '</option>'; }).join('');
+          }
+        });
+    }
+    _odFetchData();
+  }
+
+  async function _odFetchData() {
+    var params = [];
+    params.push('page=' + _odPage);
+    params.push('pageSize=' + _odPageSize);
+    params.push('sortBy=' + _odSortBy);
+    params.push('sortDir=' + _odSortDir);
+    var start = (document.getElementById('odDateStart') || {}).value || '';
+    var end = (document.getElementById('odDateEnd') || {}).value || '';
+    var plat = (document.getElementById('odPlatform') || {}).value || '';
+    var store = (document.getElementById('odStore') || {}).value || '';
+    var search = (document.getElementById('odSearch') || {}).value || '';
+    if (start) params.push('start=' + encodeURIComponent(start));
+    if (end) params.push('end=' + encodeURIComponent(end));
+    if (plat) params.push('platform=' + encodeURIComponent(plat));
+    if (store) params.push('store=' + encodeURIComponent(store));
+    if (search) params.push('search=' + encodeURIComponent(search));
+    params.push('linkType=' + encodeURIComponent(_odLinkType));
+    params.push('cardFields=' + encodeURIComponent(_odCardFields.join(',')));
+
+    try {
+      var resp = await fetch('/api/order-details/data?' + params.join('&'));
+      var json = await resp.json();
+      if (json.code === 0 && json.data) {
+        _odData = json.data;
+        if (json.data.fields) {
+          _odFields = json.data.fields;
+          var _prevCardFields = _odCardFields.join(',');
+          _odApplyFieldDefaults();
+          _odPopulateCardSelects();
+          _odRenderColPanel();
+          // 首次进入/切换平台时 cardFields 为空，后端不会返回卡片汇总，
+          // 需要按默认字段重新拉取一次，否则上方数字卡片会一直显示“—”
+          if (_odCardFields.join(',') !== _prevCardFields) { _odFetchData(); return; }
+        }
+        _odRenderCards(json.data);
+        _odRenderTable(json.data);
+        _odRenderPagination(json.data);
+        _odUpdateDateShortcuts(start, end);
+      }
+    } catch (e) {
+      console.error('订单详情加载失败:', e);
+    }
+  }
+
+  function _odAvailableFields() {
+    // 后端已按当前平台返回对应字段目录，直接使用即可
+    return _odFields;
+  }
+
+  function _odDefaultCardFields(fields) {
+    return fields.filter(function(f) { return f.type === 'money' || f.type === 'int'; })
+      .slice(0, 4).map(function(f) { return f.key; });
+  }
+
+  function _odDefaultTableCols(fields) {
+    var date = fields.filter(function(f) { return f.type === 'date'; });
+    var text = fields.filter(function(f) { return f.type === 'text'; });
+    var num = fields.filter(function(f) { return ['money', 'int', 'pct', 'decimal'].indexOf(f.type) >= 0; });
+    return date.concat(text.slice(0, 3)).concat(num.slice(0, 6)).slice(0, 10).map(function(f) { return f.key; });
+  }
+
+  function _odApplyFieldDefaults() {
+    var keys = _odFields.map(function(f) { return f.key; });
+    var cardValid = _odCardFields.length === 4 && _odCardFields.every(function(k) { return keys.indexOf(k) >= 0; });
+    if (!cardValid) _odCardFields = _odDefaultCardFields(_odFields);
+    var colValid = _odTableCols.length > 0 && _odTableCols.every(function(k) { return keys.indexOf(k) >= 0; });
+    if (!colValid) _odTableCols = _odDefaultTableCols(_odFields);
+    if (_odSortBy && keys.indexOf(_odSortBy) < 0) _odSortBy = '';
+  }
+
+  function _odPopulateCardSelects() {
+    var avail = _odAvailableFields();
+    for (var i = 0; i < 4; i++) {
+      var sel = document.getElementById('odCardSel' + i);
+      if (!sel) continue;
+      var cur = _odCardFields[i];
+      var opts = '';
+      avail.forEach(function(f) {
+        opts += '<option value="' + f.key + '"' + (f.key === cur ? ' selected' : '') + '>' + f.label + '</option>';
+      });
+      sel.innerHTML = opts;
+      if (sel.value !== cur) { _odCardFields[i] = sel.value || (avail[0] ? avail[0].key : ''); }
+    }
+  }
+
+  function _odRenderColPanel() {
+    var panel = document.getElementById('odColPanel');
+    if (!panel) return;
+    var avail = _odAvailableFields();
+    var html = '';
+    avail.forEach(function(f) {
+      var checked = _odTableCols.indexOf(f.key) >= 0;
+      html += '<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:6px;cursor:pointer;font-size:13px;color:#334155">' +
+        '<input type="checkbox" data-key="' + f.key + '"' + (checked ? ' checked' : '') + ' onchange="App.toggleOdCol(this)">' +
+        '<span>' + f.label + '</span>' +
+      '</label>';
+    });
+    panel.innerHTML = html || '<div style="padding:10px;color:#94a3b8;font-size:12px">无可选字段</div>';
+  }
+
+  function _odRenderCards(data) {
+    var summaries = (data && data.cardSummaries) || [];
+    var sumMap = {};
+    summaries.forEach(function(s) { sumMap[s.key] = s; });
+    for (var i = 0; i < 4; i++) {
+      var val = document.getElementById('odCardValue' + i);
+      var sub = document.getElementById('odCardSub' + i);
+      if (!val) continue;
+      var key = _odCardFields[i];
+      var s = sumMap[key];
+      if (s) {
+        val.textContent = _odFmtByType(s.value, s.type);
+        var aggText = s.agg === 'sum' ? '总和' : s.agg === 'avg' ? '均值' : '去重数';
+        if (sub) sub.textContent = s.label + ' · ' + aggText;
+      } else {
+        val.textContent = '—';
+        if (sub) sub.textContent = '';
+      }
+    }
+    document.getElementById('odTotalCount').textContent = _odFmtInt(_odData ? _odData.total : 0);
+    document.getElementById('odPageInfo').textContent = '共 ' + _odFmtInt(_odData ? _odData.total : 0) + ' 条记录';
+  }
+
+  function _odRenderTable(data) {
+    var tbody = document.getElementById('odTableBody');
+    var head = document.getElementById('odTableHead');
+    if (!tbody || !data || !data.rows) return;
+    var cols = _odTableCols.filter(function(k) { return _odFields.some(function(f) { return f.key === k; }); });
+    if (head) {
+      var hh = '<th style="padding:10px 8px;text-align:left;border-bottom:2px solid #e2e8f0;white-space:nowrap;color:#475569;font-weight:600">平台</th>';
+      cols.forEach(function(k) {
+        var f = _odFields.find(function(x) { return x.key === k; });
+        if (!f) return;
+        var align = (f.type === 'text' || f.type === 'date') ? 'left' : 'right';
+        hh += '<th data-sort="' + f.key + '" style="padding:10px 8px;text-align:' + align + ';border-bottom:2px solid #e2e8f0;white-space:nowrap;color:#475569;font-weight:600;cursor:pointer">' + f.label + ' <i class="fa-solid fa-sort"></i></th>';
+      });
+      head.innerHTML = hh;
+      head.querySelectorAll('th[data-sort]').forEach(function(th) {
+        th.onclick = function() {
+          var sortBy = th.dataset.sort;
+          if (_odSortBy === sortBy) { _odSortDir = _odSortDir === 'desc' ? 'asc' : 'desc'; }
+          else { _odSortBy = sortBy; _odSortDir = 'desc'; }
+          _odPage = 1; _odFetchData();
+        };
+      });
+    }
+    var html = '';
+    for (var i = 0; i < data.rows.length; i++) {
+      var r = data.rows[i];
+      html += '<tr style="border-bottom:1px solid #f1f5f9">' +
+        '<td style="padding:8px;white-space:nowrap"><span class="badge ' + _odPlatformBadge(r.platform) + '">' + r.platform + '</span></td>';
+      cols.forEach(function(k) {
+        var f = _odFields.find(function(x) { return x.key === k; });
+        if (!f) return;
+        var v = r[k];
+        var display = _odFmtByType(v, f.type);
+        var isId = /ID|编码|SPU|货号/.test(f.label) && !/名称/.test(f.label);
+        var isRefund = /退款|退货|差评|投诉|不满意/.test(f.label);
+        if (isId) {
+          html += '<td style="padding:8px;white-space:nowrap;font-family:monospace;font-size:11px;color:#6366f1">' + display + '</td>';
+        } else if (isRefund) {
+          var num = Number(v) || 0;
+          var c = (num > 0) ? 'color:#ef4444' : 'color:#94a3b8';
+          html += '<td style="padding:8px;text-align:right;white-space:nowrap;font-size:12px;' + c + '">' + (f.type === 'money' && num > 0 ? '-' : '') + display + '</td>';
+        } else if (f.type === 'text' || f.type === 'date') {
+          html += '<td style="padding:8px;text-align:left;white-space:nowrap;font-size:12px">' + display + '</td>';
+        } else if (f.type === 'money') {
+          html += '<td style="padding:8px;text-align:right;white-space:nowrap;font-weight:600;color:#1e293b">' + display + '</td>';
+        } else {
+          html += '<td style="padding:8px;text-align:right;white-space:nowrap;font-size:12px">' + display + '</td>';
+        }
+      });
+      html += '</tr>';
+    }
+    tbody.innerHTML = html || '<tr><td colspan="' + (cols.length + 1) + '" style="text-align:center;padding:40px;color:#94a3b8">暂无数据</td></tr>';
+  }
+
+  function _odRenderPagination(data) {
+    var el = document.getElementById('odPagination');
+    if (!el) return;
+    var totalPages = data.totalPages || 1;
+    var page = data.page || 1;
+    var html = '';
+    if (totalPages <= 1) { el.innerHTML = ''; return; }
+    html += '<button ' + (page <= 1 ? 'disabled' : '') + ' onclick="App._odGoPage(' + (page - 1) + ')" style="padding:6px 12px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;cursor:pointer">&laquo;</button>';
+    for (var i = 1; i <= totalPages; i++) {
+      if (totalPages <= 7 || i === 1 || i === totalPages || (i >= page - 1 && i <= page + 1)) {
+        html += '<button onclick="App._odGoPage(' + i + ')" style="padding:6px 12px;border:1px solid ' + (i === page ? '#6366f1' : '#e2e8f0') + ';border-radius:6px;background:' + (i === page ? '#6366f1' : '#fff') + ';color:' + (i === page ? '#fff' : '#475569') + ';cursor:pointer;font-weight:' + (i === page ? '600' : '400') + '">' + i + '</button>';
+      } else if (i === page - 2 || i === page + 2) {
+        html += '<span style="padding:6px 8px;color:#94a3b8">...</span>';
+      }
+    }
+    html += '<button ' + (page >= totalPages ? 'disabled' : '') + ' onclick="App._odGoPage(' + (page + 1) + ')" style="padding:6px 12px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;cursor:pointer">&raquo;</button>';
+    el.innerHTML = html;
+  }
+
+  function _odGoPage(p) { _odPage = p; _odFetchData(); }
+
+  function toggleOdColPanel() {
+    var panel = document.getElementById('odColPanel');
+    if (panel) panel.style.display = (panel.style.display === 'none' || panel.style.display === '') ? 'block' : 'none';
+  }
+
+  function toggleOdCol(cb) {
+    var key = cb.dataset.key;
+    if (cb.checked) {
+      if (_odTableCols.indexOf(key) < 0) _odTableCols.push(key);
+    } else {
+      _odTableCols = _odTableCols.filter(function(k) { return k !== key; });
+    }
+    if (_odData) _odRenderTable(_odData);
+  }
+
+  function _odUpdateDateLabel() {
+    var s = (document.getElementById('odDateStart') || {}).value || '';
+    var e = (document.getElementById('odDateEnd') || {}).value || '';
+    var lbl = document.getElementById('odDateLabel');
+    if (!lbl) return;
+    if (s && e) lbl.textContent = s + ' — ' + e;
+    else if (s) lbl.textContent = s + ' — ';
+    else if (e) lbl.textContent = ' — ' + e;
+    else lbl.textContent = '选择日期';
+  }
+
+  function toggleOdDatePicker(e) { _calToggle('od', e); }
+
+  // ===== 通用双月日历（订单详情 / 营销总览 / 分平台店铺 三处复用）=====
+  var _calState = {};
+
+  function _calCtx(prefix) {
+    if (!_calState[prefix]) _calState[prefix] = { base: null, start: null, end: null, pickStart: true };
+    return _calState[prefix];
+  }
+
+  function _calFetch(prefix) {
+    if (prefix === 'od') { _odPage = 1; _odFetchData(); }
+    else if (prefix === 'mkt') { renderMarketingOverview(); }
+    else if (prefix === 'ps') { renderPlatformStore(); }
+  }
+
+  function _calParseDate(str) {
+    if (!str) return null;
+    var p = str.split('-');
+    if (p.length !== 3) return null;
+    return new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10));
+  }
+
+  function _calFmtDate(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  function _calUpdateLabel(prefix) {
+    var s = (document.getElementById(prefix + 'DateStart') || {}).value || '';
+    var e = (document.getElementById(prefix + 'DateEnd') || {}).value || '';
+    var lbl = document.getElementById(prefix + 'DateLabel');
+    if (!lbl) return;
+    if (s && e) lbl.textContent = s + ' — ' + e;
+    else if (s) lbl.textContent = s + ' — ';
+    else if (e) lbl.textContent = ' — ' + e;
+    else lbl.textContent = '选择日期';
+  }
+
+  function _calReset(prefix) {
+    var st = _calCtx(prefix);
+    var now = new Date();
+    st.base = new Date(now.getFullYear(), now.getMonth() - 1, 1); // 左月=上个月，右月=本月
+    st.start = _calParseDate((document.getElementById(prefix + 'DateStart') || {}).value || '');
+    st.end = _calParseDate((document.getElementById(prefix + 'DateEnd') || {}).value || '');
+    st.pickStart = !(st.start && st.end);
+  }
+
+  function _calMonth(prefix, y, m, isLeft) {
+    var st = _calCtx(prefix);
+    var first = new Date(y, m, 1);
+    var days = new Date(y, m + 1, 0).getDate();
+    var startCol = (first.getDay() + 6) % 7; // 周一=0
+    var now = new Date();
+    var html = '<div class="od-cal">';
+    html += '<div class="od-cal-head">' +
+      (isLeft ? '<button class="od-cal-nav" onclick="App.' + prefix + 'CalNav(-1)">‹</button>' : '<span style="width:24px"></span>') +
+      '<span>' + y + '年' + (m + 1) + '月</span>' +
+      (!isLeft ? '<button class="od-cal-nav" onclick="App.' + prefix + 'CalNav(1)">›</button>' : '<span style="width:24px"></span>') +
+      '</div>';
+    html += '<div class="od-cal-week">';
+    ['一', '二', '三', '四', '五', '六', '日'].forEach(function(w) { html += '<span>' + w + '</span>'; });
+    html += '</div><div class="od-cal-days">';
+    for (var i = 0; i < startCol; i++) html += '<span class="od-cal-day blank"></span>';
+    for (var d = 1; d <= days; d++) {
+      var dt = new Date(y, m, d);
+      var cls = 'od-cal-day';
+      if (st.start && dt.getTime() === st.start.getTime()) cls += ' is-start';
+      if (st.end && dt.getTime() === st.end.getTime()) cls += ' is-end';
+      if (st.start && st.end && dt > st.start && dt < st.end) cls += ' in-range';
+      if (dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth() && dt.getDate() === now.getDate()) cls += ' is-today';
+      html += '<button class="' + cls + '" onclick="App.' + prefix + 'CalPick(' + y + ',' + m + ',' + d + ')">' + d + '</button>';
+    }
+    html += '</div></div>';
+    return html;
+  }
+
+  function _calRender(prefix) {
+    var st = _calCtx(prefix);
+    var panel = document.getElementById(prefix + 'DatePanel');
+    if (!panel) return;
+    var leftY = st.base.getFullYear(), leftM = st.base.getMonth();
+    var right = new Date(leftY, leftM + 1, 1);
+    var html = '<div class="od-cal-wrap">' +
+      _calMonth(prefix, leftY, leftM, true) +
+      _calMonth(prefix, right.getFullYear(), right.getMonth(), false) +
+      '</div>';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding-top:10px;border-top:1px solid #f1f5f9">' +
+      '<span style="font-size:12px;color:#64748b">' + (st.pickStart ? '请选择开始日期' : '请选择结束日期') + '</span>' +
+      '<div style="display:flex;gap:10px">' +
+      '<button onclick="App.' + prefix + 'CalClear()" style="border:none;background:none;color:#94a3b8;font-size:12px;cursor:pointer">清除</button>' +
+      '<button onclick="App.' + prefix + 'CalToday()" style="border:none;background:none;color:#6366f1;font-size:12px;cursor:pointer;font-weight:600">今天</button>' +
+      '</div></div>';
+    panel.innerHTML = html;
+  }
+
+  function _calToggle(prefix, e) {
+    if (e) e.stopPropagation();
+    var panel = document.getElementById(prefix + 'DatePanel');
+    if (!panel) return;
+    var isHidden = panel.style.display === 'none' || panel.style.display === '';
+    panel.style.display = isHidden ? 'block' : 'none';
+    if (isHidden) { _calReset(prefix); _calRender(prefix); }
+  }
+
+  function _calPick(prefix, y, m, d) {
+    var st = _calCtx(prefix);
+    var dt = new Date(y, m, d);
+    if (st.pickStart) {
+      st.start = dt; st.end = null; st.pickStart = false;
+      _calRender(prefix);
+    } else {
+      if (dt < st.start) { st.end = st.start; st.start = dt; }
+      else { st.end = dt; }
+      var s = document.getElementById(prefix + 'DateStart');
+      var e = document.getElementById(prefix + 'DateEnd');
+      if (s) s.value = _calFmtDate(st.start);
+      if (e) e.value = _calFmtDate(st.end);
+      _calUpdateLabel(prefix);
+      _calFetch(prefix);
+      var panel = document.getElementById(prefix + 'DatePanel');
+      if (panel) panel.style.display = 'none';
+      st.pickStart = true;
+    }
+  }
+
+  function _calNav(prefix, delta) {
+    var st = _calCtx(prefix);
+    st.base = new Date(st.base.getFullYear(), st.base.getMonth() + delta, 1);
+    _calRender(prefix);
+  }
+
+  function _calClear(prefix) {
+    var s = document.getElementById(prefix + 'DateStart');
+    var e = document.getElementById(prefix + 'DateEnd');
+    if (s) s.value = '';
+    if (e) e.value = '';
+    _calUpdateLabel(prefix);
+    _calFetch(prefix);
+    _calReset(prefix);
+    _calRender(prefix);
+  }
+
+  function _calToday(prefix) {
+    var now = new Date();
+    var dt = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var s = document.getElementById(prefix + 'DateStart');
+    var e = document.getElementById(prefix + 'DateEnd');
+    if (s) s.value = _calFmtDate(dt);
+    if (e) e.value = _calFmtDate(dt);
+    var st = _calCtx(prefix);
+    st.start = dt; st.end = dt;
+    _calUpdateLabel(prefix);
+    _calFetch(prefix);
+    var panel = document.getElementById(prefix + 'DatePanel');
+    if (panel) panel.style.display = 'none';
+    st.pickStart = true;
+  }
+
+  // ===== 三个页面的日历入口（供 HTML onclick 调用）=====
+  function odCalPick(y, m, d) { _calPick('od', y, m, d); }
+  function odCalNav(delta) { _calNav('od', delta); }
+  function odCalClear() { _calClear('od'); }
+  function odCalToday() { _calToday('od'); }
+
+  function toggleMktDatePicker(e) { _calToggle('mkt', e); }
+  function mktCalPick(y, m, d) { _calPick('mkt', y, m, d); }
+  function mktCalNav(delta) { _calNav('mkt', delta); }
+  function mktCalClear() { _calClear('mkt'); }
+  function mktCalToday() { _calToday('mkt'); }
+
+  function togglePsDatePicker(e) { _calToggle('ps', e); }
+  function psCalPick(y, m, d) { _calPick('ps', y, m, d); }
+  function psCalNav(delta) { _calNav('ps', delta); }
+  function psCalClear() { _calClear('ps'); }
+  function psCalToday() { _calToday('ps'); }
+
+  function _odSetDateRange(days) {
+    var end = new Date(Date.now() - 86400000);
+    var start = new Date(end);
+    start.setDate(start.getDate() - days + 1);
+    var fmt = function(d) { return d.toISOString().slice(0, 10); };
+    document.getElementById('odDateStart').value = fmt(start);
+    document.getElementById('odDateEnd').value = fmt(end);
+    _odUpdateDateLabel();
+    _odUpdateDateShortcuts(fmt(start), fmt(end));
+    _odPage = 1; _odFetchData();
+  }
+
+  function _odUpdateDateShortcuts(s, e) {
+    var yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    document.querySelectorAll('.od-ds-btn').forEach(function(btn) {
+      var range = parseInt(btn.dataset.range);
+      var match = false;
+      if (range === 1) { match = (s === yesterday && e === yesterday); }
+      else {
+        var calcStart = new Date(Date.now() - 86400000 - (range - 1) * 86400000).toISOString().slice(0, 10);
+        match = (s === calcStart && e === yesterday);
+      }
+      btn.classList.toggle('active', match);
+    });
+  }
+
+  // ==================== 智能体助手 - 浪小助 ====================
+  var _aiChatOpen = false;
+  var _aiChatHistory = [];
+
+  function aiToggleChat() {
+    _aiChatOpen = !_aiChatOpen;
+    var win = document.getElementById('aiChatWindow');
+    var btn = document.getElementById('aiFloatBtn');
+    if (win) win.classList.toggle('collapsed', !_aiChatOpen);
+    if (btn) btn.style.display = _aiChatOpen ? 'none' : '';
+    if (_aiChatOpen) {
+      var input = document.getElementById('aiChatInput');
+      if (input) setTimeout(function() { input.focus(); }, 300);
+    }
+  }
+
+  async function aiSendMessage() {
+    var input = document.getElementById('aiChatInput');
+    var sendBtn = document.getElementById('aiChatSendBtn');
+    var body = document.getElementById('aiChatBody');
+    if (!input || !body) return;
+
+    var message = input.value.trim();
+    if (!message) return;
+
+    // 显示用户消息
+    body.innerHTML += '<div class="ai-msg user"><div class="ai-msg-bubble">' + esc(message) + '</div></div>';
+    input.value = '';
+    if (sendBtn) sendBtn.disabled = true;
+
+    // 显示打字中
+    var typingId = 'aiTyping_' + Date.now();
+    body.innerHTML += '<div class="ai-msg" id="' + typingId + '"><div class="ai-msg-avatar"><i class="fa-solid fa-robot"></i></div><div class="ai-msg-bubble"><em style="color:#94a3b8">思考中...</em></div></div>';
+    body.scrollTop = body.scrollHeight;
+
+    _aiChatHistory.push({ role: 'user', content: message });
+
+    try {
+      var resp = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: message, history: _aiChatHistory }),
+      });
+      var json = await resp.json();
+      var reply = (json && json.code === 0 && json.data) ? json.data.reply : '抱歉，AI服务暂时不可用，请稍后再试。';
+      _aiChatHistory.push({ role: 'assistant', content: reply });
+
+      // 替换打字指示器
+      var typingEl = document.getElementById(typingId);
+      if (typingEl) {
+        typingEl.outerHTML = '<div class="ai-msg"><div class="ai-msg-avatar"><i class="fa-solid fa-robot"></i></div><div class="ai-msg-bubble">' + reply.replace(/\n/g, '<br>') + '</div></div>';
+      }
+    } catch (e) {
+      var typingEl = document.getElementById(typingId);
+      if (typingEl) {
+        typingEl.outerHTML = '<div class="ai-msg"><div class="ai-msg-avatar"><i class="fa-solid fa-robot"></i></div><div class="ai-msg-bubble" style="color:#dc2626">网络异常，请稍后再试</div></div>';
+      }
+    }
+
+    if (sendBtn) sendBtn.disabled = false;
+    body.scrollTop = body.scrollHeight;
+  }
+
+  // ==================== Public API ====================
+  return {
+    init, initApp, navigateTo,
+    openFormModal, closeFormModal,
+    confirmDelete, closeConfirmModal,
+    goToPage, filterTable,
+    showToast, toggleSidebar,
+    logout: handleLogout,
+    // Admin & Permissions
+    openAdminModal, editAdmin, deleteAdmin, toggleAdmin, togglePwdVis, openPwdModal,
+    openRolePermModal, deleteRole, apToggleAllPerms,
+    filterAdminTable, switchAdminTab,
+    // Marketing
+    renderMarketingOverview, setDateRange, toggleMktDatePicker, mktCalPick, mktCalNav, mktCalClear, mktCalToday,
+    // Platform & Store
+    renderPlatformStore, toggleStoreDetail, closePsDetail, psGoPage, filterByPlatform, togglePsDatePicker, psCalPick, psCalNav, psCalClear, psCalToday,
+    generateDailyReport, renderDailyAnalysis, downloadReport,
+    // Store Account
+    renderStoreAccount, filterSATable, openSAModal,
+    // Operation Performance
+    renderOperationPerformance, opGoPage,
+    // Finance
+    renderFinance, finGoPage,
+    // HR
+    renderHR, hrGoPage,
+    // Profile
+    renderProfile, saveProfile, resetProfile, changePassword,
+    // Toolbox - Violation Word Detection (OCR)
+    renderToolboxViolationCheck, vdHandleFiles, vdHandleDrop, vdRemoveImage,
+    vdStartOCR, vdClearAll, vdOpenAddWordModal, vdDeleteWord,
+    // AI Assistant
+    aiToggleChat, aiSendMessage,
+    // Order Details
+    renderOrderDetails, _odGoPage, _odSetDateRange, toggleOdColPanel, toggleOdCol, toggleOdDatePicker, odSetLinkType, odCalPick, odCalNav, odCalClear, odCalToday,
+  };
+})();
+
+// Boot
+document.addEventListener('DOMContentLoaded', () => App.init());

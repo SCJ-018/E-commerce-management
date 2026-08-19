@@ -1,0 +1,29 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.spec.bak
+
+# === 日志 ===
+*.log
+
+# === 敏感配置（含数据库密码 / API 密钥，勿提交）===
+backend/config.py
+.env
+.env.*
+!.env.example
+
+# === Claude 本地设置（机器相关）===
+.claude/settings.local.json
+
+# === PyInstaller 构建产物 ===
+tools/import_tool/build/
+tools/import_tool/dist/
+
+# === 系统文件 ===
+Thumbs.db
+.DS_Store
+desktop.ini
