@@ -37,6 +37,7 @@ tools/_douyin_*.csv
 # === 小红书登录态（含 cookie，勿提交）===
 tools/xhs_cookie.txt
 tools/cookie.txt
+tools/_xhs_works.json
 
 # === 第三方开源项目（从上游克隆，不纳入本仓库）===
 tools/Spider_XHS/
