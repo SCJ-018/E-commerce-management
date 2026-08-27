@@ -23,6 +23,17 @@ backend/config.py
 tools/import_tool/build/
 tools/import_tool/dist/
 
+# === 淘宝登录态（含 cookie，勿提交）===
+tools/taobao_profile/
+tools/_taobao_*.png
+tools/_taobao_*.html
+tools/_taobao_*.json
+tools/_taobao_*.txt
+
+# === 抖音采集（含 cookie，勿提交）===
+tools/douyin_cookie.txt
+tools/_douyin_*.csv
+
 # === 系统文件 ===
 Thumbs.db
 .DS_Store

@@ -38,7 +38,7 @@ DEFAULT_DB = {
     'host': '192.168.2.10',
     'port': 3306,
     'user': 'root',
-    'password': '123456',
+    'password': os.environ.get('DB_PASSWORD', ''),  # 密码从环境变量读取，不再硬编码
     'database': '数据',
     'charset': 'utf8mb4',
 }

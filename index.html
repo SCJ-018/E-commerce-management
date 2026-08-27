@@ -621,6 +621,7 @@
         <div class="nav-group-title"><i class="fa-solid fa-chart-pie ng-icon"></i> 数据概览 <i class="fa-solid fa-chevron-right ng-chevron"></i></div>
         <div class="nav-group-items">
           <a href="#marketing-overview" class="nav-item active" data-page="marketing-overview"><i class="fa-solid fa-chart-line ni-icon"></i> 整体营销数据总览</a>
+          <a href="#category-marketing" class="nav-item" data-page="category-marketing"><i class="fa-solid fa-tags ni-icon"></i> 品类营销数据</a>
           <a href="#platform-store" class="nav-item" data-page="platform-store"><i class="fa-solid fa-shop ni-icon"></i> 分平台/店铺详细数据</a>
           <a href="#order-details" class="nav-item" data-page="order-details"><i class="fa-solid fa-receipt ni-icon"></i> 订单详情</a>
           <a href="#daily-analysis" class="nav-item" data-page="daily-analysis"><i class="fa-solid fa-robot ni-icon"></i> 每日数据分析</a>
@@ -632,6 +633,8 @@
         <div class="nav-group-items">
           <a href="#store-account" class="nav-item" data-page="store-account"><i class="fa-solid fa-id-card ni-icon"></i> 店铺账号管理</a>
           <a href="#operation-performance" class="nav-item" data-page="operation-performance"><i class="fa-solid fa-chart-bar ni-icon"></i> 运营业绩面板</a>
+          <a href="#product-selection" class="nav-item" data-page="product-selection"><i class="fa-solid fa-box-open ni-icon"></i> 选品助手</a>
+          <a href="#seeding-monitor" class="nav-item" data-page="seeding-monitor"><i class="fa-solid fa-seedling ni-icon"></i> 种草监测中台</a>
         </div>
       </div>
       <div class="nav-group-divider"></div>
@@ -724,6 +727,82 @@
           <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">客单价与支付转化率</span><span style="font-size:0.75rem;color:#94a3b8;margin-left:8px;font-weight:400">客单价（ARPU）与支付转化率的日度走势，衡量用户质量与成交效率</span></div><div class="chart-module-body" id="chartAOV" style="min-height:200px"><div id="miniAOV" style="height:100px"></div><div id="miniConv" style="height:100px"></div></div></div>
         </div>
       </div>
+    </section>
+
+    <section id="page-category-marketing" class="page-section hidden">
+      <style>
+        .cat-ds-btn{border:1px solid #e2e8f0;background:#fff;border-radius:8px;padding:5px 12px;height:33px;cursor:pointer;font-size:0.82rem;color:#475569;font-family:inherit;margin-right:6px}
+        .cat-ds-btn:hover{background:#f8fafc}
+        .cat-ds-btn.active{background:#1677ff;border-color:#1677ff;color:#fff}
+        .cat-help{display:inline-block;width:15px;height:15px;line-height:15px;text-align:center;border-radius:50%;background:#e2e8f0;color:#64748b;font-size:10px;font-weight:700;cursor:help;margin-left:5px;vertical-align:middle;user-select:none}
+        .cat-help:hover{background:#1677ff;color:#fff}
+        .cat-tooltip{position:fixed;z-index:1000;background:#1e293b;color:#fff;font-size:12px;padding:9px 12px;border-radius:8px;max-width:360px;line-height:1.7;pointer-events:none;box-shadow:0 6px 20px rgba(0,0,0,0.22);transform:translateX(-50%);display:none}
+      </style>
+      <div class="dashboard-header">
+        <div class="dh-left">
+          <div class="dh-icon" style="color:#fff;font-size:20px"><i class="fa-solid fa-tags"></i></div>
+          <div class="dh-title-group"><h2 class="dh-title">品类营销数据</h2><span class="dh-subtitle">Category Marketing Analytics</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>数据实时 · 按统一品类汇总单链接成交</span></div>
+        </div>
+        <div class="dh-filters">
+          <div class="dh-date-shortcuts">
+            <button class="cat-ds-btn active" data-range="all" onclick="App.setCatRange('all')">全部</button>
+            <button class="cat-ds-btn" data-range="1" onclick="App.setCatRange('1')">昨日</button>
+            <button class="cat-ds-btn" data-range="7" onclick="App.setCatRange('7')">近7天</button>
+            <button class="cat-ds-btn" data-range="30" onclick="App.setCatRange('30')">近30天</button>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;margin-left:10px">
+            <input type="date" id="catDateStart" onchange="App.setCatCustomDate()" style="border:1px solid #e2e8f0;border-radius:8px;padding:4px 10px;height:33px;font-size:0.82rem;color:#475569;font-family:inherit;background:#fff">
+            <span style="font-size:0.82rem;color:#94a3b8">至</span>
+            <input type="date" id="catDateEnd" onchange="App.setCatCustomDate()" style="border:1px solid #e2e8f0;border-radius:8px;padding:4px 10px;height:33px;font-size:0.82rem;color:#475569;font-family:inherit;background:#fff">
+          </div>
+        </div>
+      </div>
+
+      <div class="mkt-cards-grid" style="display:grid;grid-template-columns:repeat(6,1fr);gap:14px">
+        <div class="mkt-card mkt-card--emerald"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-yen-sign"></i></div><span class="mkt-card-label">成交金额</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="catPayment">--</div><div class="mkt-card-trend neutral"></div></div></div>
+        <div class="mkt-card mkt-card--indigo"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-receipt"></i></div><span class="mkt-card-label">订单数</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="catOrders">--</div><div class="mkt-card-trend neutral"></div></div></div>
+        <div class="mkt-card mkt-card--green"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-users"></i></div><span class="mkt-card-label">买家数</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="catBuyers">--</div><div class="mkt-card-trend neutral"></div></div></div>
+        <div class="mkt-card mkt-card--rose"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-rotate-left"></i></div><span class="mkt-card-label">退款金额</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="catRefund">--</div><div class="mkt-card-trend neutral"></div></div></div>
+        <div class="mkt-card mkt-card--violet"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-box"></i></div><span class="mkt-card-label">商品数</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="catProducts">--</div><div class="mkt-card-trend neutral"></div></div></div>
+        <div class="mkt-card mkt-card--amber"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-percent"></i></div><span class="mkt-card-label">金额退款率</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="catRefundRate">--</div><div class="mkt-card-trend neutral"></div></div></div>
+      </div>
+
+      <div class="mkt-cards-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:14px">
+        <div class="mkt-card mkt-card--coral"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-coins"></i></div><span class="mkt-card-label">消耗花费</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="catSpend">--</div><div class="mkt-card-trend neutral"></div></div></div>
+        <div class="mkt-card mkt-card--cyan"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-chart-simple"></i></div><span class="mkt-card-label">推广产出</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="catAdGmv">--</div><div class="mkt-card-trend neutral"></div></div></div>
+        <div class="mkt-card mkt-card--emerald"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-gauge-high"></i></div><span class="mkt-card-label">推广ROI</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="catRoi">--</div><div class="mkt-card-trend neutral"></div></div></div>
+      </div>
+
+      <div class="charts-row" style="display:grid;grid-template-columns:1fr 1.7fr;gap:18px;margin-top:20px">
+        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">品类成交金额 TOP10</span><span style="font-size:0.75rem;color:#94a3b8;font-weight:400">各品类成交金额分布</span></div>
+          <div id="catBarChart" style="min-height:440px"></div>
+        </div>
+        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">品类成交明细</span><span style="font-size:0.75rem;color:#94a3b8;font-weight:400">按成交金额降序 · 共 <span id="catCategoryCount">--</span> 个品类</span></div>
+          <div style="overflow:auto;max-height:440px">
+            <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+              <thead>
+                <tr style="background:#f8fafc;color:#64748b;text-align:left">
+                  <th style="padding:10px 12px">#</th>
+                  <th style="padding:10px 12px">品类</th>
+                  <th style="padding:10px 12px;text-align:right">商品数</th>
+                  <th style="padding:10px 12px;text-align:right">成交金额</th>
+                  <th style="padding:10px 12px;text-align:right">订单数</th>
+                  <th style="padding:10px 12px;text-align:right">买家数</th>
+                  <th style="padding:10px 12px;text-align:right">退款金额</th>
+                  <th style="padding:10px 12px;text-align:right">退款率</th>
+                  <th style="padding:10px 12px;text-align:right">消耗花费</th>
+                  <th style="padding:10px 12px;text-align:right">推广产出</th>
+                  <th style="padding:10px 12px;text-align:right">推广ROI</th>
+                </tr>
+              </thead>
+              <tbody id="catTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div id="catTooltip" class="cat-tooltip"></div>
     </section>
 
     <section id="page-platform-store" class="page-section hidden">
@@ -859,6 +938,33 @@
 	      </div>
 	    </section>
     <section id="page-daily-analysis" class="page-section hidden">
+      <style>
+        .da-layout{display:flex;gap:18px;align-items:flex-start}
+        .da-left{flex:0 0 71%;min-width:0}
+        .da-right{flex:1 1 29%;min-width:280px;position:sticky;top:var(--topbar-height);height:calc(100vh - var(--topbar-height));overflow:hidden}
+        @media (max-width:1200px){.da-layout{flex-direction:column}.da-left{flex:1 1 auto;width:100%}.da-right{position:static;max-height:none;width:100%}}
+        .da-agent{background:#fff;border-radius:14px;border:1px solid #eef2f7;box-shadow:0 4px 20px rgba(13,148,136,.06);display:flex;flex-direction:column;height:calc(100vh - var(--topbar-height));overflow:hidden}
+        .da-agent-header{padding:16px 18px;border-bottom:1px solid #f1f5f9;background:linear-gradient(135deg,#f0fdfa,#ecfeff)}
+        .da-agent-title{font-size:15px;font-weight:700;color:#1e293b;display:flex;align-items:center}
+        .da-agent-sub{display:block;font-size:11px;color:#94a3b8;margin-top:3px}
+        .da-agent-suggest{padding:12px 16px;display:flex;flex-wrap:wrap;gap:8px;border-bottom:1px solid #f1f5f9}
+        .da-agent-chip{border:1px solid #99f6e4;background:#f0fdfa;color:#0f766e;border-radius:999px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:inherit;transition:all .15s}
+        .da-agent-chip:hover{background:#0d9488;color:#fff;border-color:#0d9488}
+        .da-agent-result{flex:1 1 auto;min-height:0;overflow-y:auto;padding:16px}
+        .da-agent-empty{text-align:center;color:#94a3b8;padding:40px 12px;font-size:13px;line-height:1.7}
+        .da-agent-input{display:flex;gap:8px;padding:12px 14px;border-top:1px solid #f1f5f9;background:#f8fafc;flex-shrink:0}
+        .da-agent-textarea{flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:13px;font-family:inherit;resize:none;outline:none;height:40px;line-height:1.5;transition:border .15s}
+        .da-agent-textarea:focus{border-color:#0d9488;box-shadow:0 0 0 3px rgba(13,148,136,.1)}
+        .da-agent-send{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#0d9488,#14b8a6);border:none;color:#fff;cursor:pointer;font-size:15px;flex-shrink:0;transition:all .15s}
+        .da-agent-send:hover{opacity:.9;transform:scale(1.04)}
+        .da-agent-send:disabled{opacity:.4;cursor:not-allowed;transform:none}
+        .sa-tag.store{background:#ecfeff;color:#0891b2}
+        .sa-tag.platform{background:#e0f2fe;color:#0284c7}
+        .sa-tag.category{background:#fef3c7;color:#b45309}
+        .sa-tag.alert{background:#fee2e2;color:#dc2626}
+      </style>
+      <div class="da-layout">
+      <div class="da-left">
       <div class="dashboard-header">
         <div class="dh-left">
           <div class="dh-icon" style="background:linear-gradient(135deg,#0d9488,#14b8a6);box-shadow:0 2px 8px rgba(13,148,136,0.25)"><i class="fa-solid fa-robot" style="color:#fff;font-size:18px"></i></div>
@@ -873,6 +979,35 @@
       <div id="daLoading" class="hidden" style="text-align:center;padding:48px;color:#64748b"><i class="fa-solid fa-spinner fa-spin" style="font-size:32px;margin-bottom:16px;display:block;color:#0d9488"></i><p style="font-size:0.95rem">AI 正在分析昨日数据，请稍候...</p><p style="font-size:0.8rem;color:#94a3b8">预计耗时 10-30 秒</p></div>
       <div id="daReportContainer" class="da-report-wrapper"></div>
       <div id="daEmpty" class="placeholder-card"><i class="fa-solid fa-robot" style="color:#0d9488"></i><h3>每日 AI 数据分析</h3><p style="max-width:440px;margin:8px auto 20px;line-height:1.6">点击上方按钮，AI 将自动分析昨日的店铺营销数据与抖店/京东/千牛单链接销售数据，重点评估推广花费/消耗与产出的比例，生成专业的 HTML 分析报告。</p><div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap"><div style="background:#f0fdfa;border-radius:10px;padding:12px 16px;min-width:100px"><i class="fa-solid fa-chart-line" style="color:#0d9488;margin-right:6px"></i><span style="font-size:0.82rem;color:#0f766e;font-weight:500">营销数据综合</span></div><div style="background:#f0fdfa;border-radius:10px;padding:12px 16px;min-width:100px"><i class="fa-solid fa-receipt" style="color:#0d9488;margin-right:6px"></i><span style="font-size:0.82rem;color:#0f766e;font-weight:500">单链接数据</span></div><div style="background:#f0fdfa;border-radius:10px;padding:12px 16px;min-width:100px"><i class="fa-solid fa-scale-balanced" style="color:#0d9488;margin-right:6px"></i><span style="font-size:0.82rem;color:#0f766e;font-weight:500">消耗产出比</span></div></div></div>
+      </div><!-- /.da-left -->
+
+      <!-- ====== 数据分析智能体（右侧，约 2/7） ====== -->
+      <div class="da-right">
+        <div class="da-agent">
+          <div class="da-agent-header">
+            <div class="da-agent-title">
+              <i class="fa-solid fa-chart-line" style="color:#0d9488;margin-right:8px"></i>数据分析智能体
+            </div>
+            <span class="da-agent-sub">基于 店铺营销 / 单链接 / 推广 / 品类 数据</span>
+          </div>
+          <div class="da-agent-suggest">
+            <button class="da-agent-chip" onclick="App.daAgentAsk('今天的经营健康度如何，哪些地方需要优化')">📊 经营健康度诊断</button>
+            <button class="da-agent-chip" onclick="App.daAgentAsk('哪个店铺最需要关注，哪些品类在亏损')">🏪 店铺与品类诊断</button>
+            <button class="da-agent-chip" onclick="App.daAgentAsk('各平台投放效率如何，ROI 表现怎么样')">💰 投放效率分析</button>
+          </div>
+          <div class="da-agent-result" id="daAgentResult">
+            <div class="da-agent-empty">
+              <i class="fa-solid fa-robot" style="font-size:28px;color:#cbd5e1"></i>
+              <p>点击上方快捷问题，或输入你的经营分析需求，智能体会先检索当日经营数据，再生成分析。</p>
+            </div>
+          </div>
+          <div class="da-agent-input">
+            <textarea id="daAgentInput" class="da-agent-textarea" placeholder="例如：今天的退款率为什么偏高..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();App.daAgentSend();}"></textarea>
+            <button class="da-agent-send" id="daAgentSendBtn" onclick="App.daAgentSend()"><i class="fa-solid fa-paper-plane"></i></button>
+          </div>
+        </div>
+      </div>
+      </div><!-- /.da-layout -->
     </section>
     <section id="page-store-account" class="page-section hidden">
       <div class="dashboard-header">
@@ -956,6 +1091,368 @@
         </div>
         <div class="ps-table-footer" id="opRankPagination"></div>
       </div>
+    </section>
+    <section id="page-product-selection" class="page-section hidden">
+      <!-- 榜单切换标签 -->
+      <style>
+        .sel-tabs{display:flex;gap:0;margin-bottom:20px;background:#f1f5f9;border-radius:12px;padding:3px;width:fit-content}
+        .sel-tab{border:none;background:transparent;padding:8px 20px;border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;color:#64748b;font-family:inherit}
+        .sel-tab.active{background:#fff;color:#1677ff;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+        .sel-panel{display:none}
+        .sel-panel.active{display:block}
+        /* 选品助手左右分栏：左侧榜单表格(约5/7) + 右侧智能体(约2/7) */
+        .sel-layout{display:flex;gap:18px;align-items:flex-start}
+        .sel-left{flex:0 0 71%;min-width:0}
+        .sel-right{flex:1 1 29%;min-width:280px;position:sticky;top:var(--topbar-height);height:calc(100vh - var(--topbar-height));overflow:hidden}
+        @media (max-width:1200px){.sel-layout{flex-direction:column}.sel-left{flex:1 1 auto;width:100%}.sel-right{position:static;max-height:none;width:100%}}
+        /* 选品智能体面板 */
+        .sel-agent{background:#fff;border-radius:14px;border:1px solid #eef2f7;box-shadow:0 4px 20px rgba(139,92,246,.06);display:flex;flex-direction:column;height:calc(100vh - var(--topbar-height));overflow:hidden}
+        .sel-agent-header{padding:16px 18px;border-bottom:1px solid #f1f5f9;background:linear-gradient(135deg,#faf5ff,#f5f3ff)}
+        .sel-agent-title{font-size:15px;font-weight:700;color:#1e293b;display:flex;align-items:center}
+        .sel-agent-sub{display:block;font-size:11px;color:#94a3b8;margin-top:3px}
+        .sel-agent-suggest{padding:12px 16px;display:flex;flex-wrap:wrap;gap:8px;border-bottom:1px solid #f1f5f9}
+        .sel-agent-chip{border:1px solid #e9d5ff;background:#faf5ff;color:#7c3aed;border-radius:999px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:inherit;transition:all .15s}
+        .sel-agent-chip:hover{background:#8b5cf6;color:#fff;border-color:#8b5cf6}
+        .sel-agent-result{flex:1 1 auto;min-height:0;overflow-y:auto;padding:16px}
+        .sel-agent-empty{text-align:center;color:#94a3b8;padding:40px 12px;font-size:13px;line-height:1.7}
+        .sel-agent-input{display:flex;gap:8px;padding:12px 14px;border-top:1px solid #f1f5f9;background:#f8fafc;flex-shrink:0}
+        .sel-agent-textarea{flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:13px;font-family:inherit;resize:none;outline:none;height:40px;line-height:1.5;transition:border .15s}
+        .sel-agent-textarea:focus{border-color:#8b5cf6;box-shadow:0 0 0 3px rgba(139,92,246,.1)}
+        .sel-agent-send{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#8b5cf6,#6366f1);border:none;color:#fff;cursor:pointer;font-size:15px;flex-shrink:0;transition:all .15s}
+        .sel-agent-send:hover{opacity:.9;transform:scale(1.04)}
+        .sel-agent-send:disabled{opacity:.4;cursor:not-allowed;transform:none}
+        /* 智能体输出 */
+        .sa-analysis{background:#f8fafc;border:1px solid #eef2f7;border-radius:10px;padding:12px 14px;font-size:13px;color:#334155;line-height:1.7;white-space:pre-wrap;word-break:break-word;margin-bottom:14px}
+        .sa-analysis h2{font-size:14px;margin:0 0 8px;color:#1e293b}
+        .sa-cards-title{font-size:12px;font-weight:700;color:#64748b;margin:0 0 8px;display:flex;align-items:center;gap:6px}
+        .sa-card{background:#fff;border:1px solid #eef2f7;border-radius:10px;padding:12px 14px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,.03);transition:all .15s}
+        .sa-card:hover{box-shadow:0 4px 14px rgba(0,0,0,.07);border-color:#e9d5ff}
+        .sa-card-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+        .sa-card-title{font-size:13px;font-weight:700;color:#1e293b;flex:1;word-break:break-word}
+        .sa-card-metric{font-size:13px;font-weight:700;color:#8b5cf6;white-space:nowrap}
+        .sa-card-sub{font-size:12px;color:#64748b;margin-bottom:4px}
+        .sa-card-tags{display:flex;flex-wrap:wrap;gap:4px}
+        .sa-tag.derived{background:#fef3c7;color:#b45309}
+        .sa-card-derived{font-size:12px;color:#b45309;line-height:1.6;margin-top:6px;padding:6px 10px;background:#fffbeb;border:1px dashed #fde68a;border-radius:8px}
+        .sa-card-reason{font-size:12px;color:#94a3b8;line-height:1.5;margin-top:6px;padding-top:6px;border-top:1px dashed #f1f5f9}
+        .sa-tag{font-size:10px;padding:2px 8px;border-radius:999px;background:#f1f5f9;color:#64748b}
+        .sa-tag.tmall{background:#e0f2fe;color:#0ea5e9}
+        .sa-tag.aisou{background:#f3e8ff;color:#8b5cf6}
+        .sa-loading{display:flex;align-items:center;gap:8px;color:#8b5cf6;font-size:13px;padding:12px}
+        .sa-loading .fa-spinner{animation:fa-spin 1s linear infinite}
+        .sa-meta{font-size:11px;color:#94a3b8;margin-top:10px;padding-top:10px;border-top:1px dashed #eef2f7}
+      </style>
+
+      <div class="sel-layout">
+      <div class="sel-left">
+      <div class="dashboard-header">
+        <div class="dh-left">
+          <div class="dh-icon" style="background:linear-gradient(135deg,#0ea5e9,#22d3ee);box-shadow:0 2px 8px rgba(14,165,233,0.25)"><i class="fa-solid fa-box-open" style="color:#fff;font-size:18px"></i></div>
+          <div class="dh-title-group"><h2 class="dh-title">选品助手</h2><span class="dh-subtitle">Product Selection Assistant</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>数据实时 · 天猫榜单 / 抖音热搜榜 / 爱搜数据</span></div>
+        </div>
+      </div>
+      <div class="sel-tabs">
+        <button class="sel-tab active" data-tab="tmall" onclick="App.switchSelectionTab('tmall')"><i class="fa-solid fa-ranking-star" style="margin-right:6px"></i>天猫榜单</button>
+        <button class="sel-tab" data-tab="douyin" onclick="App.switchSelectionTab('douyin')"><i class="fa-solid fa-fire" style="margin-right:6px"></i>抖音热搜榜</button>
+        <button class="sel-tab" data-tab="aisou" onclick="App.switchSelectionTab('aisou')"><i class="fa-solid fa-magnifying-glass-chart" style="margin-right:6px"></i>爱搜数据</button>
+      </div>
+
+      <!-- ====== 天猫榜单 ====== -->
+      <div class="sel-panel active" data-tab="tmall">
+        <div class="ps-table-card">
+          <div class="ps-table-header">
+            <div class="ps-table-title-group">
+              <h3><i class="fa-solid fa-ranking-star" style="color:#0ea5e9;margin-right:6px"></i>天猫榜单</h3>
+              <span class="ps-table-badge" id="tmallTotal" style="background:#e0f2fe;color:#0ea5e9">共 0 条</span>
+            </div>
+            <div class="ps-table-tools">
+              <div style="display:flex;align-items:center;gap:6px">
+                <span style="font-size:0.82rem;color:#94a3b8">价格区间</span>
+                <input type="number" id="tmallMinPrice" min="0" step="0.01" placeholder="最低价"
+                       style="border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;height:33px;font-size:0.82rem;color:#334155;font-family:inherit;outline:none;width:90px">
+                <span style="font-size:0.82rem;color:#94a3b8">-</span>
+                <input type="number" id="tmallMaxPrice" min="0" step="0.01" placeholder="最高价"
+                       style="border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;height:33px;font-size:0.82rem;color:#334155;font-family:inherit;outline:none;width:90px">
+                <button class="ap-btn-primary" onclick="App.filterTmall()" style="height:33px"><i class="fa-solid fa-filter"></i> 筛选</button>
+                <button class="ap-btn-sm" onclick="App.resetTmall()" style="height:33px;background:#fff">重置</button>
+              </div>
+            </div>
+          </div>
+          <div class="ps-table-wrap">
+            <table class="ps-store-table" id="tmallTable">
+              <thead><tr>
+                <th>类别名</th><th>排行榜名</th><th>产品名</th>
+                <th class="ps-col-num">价格</th><th>日期</th>
+              </tr></thead>
+              <tbody id="tmallTbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ====== 抖音热搜榜 ====== -->
+      <div class="sel-panel" data-tab="douyin">
+        <div class="ps-table-card">
+          <div class="ps-table-header">
+            <div class="ps-table-title-group">
+              <h3><i class="fa-solid fa-fire" style="color:#ef4444;margin-right:6px"></i>抖音热搜榜</h3>
+              <span class="ps-table-badge" id="douyinTotal" style="background:#fee2e2;color:#ef4444">共 0 条</span>
+            </div>
+            <div class="ps-table-tools">
+              <div style="display:flex;align-items:center;gap:6px">
+                <span style="font-size:0.82rem;color:#94a3b8">日期</span>
+                <select id="douyinDate" class="ps-select-sm" onchange="App.filterDouyin()" style="height:34px;min-width:150px">
+                  <option value="" disabled selected>加载中...</option>
+                </select>
+              </div>
+              <button class="ap-btn-primary" id="douyinFilterBtn" onclick="App.runDouyinFilter()" style="height:34px">
+                <i class="fa-solid fa-filter"></i> 筛选电商热搜
+              </button>
+            </div>
+          </div>
+          <div class="ps-table-wrap">
+            <table class="ps-store-table" id="douyinTable">
+              <thead><tr>
+                <th style="width:60px">排名</th><th>热搜名</th><th class="ps-col-num">热搜值</th><th>品类</th><th>日期</th>
+              </tr></thead>
+              <tbody id="douyinTbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ====== 爱搜数据 ====== -->
+      <div class="sel-panel" data-tab="aisou">
+        <div class="ps-table-card">
+          <div class="ps-table-header">
+            <div class="ps-table-title-group">
+              <h3><i class="fa-solid fa-magnifying-glass-chart" style="color:#8b5cf6;margin-right:6px"></i>爱搜数据</h3>
+              <span class="ps-table-badge" id="aisouTotal" style="background:#f3e8ff;color:#8b5cf6">共 0 条</span>
+            </div>
+            <div class="ps-table-tools">
+              <div style="display:flex;align-items:center;gap:6px">
+                <span style="font-size:0.82rem;color:#94a3b8">日期</span>
+                <select id="aisouDate" class="ps-select-sm" onchange="App.filterAisou()" style="height:34px;min-width:150px">
+                  <option value="" disabled selected>加载中...</option>
+                </select>
+                <div class="ps-search-wrap"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="aisouKeyword" placeholder="搜索词关键词..."></div>
+                <button class="ap-btn-primary" onclick="App.filterAisou()" style="height:34px"><i class="fa-solid fa-filter"></i> 筛选</button>
+                <button class="ap-btn-sm" onclick="App.resetAisou()" style="height:34px;background:#fff">重置</button>
+              </div>
+            </div>
+          </div>
+          <div class="ps-table-wrap">
+            <table class="ps-store-table" id="aisouTable">
+              <thead><tr>
+                <th>日期</th><th>搜索词关键词</th><th class="ps-col-num">月覆盖人次</th><th class="ps-col-num">七日搜索人次</th>
+                <th>电商词关键词</th><th class="ps-col-num">电商词月覆盖人次</th><th class="ps-col-num">电商词七日搜索人次</th>
+              </tr></thead>
+              <tbody id="aisouTbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      </div><!-- /.sel-left -->
+
+      <!-- ====== 选品助手智能体（右侧，约 2/7） ====== -->
+      <div class="sel-right">
+        <div class="sel-agent">
+          <div class="sel-agent-header">
+            <div class="sel-agent-title">
+              <i class="fa-solid fa-wand-magic-sparkles" style="color:#8b5cf6;margin-right:8px"></i>选品智能体
+            </div>
+            <span class="sel-agent-sub">基于 抖音热搜 / 天猫榜单 / 爱搜数据 知识库</span>
+          </div>
+
+          <!-- 快捷问题 -->
+          <div class="sel-agent-suggest" id="selAgentSuggest">
+            <button class="sel-agent-chip" onclick="App.psAgentAsk('分析当日热搜选品数据，推荐潜力品类和商品')">📈 当日热搜选品分析</button>
+            <button class="sel-agent-chip" onclick="App.psAgentAsk('哪个品类热度最高，对应天猫有哪些值得关注的产品')">🔥 热度品类 + 天猫商品</button>
+            <button class="sel-agent-chip" onclick="App.psAgentAsk('爱搜数据里搜索量上升最快的电商词有哪些')">🔍 爱搜上升电商词</button>
+          </div>
+
+          <!-- 结果区 -->
+          <div class="sel-agent-result" id="selAgentResult">
+            <div class="sel-agent-empty">
+              <i class="fa-solid fa-robot" style="font-size:28px;color:#cbd5e1"></i>
+              <p>点击上方快捷问题，或输入你的选品分析需求，智能体会先检索三张知识库数据，再生成分析。</p>
+            </div>
+          </div>
+
+          <!-- 输入区 -->
+          <div class="sel-agent-input">
+            <textarea id="selAgentInput" class="sel-agent-textarea" placeholder="例如：分析今天热搜里最值得做的品类..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();App.psAgentSend();}"></textarea>
+            <button class="sel-agent-send" id="selAgentSendBtn" onclick="App.psAgentSend()"><i class="fa-solid fa-paper-plane"></i></button>
+          </div>
+        </div>
+      </div>
+      </div><!-- /.sel-layout -->
+    </section>
+    <section id="page-seeding-monitor" class="page-section hidden">
+      <style>
+        .sd-layout{display:flex;gap:18px;align-items:flex-start}
+        .sd-left{flex:0 0 71%;min-width:0}
+        .sd-right{flex:1 1 29%;min-width:280px;position:sticky;top:var(--topbar-height);height:calc(100vh - var(--topbar-height));overflow:hidden}
+        @media (max-width:1200px){.sd-layout{flex-direction:column}.sd-left{flex:1 1 auto;width:100%}.sd-right{position:static;max-height:none;width:100%}}
+        .sd-header-actions{position:relative}
+        .sd-update-panel{position:absolute;top:calc(100% + 10px);right:0;z-index:80;width:460px;max-width:90vw;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:16px 18px}
+        .sd-sort-arrow{font-size:9px;color:#16a34a;margin-left:2px}
+        .sd-dept-btn{border:1px solid #e2e8f0;background:#fff;border-radius:8px;padding:5px 14px;height:32px;cursor:pointer;font-size:0.82rem;color:#475569;font-family:inherit}
+        .sd-dept-btn:hover{background:#f8fafc}
+        .sd-dept-btn.active{background:#16a34a;border-color:#16a34a;color:#fff}
+        .sd-plat-btn{border:none;background:transparent;padding:4px 12px;border-radius:7px;font-size:12px;font-weight:500;cursor:pointer;color:#64748b;font-family:inherit}
+        .sd-plat-btn.active{background:#fff;color:#16a34a;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+        .sd-cookie-label{font-size:13px;font-weight:600;color:#1e293b;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+        .sd-cookie-textarea{width:100%;min-height:60px;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;outline:none;color:#334155;line-height:1.6;box-sizing:border-box;transition:border .15s}
+        .sd-cookie-textarea:focus{border-color:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.1)}
+        .sd-cookie-hint{font-size:11px;color:#94a3b8;margin-top:6px}
+        .sd-cookie-actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
+        .sd-tabs{display:flex;gap:0;margin-bottom:16px;background:#f1f5f9;border-radius:12px;padding:3px;width:fit-content}
+        .sd-tab{border:none;background:transparent;padding:8px 20px;border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;color:#64748b;font-family:inherit}
+        .sd-tab.active{background:#fff;color:#16a34a;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+        .sd-panel{display:none}
+        .sd-panel.active{display:block}
+        .sd-agent{background:#fff;border-radius:14px;border:1px solid #eef2f7;box-shadow:0 4px 20px rgba(22,163,74,.06);display:flex;flex-direction:column;height:calc(100vh - var(--topbar-height));overflow:hidden}
+        .sd-agent-header{padding:16px 18px;border-bottom:1px solid #f1f5f9;background:linear-gradient(135deg,#f0fdf4,#ecfdf5)}
+        .sd-agent-title{font-size:15px;font-weight:700;color:#1e293b;display:flex;align-items:center}
+        .sd-agent-sub{display:block;font-size:11px;color:#94a3b8;margin-top:3px}
+        .sd-agent-result{flex:1 1 auto;min-height:0;overflow-y:auto;padding:16px}
+        .sd-agent-empty{text-align:center;color:#94a3b8;padding:40px 12px;font-size:13px;line-height:1.7}
+        .sd-agent-input{display:flex;gap:8px;padding:12px 14px;border-top:1px solid #f1f5f9;background:#f8fafc;flex-shrink:0}
+        .sd-agent-textarea{flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:13px;font-family:inherit;resize:none;outline:none;height:40px;line-height:1.5;background:#f8fafc;color:#94a3b8}
+        .sd-agent-send{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#16a34a,#22c55e);border:none;color:#fff;font-size:15px;flex-shrink:0;opacity:.4;cursor:not-allowed}
+      </style>
+      <div class="sd-layout">
+      <div class="sd-left">
+        <div class="dashboard-header">
+          <div class="dh-left">
+            <div class="dh-icon" style="background:linear-gradient(135deg,#16a34a,#22c55e);box-shadow:0 2px 8px rgba(22,163,74,0.25)"><i class="fa-solid fa-seedling" style="color:#fff;font-size:18px"></i></div>
+            <div class="dh-title-group"><h2 class="dh-title">种草监测中台</h2><span class="dh-subtitle">Seeding Monitoring Center</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>监测种草账号作品数据 · 数据库待接入</span></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:16px">
+            <div class="dh-chips">
+              <div class="dh-chip"><span class="dh-chip-label">种草账号</span><span class="dh-chip-value" id="sdAccountCount" style="color:#16a34a">0</span></div>
+              <div class="dh-chip"><span class="dh-chip-label">作品数</span><span class="dh-chip-value" id="sdWorksCount" style="color:#6366f1">0</span></div>
+            </div>
+            <div class="sd-header-actions">
+              <button class="btn btn-sm btn-outline" onclick="App.sdToggleUpdatePanel()"><i class="fa-solid fa-rotate"></i> 数据更新</button>
+              <!-- Cookie 与抓取触发（悬浮面板） -->
+              <div class="sd-update-panel hidden" id="sdUpdatePanel">
+                <div class="sd-cookie-label"><i class="fa-solid fa-cookie-bite" style="color:#16a34a"></i>抖音 Cookie</div>
+                <textarea id="sdDouyinCookie" class="sd-cookie-textarea" placeholder="粘贴抖音网页版登录态 Cookie..."></textarea>
+                <div class="sd-cookie-actions">
+                  <button class="btn btn-primary btn-sm" onclick="App.sdSaveCookie('douyin')"><i class="fa-solid fa-floppy-disk"></i> 保存抖音 Cookie</button>
+                </div>
+
+                <div style="height:1px;background:#f1f5f9;margin:14px 0"></div>
+
+                <div class="sd-cookie-label"><i class="fa-solid fa-cookie-bite" style="color:#e11d48"></i>小红书 Cookie</div>
+                <textarea id="sdXhsCookie" class="sd-cookie-textarea" placeholder="粘贴小红书网页版 Cookie（a1=...; web_session=...）..."></textarea>
+                <div class="sd-cookie-actions">
+                  <button class="btn btn-primary btn-sm" onclick="App.sdSaveCookie('xhs')"><i class="fa-solid fa-floppy-disk"></i> 保存小红书 Cookie</button>
+                </div>
+
+                <div class="sd-cookie-hint">未变更时显示当前 Cookie；更换后点击对应「保存」即可。小红书 Cookie 也可用「扫码登录」生成。</div>
+                <div class="sd-cookie-actions">
+                  <button class="btn btn-sm" style="background:linear-gradient(135deg,#16a34a,#22c55e);color:#fff;border:none" onclick="App.sdTriggerScrape('douyin')"><i class="fa-solid fa-play"></i> 触发抖音抓取</button>
+                  <button class="btn btn-sm" style="background:linear-gradient(135deg,#e11d48,#f43f5e);color:#fff;border:none" onclick="App.sdTriggerScrape('xhs')"><i class="fa-solid fa-play"></i> 触发小红书抓取</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 标签页 -->
+        <div class="sd-tabs">
+          <button class="sd-tab active" data-tab="works" onclick="App.sdSwitchTab('works')"><i class="fa-solid fa-clapperboard" style="margin-right:6px"></i>作品数据</button>
+          <button class="sd-tab" data-tab="accounts" onclick="App.sdSwitchTab('accounts')"><i class="fa-solid fa-user-group" style="margin-right:6px"></i>种草账号</button>
+        </div>
+
+        <!-- 作品数据面板 -->
+        <div class="sd-panel active" data-tab="works">
+          <div class="ps-table-card">
+            <div class="ps-table-header">
+              <div class="ps-table-title-group"><h3><i class="fa-solid fa-clapperboard" style="color:#16a34a;margin-right:6px"></i>种草作品数据</h3><span class="ps-table-badge" id="sdWorksBadge" style="background:#f0fdf4;color:#16a34a">共 0 条</span><div style="display:flex;gap:2px;background:#f1f5f9;border-radius:8px;padding:3px"><button class="sd-plat-btn active" data-plat="douyin" onclick="App.sdSwitchPlatform('douyin')">抖音</button><button class="sd-plat-btn" data-plat="xhs" onclick="App.sdSwitchPlatform('xhs')">小红书</button></div></div>
+              <div class="ps-table-tools">
+                <div class="ps-search-wrap"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="sdWorksSearch" autocomplete="off" placeholder="搜索标题/账号..." oninput="App.sdRenderWorks()"></div>
+                <div style="position:relative">
+                  <button type="button" id="sdDateBtn" onclick="App.toggleSdDatePicker(event)" style="display:flex;align-items:center;gap:6px;background:#fff;border:1px solid oklch(92% 0.01 245);border-radius:9px;padding:5px 12px;height:33px;cursor:pointer;font-size:0.82rem;color:oklch(30% 0.02 245);font-family:inherit">
+                    <i class="fa-regular fa-calendar" style="color:oklch(65% 0.02 245);font-size:0.82rem"></i>
+                    <span id="sdDateLabel" style="white-space:nowrap">选择日期</span>
+                    <i class="fa-solid fa-chevron-down" style="color:oklch(65% 0.02 245);font-size:0.7rem"></i>
+                  </button>
+                  <input type="date" id="sdDateStart" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+                  <input type="date" id="sdDateEnd" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+                  <div id="sdDatePanel" style="display:none;position:absolute;top:40px;right:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:14px;user-select:none"></div>
+                </div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-top:1px solid #f1f5f9;background:#fafbfc;flex-wrap:wrap">
+              <span style="font-size:0.82rem;color:#64748b;font-weight:500">部门筛选</span>
+              <button class="sd-dept-btn active" data-dept="" onclick="App.sdFilterDept('')">全部</button>
+              <button class="sd-dept-btn" data-dept="三部" onclick="App.sdFilterDept('三部')">三部</button>
+              <button class="sd-dept-btn" data-dept="四部" onclick="App.sdFilterDept('四部')">四部</button>
+              <button class="sd-dept-btn" data-dept="五部" onclick="App.sdFilterDept('五部')">五部</button>
+            </div>
+            <div class="ps-table-wrap">
+              <table class="ps-store-table" id="sdWorksTable">
+                <thead><tr>
+                  <th style="width:140px">名称</th><th style="width:120px">账号</th><th>标题</th>
+                  <th class="ps-col-num" style="width:100px;cursor:pointer" onclick="App.sdSortWorks('likes')">点赞 <span class="sd-sort-arrow" id="sdSortArrow-likes"></span></th>
+                  <th class="ps-col-num" style="width:90px;cursor:pointer" onclick="App.sdSortWorks('comments')">评论 <span class="sd-sort-arrow" id="sdSortArrow-comments"></span></th>
+                  <th class="ps-col-num" style="width:90px;cursor:pointer" onclick="App.sdSortWorks('collects')">收藏 <span class="sd-sort-arrow" id="sdSortArrow-collects"></span></th>
+                  <th class="ps-col-num" style="width:90px;cursor:pointer" onclick="App.sdSortWorks('shares')">分享 <span class="sd-sort-arrow" id="sdSortArrow-shares"></span></th>
+                  <th style="width:140px">发布时间</th>
+                </tr></thead>
+                <tbody id="sdWorksTbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- 种草账号面板 -->
+        <div class="sd-panel" data-tab="accounts">
+          <div class="ap-toolbar">
+            <div class="ap-search-wrap"><i class="fa-solid fa-search"></i><input class="ap-search-input" id="sdAccountSearch" autocomplete="off" placeholder="搜索账号/抖音号/小红书号/主页链接..." oninput="App.sdRenderAccounts()"></div>
+            <select id="sdAccountPlatform" class="dh-select" onchange="App.sdFilterAccountPlatform(this.value)"><option value="">全部平台</option><option value="douyin">抖音</option><option value="xhs">小红书</option></select>
+            <button class="ap-btn-primary" onclick="App.openSdAccountModal()"><i class="fa-solid fa-plus"></i> 新增种草账号</button>
+          </div>
+          <div class="ap-table-wrap">
+            <table class="ap-table" id="sdAccountTable">
+              <thead><tr>
+                <th style="width:50px">ID</th><th style="width:70px">平台</th><th style="width:140px">账号</th><th style="width:140px">抖音号/小红书号</th>
+                <th style="width:90px">部门</th><th>主页链接</th><th style="width:90px">操作</th>
+              </tr></thead>
+              <tbody id="sdAccountTbody"></tbody>
+            </table>
+          </div>
+          <div class="ap-table-info" id="sdAccountInfo"></div>
+        </div>
+      </div><!-- /.sd-left -->
+
+      <!-- ====== 种草智能体（右侧，约 2/7，先设计面板，暂未配置智能体） ====== -->
+      <div class="sd-right">
+        <div class="sd-agent">
+          <div class="sd-agent-header">
+            <div class="sd-agent-title">
+              <i class="fa-solid fa-wand-magic-sparkles" style="color:#16a34a;margin-right:8px"></i>种草智能体
+            </div>
+            <span class="sd-agent-sub">基于种草账号作品数据 · 尚未配置</span>
+          </div>
+          <div class="sd-agent-result">
+            <div class="sd-agent-empty">
+              <i class="fa-solid fa-robot" style="font-size:28px;color:#cbd5e1"></i>
+              <p>种草智能体面板已就绪，暂未配置智能体。<br>后续可在此分析种草账号的点赞、评论、收藏、分享等数据。</p>
+            </div>
+          </div>
+          <div class="sd-agent-input">
+            <textarea class="sd-agent-textarea" placeholder="种草智能体暂未配置..." disabled></textarea>
+            <button class="sd-agent-send" disabled><i class="fa-solid fa-paper-plane"></i></button>
+          </div>
+        </div>
+      </div>
+      </div><!-- /.sd-layout -->
     </section>
     <section id="page-finance" class="page-section hidden">
       <div class="dashboard-header">
@@ -1252,10 +1749,6 @@
       <!-- 搜索栏 -->
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center">
         <div class="ps-search-wrap" style="flex:1;max-width:360px"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="odSearch" placeholder="搜索商品名称 / 链接ID..."></div>
-        <div id="odLinkTypeToggle" style="display:none;align-items:center;gap:2px;background:#f1f5f9;border-radius:8px;padding:3px">
-          <button id="odLinkAllBtn" type="button" onclick="App.odSetLinkType('all')" style="border:none;background:#fff;color:#1e293b;font-weight:600;padding:5px 14px;border-radius:6px;font-size:13px;cursor:pointer;font-family:inherit;box-shadow:0 1px 2px rgba(0,0,0,.06)">全部商品</button>
-          <button id="odLinkPromoBtn" type="button" onclick="App.odSetLinkType('promo')" style="border:none;background:transparent;color:#64748b;padding:5px 14px;border-radius:6px;font-size:13px;cursor:pointer;font-family:inherit">推广商品</button>
-        </div>
         <div style="position:relative">
           <button id="odColBtn" onclick="App.toggleOdColPanel()" style="display:flex;align-items:center;gap:6px;border:1px solid #e2e8f0;background:#fff;border-radius:8px;padding:6px 12px;font-size:13px;color:#475569;cursor:pointer">选择字段 <i class="fa-solid fa-chevron-down"></i></button>
           <div id="odColPanel" style="display:none;position:absolute;top:38px;right:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.14);padding:10px;min-width:210px;max-height:340px;overflow:auto"></div>
@@ -1316,7 +1809,7 @@
         <div class="ap-table-info" id="adminTableInfo"></div>
       </div>
       <div class="ap-panel" id="ap-panel-roles">
-        <div style="display:flex;gap:12px;margin-bottom:16px"><button class="btn btn-primary btn-sm" onclick="App.openRoleModal()">+ 新增角色</button></div>
+        <div style="display:flex;gap:12px;margin-bottom:16px"><button class="btn btn-primary btn-sm" onclick="App.openRolePermModal()">+ 新增角色</button></div>
         <div class="data-table-wrap"><table class="data-table"><thead><tr><th>角色名称</th><th>权限</th><th>成员数</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="roleTableBody"></tbody></table></div>
       </div>
     </section>
@@ -1429,6 +1922,21 @@
 </div>
 <div id="confirmModal" class="modal hidden">
   <div class="modal-content" style="max-width:420px"><div class="modal-body"><p id="confirmMsg" style="font-size:15px;color:#334155"></p></div><div class="modal-footer"><button class="btn btn-outline" onclick="App.closeConfirmModal()">取消</button><button class="btn btn-danger" id="confirmDeleteBtn">确认删除</button></div></div>
+</div>
+<div id="douyinFilterModal" class="modal hidden">
+  <div class="modal-content" style="max-width:420px">
+    <div class="modal-header" style="font-size:17px">筛选电商热搜</div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:#64748b;margin-bottom:12px">选择要筛选的抖音热搜榜单日期（与榜单表日期同步），筛选结果将同步到「抖音热搜品类表」。</p>
+      <select id="douyinFilterDate" style="width:100%;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;font-size:14px;color:#334155;font-family:inherit;outline:none">
+        <option value="" disabled selected>加载中...</option>
+      </select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="App.closeDouyinFilterModal()">取消</button>
+      <button class="btn btn-primary" id="douyinFilterConfirmBtn" onclick="App.confirmDouyinFilter()">开始筛选</button>
+    </div>
+  </div>
 </div>
 <div id="toast" class="toast hidden"></div>
 <div id="sidebarOverlay" class="overlay hidden" onclick="App.toggleSidebar(false)"></div>

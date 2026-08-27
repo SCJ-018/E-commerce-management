@@ -72,6 +72,16 @@ const ApiService = (() => {
       return request(path);
     },
 
+    /** 获取品类营销数据，按统一品类汇总单链接成交 */
+    async getCategoryMarketing(start, end) {
+      let path = '/category-marketing/data';
+      const params = [];
+      if (start) params.push('start=' + encodeURIComponent(start));
+      if (end)   params.push('end=' + encodeURIComponent(end));
+      if (params.length) path += '?' + params.join('&');
+      return request(path);
+    },
+
     /** 管理员 CRUD */
     async getAdmins() { return request('/admin/accounts'); },
     async createAdmin(data) { return request('/admin/accounts', { method: 'POST', body: JSON.stringify(data) }); },
@@ -89,6 +99,44 @@ const ApiService = (() => {
       return request(path);
     },
 
+    // ---- 选品助手 ----
+    async getTmallList(minPrice, maxPrice) {
+      let path = '/product-selection/tmall';
+      const params = [];
+      if (minPrice !== '' && minPrice !== null && minPrice !== undefined) params.push('minPrice=' + encodeURIComponent(minPrice));
+      if (maxPrice !== '' && maxPrice !== null && maxPrice !== undefined) params.push('maxPrice=' + encodeURIComponent(maxPrice));
+      if (params.length) path += '?' + params.join('&');
+      return request(path);
+    },
+    async getDouyinList(date) {
+      let path = '/product-selection/douyin';
+      if (date) path += '?date=' + encodeURIComponent(date);
+      return request(path);
+    },
+    async getDouyinRawDates() {
+      return request('/product-selection/douyin/raw-dates');
+    },
+    async getAisouList(date, keyword) {
+      let path = '/product-selection/aisou';
+      const params = [];
+      if (date) params.push('date=' + encodeURIComponent(date));
+      if (keyword) params.push('keyword=' + encodeURIComponent(keyword));
+      if (params.length) path += '?' + params.join('&');
+      return request(path);
+    },
+    async runSelectionAgent(question) {
+      return request('/product-selection/agent', {
+        method: 'POST',
+        body: JSON.stringify({ question: question || '' }),
+      });
+    },
+    async runDouyinFilter(date) {
+      return request('/product-selection/douyin/filter', {
+        method: 'POST',
+        body: JSON.stringify({ date: date || '' }),
+      });
+    },
+
     // ---- 每日数据分析 ----
     async generateDailyReport(date) {
       var body = date ? JSON.stringify({ date: date }) : undefined;
@@ -102,6 +150,23 @@ const ApiService = (() => {
     async getAnalysisDates() {
       return request('/analysis/dates');
     },
+    async runAnalysisAgent(question, date) {
+      return request('/analysis/agent', {
+        method: 'POST',
+        body: JSON.stringify({ question: question || '', date: date || '' }),
+      });
+    },
+
+    // ---- 种草监测中台 ----
+    async getSeedingAccounts() { return request('/seeding/accounts'); },
+    async createSeedingAccount(data) { return request('/seeding/accounts', { method: 'POST', body: JSON.stringify(data) }); },
+    async updateSeedingAccount(id, data) { return request('/seeding/accounts/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
+    async deleteSeedingAccount(id) { return request('/seeding/accounts/' + id, { method: 'DELETE' }); },
+    async getSeedingWorks(platform) { return request('/seeding/works' + (platform ? '?platform=' + encodeURIComponent(platform) : '')); },
+    async getSeedingWorksMeta(platform) { return request('/seeding/works/meta' + (platform ? '?platform=' + encodeURIComponent(platform) : '')); },
+    async getSeedingCookie(platform) { return request('/seeding/cookie' + (platform ? '?platform=' + encodeURIComponent(platform) : '')); },
+    async saveSeedingCookie(platform, cookie) { return request('/seeding/cookie', { method: 'POST', body: JSON.stringify({ platform: platform || 'douyin', cookie: cookie }) }); },
+    async triggerSeedingScrape(platform) { return request('/seeding/scrape', { method: 'POST', body: JSON.stringify({ platform: platform || 'douyin' }) }); },
 
     // ---- CRUD 快捷方法 ----
     create(type, data) {
@@ -416,12 +481,15 @@ const App = (() => {
       'daily-analysis': '每日数据分析',
       'store-account': '店铺账号管理',
       'operation-performance': '运营业绩面板',
+      'product-selection': '选品助手',
       finance: '财务中心',
       hr: '人事中心',
       'admin-permissions': '管理员与权限',
       profile: '个人中心设置',
       'toolbox-violation-check': '违规词检测',
       'order-details': '订单详情',
+      'category-marketing': '品类营销数据',
+      'seeding-monitor': '种草监测中台',
     };
     document.getElementById('pageTitle').textContent = titles[page] || page;
     if (page === 'marketing-overview') renderMarketingOverview();
@@ -429,14 +497,165 @@ const App = (() => {
     if (page === 'daily-analysis') renderDailyAnalysis();
     if (page === 'store-account') renderStoreAccount();
     if (page === 'operation-performance') renderOperationPerformance();
+    if (page === 'product-selection') renderProductSelection();
     if (page === 'finance') renderFinance();
     if (page === 'hr') renderHR();
     if (page === 'admin-permissions') renderAdminPermissions();
     if (page === 'profile') renderProfile();
     if (page === 'toolbox-violation-check') renderToolboxViolationCheck();
     if (page === 'order-details') renderOrderDetails();
+    if (page === 'category-marketing') renderCategoryMarketing();
+    if (page === 'seeding-monitor') renderSeedingMonitor();
     // Close sidebar on mobile
     if (window.innerWidth <= 768) toggleSidebar(false);
+  }
+
+  // ==================== 品类营销数据 ====================
+  let _catRange = 'all';
+  let _catStart = '', _catEnd = '';
+
+  function _catComputeRange() {
+    if (_catRange === 'all') return ['', ''];
+    if (_catRange === 'custom') return [_catStart, _catEnd];
+    const endDate = new Date(Date.now() - 86400000);
+    const startDate = new Date(endDate);
+    startDate.setDate(startDate.getDate() - parseInt(_catRange, 10) + 1);
+    return [startDate.toISOString().slice(0, 10), endDate.toISOString().slice(0, 10)];
+  }
+
+  async function renderCategoryMarketing() {
+    document.querySelectorAll('.cat-ds-btn').forEach(b => b.classList.toggle('active', b.dataset.range === _catRange));
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const ds = document.getElementById('catDateStart');
+    const de = document.getElementById('catDateEnd');
+    if (ds) ds.max = yesterday;
+    if (de) de.max = yesterday;
+    const range = _catComputeRange();
+    const start = range[0], end = range[1];
+
+    const fmtMoney = v => '¥' + Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmtNum = v => Math.round(v).toLocaleString('zh-CN');
+    const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+
+    let data = null;
+    if (state.apiAvailable) data = await ApiService.getCategoryMarketing(start, end);
+
+    if (data && data.totals) {
+      const t = data.totals;
+      setText('catPayment', fmtMoney(t.payment));
+      setText('catOrders', fmtNum(t.orders));
+      setText('catBuyers', fmtNum(t.buyers));
+      setText('catRefund', fmtMoney(t.refund));
+      setText('catProducts', fmtNum(t.productCount));
+      setText('catRefundRate', (t.refundRate || 0).toFixed(2) + '%');
+      setText('catCategoryCount', t.categoryCount);
+      setText('catSpend', fmtMoney(t.spend));
+      setText('catAdGmv', fmtMoney(t.adGmv));
+      setText('catRoi', (t.roi || 0).toFixed(2));
+      _catRenderTable(data.categories || []);
+      _catRenderChart(data.categories || []);
+    } else {
+      ['catPayment', 'catOrders', 'catBuyers', 'catRefund', 'catProducts', 'catRefundRate', 'catCategoryCount', 'catSpend', 'catAdGmv', 'catRoi'].forEach(id => setText(id, '--'));
+      _catRenderTable([]);
+      _catRenderChart([]);
+    }
+  }
+
+  function setCatRange(range) {
+    _catRange = range;
+    const r = _catComputeRange();
+    _catStart = r[0]; _catEnd = r[1];
+    const ds = document.getElementById('catDateStart');
+    const de = document.getElementById('catDateEnd');
+    if (ds) ds.value = r[0];
+    if (de) de.value = r[1];
+    renderCategoryMarketing();
+  }
+
+  function setCatCustomDate() {
+    const ds = document.getElementById('catDateStart');
+    const de = document.getElementById('catDateEnd');
+    _catStart = ds ? ds.value : '';
+    _catEnd = de ? de.value : '';
+    _catRange = 'custom';
+    renderCategoryMarketing();
+  }
+
+  function _catKeywordSpan(keywords) {
+    if (!keywords || !keywords.length) return '';
+    const text = keywords.join('、');
+    return ' <span title="' + text + '" style="display:inline-block;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;color:#94a3b8;font-size:0.78rem;cursor:help">' + text + '</span>';
+  }
+
+  function _catRenderTable(categories) {
+    const tbody = document.getElementById('catTableBody');
+    if (!tbody) return;
+    if (!categories.length) {
+      tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:24px">暂无数据</td></tr>';
+      return;
+    }
+    const fmtMoney = v => '¥' + Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmtNum = v => Math.round(v).toLocaleString('zh-CN');
+    tbody.innerHTML = categories.map((c, i) => (
+      '<tr style="border-bottom:1px solid #f1f5f9">' +
+      '<td style="padding:9px 12px;color:#94a3b8">' + (i + 1) + '</td>' +
+      '<td style="padding:9px 12px;font-weight:500;color:#1e293b">' + c.category +
+      _catKeywordSpan(c.keywords) + '</td>' +
+      '<td style="padding:9px 12px;text-align:right;color:#475569">' + fmtNum(c.products) + '</td>' +
+      '<td style="padding:9px 12px;text-align:right;font-weight:600;color:#2563eb">' + fmtMoney(c.payment) + '</td>' +
+      '<td style="padding:9px 12px;text-align:right;color:#475569">' + fmtNum(c.orders) + '</td>' +
+      '<td style="padding:9px 12px;text-align:right;color:#475569">' + fmtNum(c.buyers) + '</td>' +
+      '<td style="padding:9px 12px;text-align:right;color:#dc2626">' + fmtMoney(c.refund) + '</td>' +
+      '<td style="padding:9px 12px;text-align:right;color:#475569">' + (c.refundRate || 0).toFixed(2) + '%</td>' +
+      '<td style="padding:9px 12px;text-align:right;color:#475569">' + fmtMoney(c.spend) + '</td>' +
+      '<td style="padding:9px 12px;text-align:right;font-weight:600;color:#16a34a">' + fmtMoney(c.ad_gmv) + '</td>' +
+      '<td style="padding:9px 12px;text-align:right;color:#475569">' + (c.roi || 0).toFixed(2) + '</td>' +
+      '</tr>'
+    )).join('');
+  }
+
+  function _catRenderChart(categories) {
+    const el = document.getElementById('catBarChart');
+    if (!el) return;
+    if (typeof echarts === 'undefined') {
+      el.innerHTML = '<div style="padding:24px;text-align:center;color:#94a3b8">图表组件未加载</div>';
+      return;
+    }
+    if (!el._catChart) el._catChart = echarts.init(el);
+    const top = categories.slice(0, 10).slice().reverse();
+    const chart = el._catChart;
+    chart.setOption({
+      grid: { left: 104, right: 60, top: 10, bottom: 24 },
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: function (ps) { const p = ps[0]; return p.name + '<br/>成交金额：¥' + Number(p.value).toLocaleString(); } },
+      xAxis: { type: 'value', axisLabel: { formatter: function (v) { return (v / 10000).toFixed(0) + '万'; } } },
+      yAxis: { type: 'category', data: top.map(c => c.category), axisLabel: { fontSize: 12, color: '#475569' } },
+      series: [{ type: 'bar', data: top.map(c => c.payment), itemStyle: { color: '#1677ff', borderRadius: [0, 4, 4, 0] }, barMaxWidth: 18 }],
+    });
+    setTimeout(function () { try { chart.resize(); } catch (e) {} }, 60);
+  }
+
+  function showCatKeywords(evt, el) {
+    const kw = el.getAttribute('data-keywords');
+    if (!kw) return;
+    let tip = document.getElementById('catTooltip');
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.id = 'catTooltip';
+      tip.className = 'cat-tooltip';
+      document.body.appendChild(tip);
+    }
+    tip.textContent = '关键词：' + kw;
+    tip.style.display = 'block';
+    const r = el.getBoundingClientRect();
+    let left = r.left + r.width / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - 190));
+    tip.style.left = left + 'px';
+    tip.style.top = (r.bottom + 8) + 'px';
+  }
+
+  function hideCatKeywords() {
+    const tip = document.getElementById('catTooltip');
+    if (tip) tip.style.display = 'none';
   }
 
   // ==================== 营销数据总览 ====================
@@ -1873,6 +2092,86 @@ const App = (() => {
     if (downloadBtn) downloadBtn.classList.add('hidden');
   }
 
+  // ==================== 每日数据分析智能体 ====================
+  var _daAgentBusy = false;
+
+  function daAgentAsk(question) {
+    const input = document.getElementById('daAgentInput');
+    if (input) input.value = question;
+    daAgentSend();
+  }
+
+  async function daAgentSend() {
+    if (_daAgentBusy) return;
+    const input = document.getElementById('daAgentInput');
+    const btn = document.getElementById('daAgentSendBtn');
+    const result = document.getElementById('daAgentResult');
+    if (!input || !result) return;
+    const question = input.value.trim();
+    if (!question) { showToast('请输入分析需求', 'error'); return; }
+
+    _daAgentBusy = true;
+    if (btn) btn.disabled = true;
+    input.value = '';
+    result.innerHTML = '<div class="sa-loading"><i class="fa-solid fa-spinner"></i> 正在检索经营数据并分析，请稍候...</div>';
+
+    try {
+      let data = null;
+      if (state.apiAvailable) data = await ApiService.runAnalysisAgent(question, '');
+      renderDaAgentResult(data);
+    } catch (e) {
+      result.innerHTML = '<div class="sa-analysis" style="color:#dc2626">分析失败：网络异常，请稍后再试。</div>';
+    } finally {
+      _daAgentBusy = false;
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function renderDaAgentResult(data) {
+    const result = document.getElementById('daAgentResult');
+    if (!result) return;
+
+    if (!data) {
+      result.innerHTML = '<div class="sa-analysis" style="color:#dc2626">后端服务不可用，无法完成分析。</div>';
+      return;
+    }
+
+    const analysis = (data.analysis && data.analysis.trim()) || '';
+    const cards = data.cards || [];
+    const meta = data.meta || {};
+
+    let html = '';
+    if (analysis) {
+      html += '<div class="sa-analysis">' + analysis.replace(/\n/g, '<br>') + '</div>';
+    }
+    if (cards.length) {
+      html += '<div class="sa-cards-title"><i class="fa-solid fa-lightbulb" style="color:#f59e0b"></i> 关键数据卡片</div>';
+      html += cards.map(function (c) {
+        const type = ['store', 'platform', 'category', 'alert'].indexOf(c.type) >= 0 ? c.type : 'store';
+        const tags = String(c.tags || '').split(/[,，]/).filter(Boolean).map(function (t) {
+          return '<span class="sa-tag ' + type + '">' + esc(t.trim()) + '</span>';
+        }).join('');
+        return '<div class="sa-card">' +
+          '<div class="sa-card-top">' +
+            '<div class="sa-card-title">' + esc(c.title || '') + '</div>' +
+            '<div class="sa-card-metric">' + esc(c.metric || '') + '</div>' +
+          '</div>' +
+          (c.subtitle ? '<div class="sa-card-sub">' + esc(c.subtitle) + '</div>' : '') +
+          (tags ? '<div class="sa-card-tags">' + tags + '</div>' : '') +
+          (c.reason ? '<div class="sa-card-reason">' + esc(c.reason) + '</div>' : '') +
+          '</div>';
+      }).join('');
+    } else if (!analysis) {
+      html += '<div class="sa-analysis">智能体未返回有效结果，请稍后重试。</div>';
+    }
+    if (meta && meta.date) {
+      html += '<div class="sa-meta">数据日期：' + esc(meta.date) +
+        (meta['净支付金额'] !== undefined ? ' · 净支付 ' + esc(meta['净支付金额']) + ' 元' : '') +
+        (meta['ROI'] !== undefined ? ' · ROI ' + esc(meta['ROI']) : '') + '</div>';
+    }
+    result.innerHTML = html;
+  }
+
   function showError(msg) {
     document.getElementById('daLoading').classList.add('hidden');
     document.getElementById('daEmpty').classList.add('hidden');
@@ -1914,10 +2213,13 @@ const App = (() => {
       { id: 'platform-store', name: '分平台/店铺详细数据' },
       { id: 'daily-analysis', name: '每日数据分析' },
       { id: 'order-details', name: '订单详情' },
+      { id: 'category-marketing', name: '品类营销数据' },
     ]},
     { group: '店铺运营', pages: [
       { id: 'store-account', name: '店铺账号管理' },
       { id: 'operation-performance', name: '运营业绩面板' },
+      { id: 'product-selection', name: '选品助手' },
+      { id: 'seeding-monitor', name: '种草监测中台' },
     ]},
     { group: '财务中心', pages: [
       { id: 'finance', name: '财务中心' },
@@ -2520,8 +2822,9 @@ const App = (() => {
     // Hash routing（权限受限用户跳转到首个允许的页面）
     const validPages = [
       'marketing-overview', 'platform-store',
-      'store-account', 'operation-performance', 'finance', 'hr',
-      'admin-permissions', 'profile', 'daily-analysis', 'toolbox-violation-check', 'order-details',
+      'store-account', 'operation-performance', 'product-selection', 'finance', 'hr',
+      'admin-permissions', 'profile', 'daily-analysis', 'toolbox-violation-check', 'order-details', 'category-marketing',
+      'seeding-monitor',
     ];
     const hash = window.location.hash.replace('#', '');
     if (validPages.includes(hash)) {
@@ -2536,6 +2839,15 @@ const App = (() => {
     window.addEventListener('hashchange', () => {
       const h = window.location.hash.replace('#', '');
       if (validPages.includes(h)) navigateTo(h);
+    });
+
+    // 种草监测中台「数据更新」悬浮面板：点击页面其它区域关闭
+    document.addEventListener('click', function(e) {
+      var panel = document.getElementById('sdUpdatePanel');
+      if (!panel || panel.classList.contains('hidden')) return;
+      var anchor = document.querySelector('#page-seeding-monitor .sd-header-actions');
+      if (panel.contains(e.target) || (anchor && anchor.contains(e.target))) return;
+      panel.classList.add('hidden');
     });
 
     // Violation word search（仅当旧版元素存在时绑定）
@@ -2565,7 +2877,6 @@ const App = (() => {
         _odLinkType = 'all';
         // 切换平台时先清空店铺选择，避免用旧平台的店铺值过滤新平台数据
         if (odStore) { odStore.innerHTML = '<option value="">全部店铺</option>'; odStore.value = ''; }
-        _odUpdateLinkTypeToggle();
         _odFetchData();
         // 联动加载店铺列表
         var plat = this.value;
@@ -2594,7 +2905,7 @@ const App = (() => {
     if (odDateEnd) odDateEnd.addEventListener('change', function() { _odUpdateDateLabel(); _odPage = 1; _odFetchData(); });
     // 点击别处关闭日期/字段悬浮框
     document.addEventListener('click', function(e) {
-      [['odDatePanel', 'odDateBtn'], ['mktDatePanel', 'mktDateBtn'], ['psDatePanel', 'psDateBtn']].forEach(function(pair) {
+      [['odDatePanel', 'odDateBtn'], ['mktDatePanel', 'mktDateBtn'], ['psDatePanel', 'psDateBtn'], ['sdDatePanel', 'sdDateBtn']].forEach(function(pair) {
         var panel = document.getElementById(pair[0]);
         var btn = document.getElementById(pair[1]);
         if (panel && btn && !panel.contains(e.target) && !btn.contains(e.target)) panel.style.display = 'none';
@@ -3050,6 +3361,44 @@ const App = (() => {
   var _vdNextImgId = 1;
   var _vdOcrRunning = false;
 
+  // OCR 上传压缩参数：长边超过上限则等比缩小，减小请求体
+  var _VD_OCR_MAX_SIDE = 1600;
+  var _VD_OCR_JPEG_QUALITY = 0.9;
+
+  // 压缩图片用于 OCR 上传，返回 dataUrl；失败时回退原图。
+  // 仅缩小尺寸 + 适度重编码，不做去色（后端 PaddleOCR 会自行预处理）。
+  function _vdCompressForOcr(dataUrl) {
+    return new Promise(function(resolve) {
+      var img = new Image();
+      img.onload = function() {
+        var w = img.width, h = img.height;
+        var maxSide = Math.max(w, h);
+        var changed = false;
+        if (maxSide > _VD_OCR_MAX_SIDE) {
+          var scale = _VD_OCR_MAX_SIDE / maxSide;
+          w = Math.max(1, Math.round(w * scale));
+          h = Math.max(1, Math.round(h * scale));
+          changed = true;
+        }
+        // 原图已经够小，直接复用，避免无谓重编码（保留 PNG 截图清晰度）
+        if (!changed && dataUrl.length < 400 * 1024) {
+          resolve(dataUrl);
+          return;
+        }
+        var canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        var ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', _VD_OCR_JPEG_QUALITY));
+      };
+      img.onerror = function() { resolve(dataUrl); };
+      img.src = dataUrl;
+    });
+  }
+
   var _violationWords = [
     { id: 1, word: '违禁品', level: '严重', time: '2026-08-01 10:30:00' },
     { id: 2, word: '假货', level: '严重', time: '2026-08-01 10:32:00' },
@@ -3131,15 +3480,22 @@ const App = (() => {
       var reader = new FileReader();
       reader.onload = (function(file, name) {
         return function(e) {
-          _vdImages.push({
+          var originalDataUrl = e.target.result;
+          var imgObj = {
             id: _vdNextImgId++,
             file: file,
             name: name,
-            dataUrl: e.target.result,
+            dataUrl: originalDataUrl,          // 原图，仅用于缩略图显示
+            ocrDataUrl: originalDataUrl,        // OCR 上传用图，压缩完成后替换
             ocrText: null,
             violations: null
-          });
+          };
+          _vdImages.push(imgObj);
           _vdRenderThumbs();
+          // 异步压缩上传用图，减小请求体（不影响缩略图显示）
+          _vdCompressForOcr(originalDataUrl).then(function(compressed) {
+            if (compressed) imgObj.ocrDataUrl = compressed;
+          });
         };
       })(f, f.name);
       reader.readAsDataURL(f);
@@ -3301,6 +3657,56 @@ const App = (() => {
     return finalText;
   }
 
+  // 每批发送的图片数：单批请求体过大会被后端拒收/超时，
+  // 分批（少量多批）与小批量手动上传的行为一致，避免 28 张一次性失败。
+  var _VD_BATCH_SIZE = 5;
+
+  // 对一批图片调用后端 OCR + 违规词检测，结果写回图片对象
+  async function _vdProcessBatch(batch) {
+    var imageDataUrls = batch.map(function(img) { return img.ocrDataUrl || img.dataUrl; });
+    var resp = await fetch('/api/ocr/detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ images: imageDataUrls }),
+    });
+    var json = await resp.json();
+    var data = (json && json.results) ? json.results : [];
+
+    for (var j = 0; j < batch.length; j++) {
+      var img = batch[j];
+      var result = data[j];
+      img.ocrText = (result && result.text) ? result.text : '';
+      img.ocrLines = (result && result.lines) ? result.lines : 0;
+      img.ocrConfidence = (result && result.confidence) ? result.confidence : 0;
+      img.ocrFallback = (result && result.fallback) ? result.fallback : false;
+      img.ocrError = (result && result.error) ? result.error : null;
+      // 后端整体报错（如请求体过大 413）时，把顶层错误兜底到每张图
+      if (!img.ocrText && !img.ocrError && json && json.error) {
+        img.ocrError = json.error;
+      }
+
+      // 调用后端违规词检测
+      img.violations = [];
+      img.suspectedWords = [];
+      if (img.ocrText && img.ocrText.trim()) {
+        try {
+          var vResp = await fetch('/api/violation/detect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: img.ocrText }),
+          });
+          var vJson = await vResp.json();
+          if (vJson && vJson.success) {
+            img.violations = vJson.confirmed || [];
+            img.suspectedWords = vJson.suspected || [];
+          }
+        } catch (ve) {
+          console.warn('违规词检测失败:', ve);
+        }
+      }
+    }
+  }
+
   async function vdStartOCR() {
     if (_vdOcrRunning) return;
     if (_vdImages.length === 0) {
@@ -3323,62 +3729,36 @@ const App = (() => {
     var statProcessing = document.getElementById('vdStatProcessing');
     if (statProcessing) statProcessing.textContent = _vdImages.length;
 
-    // 收集所有图片的 base64 dataUrl
-    var imageDataUrls = _vdImages.map(function(img) { return img.dataUrl; });
+    var failedCount = 0;
 
-    try {
-      var resp = await fetch('/api/ocr/detect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ images: imageDataUrls }),
-      });
-      var json = await resp.json();
-      var data = (json && json.results) ? json.results : [];
-
-      for (var i = 0; i < _vdImages.length; i++) {
-        var img = _vdImages[i];
-        var result = data[i];
-        img.ocrText = (result && result.text) ? result.text : '';
-        img.ocrLines = (result && result.lines) ? result.lines : 0;
-        img.ocrConfidence = (result && result.confidence) ? result.confidence : 0;
-        img.ocrFallback = (result && result.fallback) ? result.fallback : false;
-        img.ocrError = (result && result.error) ? result.error : null;
-
-        // 调用后端违规词检测
-        img.violations = [];
-        img.suspectedWords = [];
-        if (img.ocrText && img.ocrText.trim()) {
-          try {
-            var vResp = await fetch('/api/violation/detect', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ text: img.ocrText }),
-            });
-            var vJson = await vResp.json();
-            if (vJson && vJson.success) {
-              img.violations = vJson.confirmed || [];
-              img.suspectedWords = vJson.suspected || [];
-            }
-          } catch (ve) {
-            console.warn('违规词检测失败:', ve);
-          }
-        }
-
-        if (img.violations.length > 0 || img.suspectedWords.length > 0) {
-          totalViolations += img.violations.length + img.suspectedWords.length;
-          totalImagesWithViolations++;
-        }
+    // 分批处理，避免一次性发送超大请求体
+    for (var start = 0; start < _vdImages.length; start += _VD_BATCH_SIZE) {
+      var batch = _vdImages.slice(start, start + _VD_BATCH_SIZE);
+      try {
+        await _vdProcessBatch(batch);
+      } catch (e) {
+        console.error('OCR API error:', e);
+        failedCount += batch.length;
+        batch.forEach(function(img) {
+          img.ocrText = '';
+          img.ocrError = e.message;
+          img.violations = [];
+          img.suspectedWords = [];
+        });
       }
-    } catch (e) {
-      console.error('OCR API error:', e);
-      for (var i = 0; i < _vdImages.length; i++) {
-        _vdImages[i].ocrText = '';
-        _vdImages[i].ocrError = e.message;
-        _vdImages[i].violations = [];
-        _vdImages[i].suspectedWords = [];
-      }
-      showToast('OCR识别失败: ' + e.message, 'error');
+      // 每批完成后刷新剩余待处理数，提供进度反馈
+      var remaining = Math.max(0, _vdImages.length - (start + batch.length));
+      if (statProcessing) statProcessing.textContent = remaining;
+      if (state.currentPage === 'toolbox-violation-check') _vdRenderThumbs();
     }
+
+    // 汇总命中数
+    var totalImagesWithViolations = 0;
+    _vdImages.forEach(function(img) {
+      if ((img.violations && img.violations.length > 0) || (img.suspectedWords && img.suspectedWords.length > 0)) {
+        totalImagesWithViolations++;
+      }
+    });
 
     _vdOcrRunning = false;
 
@@ -3390,7 +3770,11 @@ const App = (() => {
     _vdRenderThumbs();
     _vdUpdateResults();
 
-    showToast('检测完成：' + _vdImages.length + ' 张图片，' + totalImagesWithViolations + ' 张含违规词', totalImagesWithViolations > 0 ? 'warning' : 'success');
+    if (failedCount > 0) {
+      showToast('检测完成：' + _vdImages.length + ' 张图片，' + failedCount + ' 张识别失败', 'error');
+    } else {
+      showToast('检测完成：' + _vdImages.length + ' 张图片，' + totalImagesWithViolations + ' 张含违规词', totalImagesWithViolations > 0 ? 'warning' : 'success');
+    }
   }
 
   function _vdUpdateResults() {
@@ -3435,7 +3819,11 @@ const App = (() => {
       }
 
       // 高亮标记：精确违规（红色）+ 疑似违规（橙色）
-      var highlightedText = img.ocrText || '<span style="color:#94a3b8;font-style:italic">[未检测到文字]</span>';
+      var highlightedText = img.ocrText
+        ? img.ocrText
+        : (img.ocrError
+            ? '<span style="color:#dc2626;font-style:italic">[识别失败: ' + img.ocrError + ']</span>'
+            : '<span style="color:#94a3b8;font-style:italic">[未检测到文字]</span>');
       var allMarks = [];
       if (img.violations) {
         img.violations.forEach(function(v) {
@@ -3467,13 +3855,14 @@ const App = (() => {
         }
       });
 
+      var hasError = !!(img.ocrError && !img.ocrText);
       var hasAnyIssue = hasViolations || hasSuspected;
-      var headerColor = hasAnyIssue ? '#ef4444' : '#16a34a';
-      var headerIcon = hasAnyIssue ? 'fa-circle-exclamation' : 'fa-circle-check';
+      var headerColor = (hasAnyIssue || hasError) ? '#ef4444' : '#16a34a';
+      var headerIcon = (hasAnyIssue || hasError) ? 'fa-circle-exclamation' : 'fa-circle-check';
       var statusParts = [];
       if (hasViolations) statusParts.push('<b style="color:#dc2626">' + img.violations.length + '</b> 个精确违规');
       if (hasSuspected) statusParts.push('<b style="color:#ea580c">' + img.suspectedWords.length + '</b> 个疑似');
-      var statusText = hasAnyIssue ? '发现 ' + statusParts.join('，') : '未发现违规词';
+      var statusText = hasAnyIssue ? '发现 ' + statusParts.join('，') : (hasError ? '识别失败' : '未发现违规词');
 
       html += '<div style="margin-bottom:16px;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">' +
         '<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0">' +
@@ -3604,59 +3993,7 @@ const App = (() => {
     if (dateStart) { dateStart.max = yesterday; if (!dateStart.value) dateStart.value = yesterday; }
     if (dateEnd) { dateEnd.max = yesterday; if (!dateEnd.value) dateEnd.value = yesterday; }
     _odUpdateDateLabel();
-    _odUpdateLinkTypeToggle();
     await _odFetchData();
-  }
-
-  function _odUpdateLinkTypeToggle() {
-    var toggle = document.getElementById('odLinkTypeToggle');
-    if (!toggle) return;
-    var plat = (document.getElementById('odPlatform') || {}).value || '';
-    toggle.style.display = (plat === '千牛') ? 'flex' : 'none';
-    _odStyleLinkTypeButtons();
-  }
-
-  function _odStyleLinkTypeButtons() {
-    var allBtn = document.getElementById('odLinkAllBtn');
-    var promoBtn = document.getElementById('odLinkPromoBtn');
-    if (allBtn) {
-      allBtn.style.background = (_odLinkType === 'all') ? '#fff' : 'transparent';
-      allBtn.style.color = (_odLinkType === 'all') ? '#1e293b' : '#64748b';
-      allBtn.style.fontWeight = (_odLinkType === 'all') ? '600' : '400';
-      allBtn.style.boxShadow = (_odLinkType === 'all') ? '0 1px 2px rgba(0,0,0,.06)' : 'none';
-    }
-    if (promoBtn) {
-      promoBtn.style.background = (_odLinkType === 'promo') ? '#fff' : 'transparent';
-      promoBtn.style.color = (_odLinkType === 'promo') ? '#1e293b' : '#64748b';
-      promoBtn.style.fontWeight = (_odLinkType === 'promo') ? '600' : '400';
-      promoBtn.style.boxShadow = (_odLinkType === 'promo') ? '0 1px 2px rgba(0,0,0,.06)' : 'none';
-    }
-  }
-
-  function odSetLinkType(type) {
-    if (type !== 'all' && type !== 'promo') type = 'all';
-    if (_odLinkType === type) return;
-    _odLinkType = type;
-    _odStyleLinkTypeButtons();
-    _odPage = 1;
-    _odCardFields = [];
-    _odTableCols = [];
-    _odSortBy = '';
-    _odSortDir = 'desc';
-    // 切换商品类型时同步刷新店铺列表
-    var plat = (document.getElementById('odPlatform') || {}).value || '';
-    var odStore = document.getElementById('odStore');
-    if (odStore) { odStore.innerHTML = '<option value="">全部店铺</option>'; odStore.value = ''; }
-    if (plat === '千牛') {
-      fetch('/api/order-details/stores?platform=' + encodeURIComponent(plat) + '&linkType=' + encodeURIComponent(type))
-        .then(function(r) { return r.json(); })
-        .then(function(j) {
-          if (j.code === 0 && j.data && odStore) {
-            odStore.innerHTML = '<option value="">全部店铺</option>' + j.data.map(function(s) { return '<option value="' + s + '">' + s + '</option>'; }).join('');
-          }
-        });
-    }
-    _odFetchData();
   }
 
   async function _odFetchData() {
@@ -3897,6 +4234,7 @@ const App = (() => {
     if (prefix === 'od') { _odPage = 1; _odFetchData(); }
     else if (prefix === 'mkt') { renderMarketingOverview(); }
     else if (prefix === 'ps') { renderPlatformStore(); }
+    else if (prefix === 'sd') { sdRenderWorks(); }
   }
 
   function _calParseDate(str) {
@@ -3938,9 +4276,9 @@ const App = (() => {
     var now = new Date();
     var html = '<div class="od-cal">';
     html += '<div class="od-cal-head">' +
-      (isLeft ? '<button class="od-cal-nav" onclick="App.' + prefix + 'CalNav(-1)">‹</button>' : '<span style="width:24px"></span>') +
+      (isLeft ? '<button type="button" class="od-cal-nav" onclick="App.' + prefix + 'CalNav(-1)">‹</button>' : '<span style="width:24px"></span>') +
       '<span>' + y + '年' + (m + 1) + '月</span>' +
-      (!isLeft ? '<button class="od-cal-nav" onclick="App.' + prefix + 'CalNav(1)">›</button>' : '<span style="width:24px"></span>') +
+      (!isLeft ? '<button type="button" class="od-cal-nav" onclick="App.' + prefix + 'CalNav(1)">›</button>' : '<span style="width:24px"></span>') +
       '</div>';
     html += '<div class="od-cal-week">';
     ['一', '二', '三', '四', '五', '六', '日'].forEach(function(w) { html += '<span>' + w + '</span>'; });
@@ -3953,7 +4291,7 @@ const App = (() => {
       if (st.end && dt.getTime() === st.end.getTime()) cls += ' is-end';
       if (st.start && st.end && dt > st.start && dt < st.end) cls += ' in-range';
       if (dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth() && dt.getDate() === now.getDate()) cls += ' is-today';
-      html += '<button class="' + cls + '" onclick="App.' + prefix + 'CalPick(' + y + ',' + m + ',' + d + ')">' + d + '</button>';
+      html += '<button type="button" class="' + cls + '" onclick="App.' + prefix + 'CalPick(' + y + ',' + m + ',' + d + ')">' + d + '</button>';
     }
     html += '</div></div>';
     return html;
@@ -4149,6 +4487,673 @@ const App = (() => {
   }
 
   // ==================== Public API ====================
+  // ==================== 选品助手 ====================
+  function renderProductSelection() {
+    switchSelectionTab('tmall');
+    loadTmallList();
+    loadDouyinList();
+    loadAisouList();
+  }
+
+  function switchSelectionTab(tab) {
+    document.querySelectorAll('#page-product-selection .sel-tab').forEach(function (b) {
+      b.classList.toggle('active', b.dataset.tab === tab);
+    });
+    document.querySelectorAll('#page-product-selection .sel-panel').forEach(function (p) {
+      p.classList.toggle('active', p.dataset.tab === tab);
+    });
+  }
+
+  async function loadTmallList() {
+    const minPrice = document.getElementById('tmallMinPrice')?.value || '';
+    const maxPrice = document.getElementById('tmallMaxPrice')?.value || '';
+    let data = null;
+    if (state.apiAvailable) data = await ApiService.getTmallList(minPrice, maxPrice);
+
+    const tbody = document.getElementById('tmallTbody');
+    if (!tbody) return;
+    const items = (data && data.items) || [];
+    const totalEl = document.getElementById('tmallTotal');
+    if (totalEl) totalEl.textContent = '共 ' + (data ? data.total : 0) + ' 条';
+
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:32px">暂无数据</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map(function (r) {
+      const price = (r['价格'] === null || r['价格'] === undefined) ? '--' : '¥' + Number(r['价格']).toFixed(2);
+      return '<tr>' +
+        '<td>' + esc(r['类别名']) + '</td>' +
+        '<td>' + esc(r['排行榜名']) + '</td>' +
+        '<td style="font-weight:600">' + esc(r['产品名']) + '</td>' +
+        '<td class="ps-col-num" style="font-weight:600;color:#0ea5e9">' + price + '</td>' +
+        '<td>' + esc(r['日期']) + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  function filterTmall() { loadTmallList(); }
+
+  function resetTmall() {
+    const minEl = document.getElementById('tmallMinPrice');
+    const maxEl = document.getElementById('tmallMaxPrice');
+    if (minEl) minEl.value = '';
+    if (maxEl) maxEl.value = '';
+    loadTmallList();
+  }
+
+  async function loadDouyinList() {
+    const date = document.getElementById('douyinDate')?.value || '';
+    let data = null;
+    if (state.apiAvailable) data = await ApiService.getDouyinList(date);
+
+    const dateSel = document.getElementById('douyinDate');
+    const dates = (data && data.dates) || [];
+    if (dateSel) {
+      if (dates.length) {
+        const cur = dateSel.value;
+        dateSel.innerHTML = dates.map(function (d) {
+          return '<option value="' + d + '"' + (d === cur ? ' selected' : '') + '>' + d + '</option>';
+        }).join('');
+        // 首次加载未选日期时，默认选中最新一天（后端默认返回该天数据）
+        if (!date) dateSel.value = dates[0];
+      } else {
+        dateSel.innerHTML = '<option value="" disabled selected>暂无日期</option>';
+      }
+    }
+
+    const tbody = document.getElementById('douyinTbody');
+    if (!tbody) return;
+    const items = (data && data.items) || [];
+    const totalEl = document.getElementById('douyinTotal');
+    if (totalEl) totalEl.textContent = '共 ' + (data ? data.total : 0) + ' 条';
+
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:32px">暂无数据</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map(function (r, i) {
+      return '<tr>' +
+        '<td style="color:#94a3b8">' + (i + 1) + '</td>' +
+        '<td style="font-weight:600">' + esc(r['热搜名']) + '</td>' +
+        '<td class="ps-col-num" style="font-weight:600;color:#ef4444">' + esc(r['热搜值']) + '</td>' +
+        '<td>' + (r['品类'] ? esc(r['品类']) : '<span style="color:#cbd5e1">--</span>') + '</td>' +
+        '<td>' + esc(r['日期']) + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  function filterDouyin() { loadDouyinList(); }
+
+  function runDouyinFilter() {
+    if (!state.apiAvailable) { showToast('后端服务不可用', 'error'); return; }
+    const modal = document.getElementById('douyinFilterModal');
+    const sel = document.getElementById('douyinFilterDate');
+    if (sel) sel.innerHTML = '<option value="" disabled selected>加载中...</option>';
+    if (modal) modal.classList.remove('hidden');
+    // 拉取「抖音热搜榜单表」（原始数据）的日期列表，供筛选时选择
+    ApiService.getDouyinRawDates().then(function (data) {
+      const dates = (data && data.dates) || [];
+      if (!sel) return;
+      if (dates.length) {
+        sel.innerHTML = dates.map(function (d) {
+          return '<option value="' + d + '">' + d + '</option>';
+        }).join('');
+        sel.value = dates[0];
+      } else {
+        sel.innerHTML = '<option value="" disabled selected>榜单表暂无日期</option>';
+      }
+    }).catch(function () {
+      if (sel) sel.innerHTML = '<option value="" disabled selected>获取日期失败</option>';
+    });
+  }
+
+  function closeDouyinFilterModal() {
+    const modal = document.getElementById('douyinFilterModal');
+    if (modal) modal.classList.add('hidden');
+  }
+
+  async function confirmDouyinFilter() {
+    const sel = document.getElementById('douyinFilterDate');
+    const date = sel ? sel.value : '';
+    if (!date) { showToast('请选择日期', 'error'); return; }
+    closeDouyinFilterModal();
+    const pageBtn = document.getElementById('douyinFilterBtn');
+    if (pageBtn) { pageBtn.disabled = true; pageBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 筛选中...'; }
+    try {
+      const res = await ApiService.runDouyinFilter(date);
+      if (res) {
+        const exportMsg = res.export ? '，Excel 已同步' : '（Excel 同步失败）';
+        const dedupMsg = res.deduped ? '，去重 ' + res.deduped + ' 条（品类前一天已出现）' : '';
+        showToast('筛选完成：' + date + ' 已同步 ' + res.matched + ' 条电商热搜到品类表' + dedupMsg + exportMsg, 'success');
+        await loadDouyinList();
+      } else {
+        showToast('筛选失败，请查看后端日志', 'error');
+      }
+    } finally {
+      if (pageBtn) { pageBtn.disabled = false; pageBtn.innerHTML = '<i class="fa-solid fa-filter"></i> 筛选电商热搜'; }
+    }
+  }
+
+  async function loadAisouList() {
+    const date = document.getElementById('aisouDate')?.value || '';
+    const keyword = document.getElementById('aisouKeyword')?.value || '';
+    let data = null;
+    if (state.apiAvailable) data = await ApiService.getAisouList(date, keyword);
+
+    const dateSel = document.getElementById('aisouDate');
+    const dates = (data && data.dates) || [];
+    if (dateSel) {
+      if (dates.length) {
+        const cur = dateSel.value;
+        const opts = ['<option value="all">全部日期</option>'];
+        opts.push(dates.map(function (d) {
+          return '<option value="' + d + '"' + (d === cur ? ' selected' : '') + '>' + d + '</option>';
+        }).join(''));
+        dateSel.innerHTML = opts.join('');
+        // 首次加载未选日期时，默认选中最新一天（后端默认返回该天数据）
+        if (!date) dateSel.value = dates[0];
+      } else {
+        dateSel.innerHTML = '<option value="" disabled selected>暂无日期</option>';
+      }
+    }
+
+    const tbody = document.getElementById('aisouTbody');
+    if (!tbody) return;
+    const items = (data && data.items) || [];
+    const totalEl = document.getElementById('aisouTotal');
+    if (totalEl) totalEl.textContent = '共 ' + (data ? data.total : 0) + ' 条';
+
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:32px">暂无数据</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map(function (r) {
+      return '<tr>' +
+        '<td>' + esc(r['日期']) + '</td>' +
+        '<td style="font-weight:600">' + esc(r['搜索词关键词']) + '</td>' +
+        '<td class="ps-col-num" style="font-weight:600;color:#8b5cf6">' + esc(r['搜索词月覆盖人次']) + '</td>' +
+        '<td class="ps-col-num">' + esc(r['搜索词七日搜索人次']) + '</td>' +
+        '<td>' + esc(r['电商词关键词']) + '</td>' +
+        '<td class="ps-col-num" style="font-weight:600;color:#0ea5e9">' + esc(r['电商词月覆盖人次']) + '</td>' +
+        '<td class="ps-col-num">' + esc(r['电商词七日搜索人次']) + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  function filterAisou() { loadAisouList(); }
+
+  function resetAisou() {
+    const kwEl = document.getElementById('aisouKeyword');
+    const dateSel = document.getElementById('aisouDate');
+    if (kwEl) kwEl.value = '';
+    if (dateSel) dateSel.value = '';
+    loadAisouList();
+  }
+
+  // ==================== 选品助手智能体 ====================
+  var _psAgentBusy = false;
+
+  function psAgentAsk(question) {
+    const input = document.getElementById('selAgentInput');
+    if (input) input.value = question;
+    psAgentSend();
+  }
+
+  async function psAgentSend() {
+    if (_psAgentBusy) return;
+    const input = document.getElementById('selAgentInput');
+    const btn = document.getElementById('selAgentSendBtn');
+    const result = document.getElementById('selAgentResult');
+    if (!input || !result) return;
+    const question = input.value.trim();
+    if (!question) { showToast('请输入分析需求', 'error'); return; }
+
+    _psAgentBusy = true;
+    if (btn) btn.disabled = true;
+    input.value = '';
+    result.innerHTML = '<div class="sa-loading"><i class="fa-solid fa-spinner"></i> 正在检索知识库并分析，请稍候...</div>';
+
+    try {
+      let data = null;
+      if (state.apiAvailable) data = await ApiService.runSelectionAgent(question);
+      renderPsAgentResult(data);
+    } catch (e) {
+      result.innerHTML = '<div class="sa-analysis" style="color:#dc2626">分析失败：网络异常，请稍后再试。</div>';
+    } finally {
+      _psAgentBusy = false;
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function renderPsAgentResult(data) {
+    const result = document.getElementById('selAgentResult');
+    if (!result) return;
+
+    if (!data) {
+      result.innerHTML = '<div class="sa-analysis" style="color:#dc2626">后端服务不可用，无法完成分析。</div>';
+      return;
+    }
+
+    const analysis = (data.analysis && data.analysis.trim()) || '';
+    const cards = data.cards || [];
+    const meta = data.meta || {};
+
+    let html = '';
+    if (analysis) {
+      html += '<div class="sa-analysis">' + analysis.replace(/\n/g, '<br>') + '</div>';
+    }
+    if (cards.length) {
+      html += '<div class="sa-cards-title"><i class="fa-solid fa-lightbulb" style="color:#f59e0b"></i> 推荐卡片（基于知识库命中数据）</div>';
+      html += cards.map(function (c) {
+        const type = c.type === 'aisou' ? 'aisou' : 'tmall';
+        const tags = String(c.tags || '').split(/[,，]/).filter(Boolean).map(function (t) {
+          return '<span class="sa-tag ' + type + '">' + esc(t.trim()) + '</span>';
+        }).join('');
+        const derived = String(c.derived || '').split(/[,，、]/).filter(Boolean).map(function (d) {
+          return '<span class="sa-tag derived">' + esc(d.trim()) + '</span>';
+        }).join('');
+        return '<div class="sa-card">' +
+          '<div class="sa-card-top">' +
+            '<div class="sa-card-title">' + esc(c.title || '') + '</div>' +
+            '<div class="sa-card-metric">' + esc(c.metric || '') + '</div>' +
+          '</div>' +
+          (c.subtitle ? '<div class="sa-card-sub">' + esc(c.subtitle) + '</div>' : '') +
+          (tags ? '<div class="sa-card-tags">' + tags + '</div>' : '') +
+          (derived ? '<div class="sa-card-derived"><i class="fa-solid fa-shapes" style="color:#f59e0b;margin-right:4px"></i>裂变：' + derived + '</div>' : '') +
+          (c.reason ? '<div class="sa-card-reason">' + esc(c.reason) + '</div>' : '') +
+          '</div>';
+      }).join('');
+    } else if (!analysis) {
+      html += '<div class="sa-analysis">智能体未返回有效结果，请稍后重试。</div>';
+    }
+    if (meta && (meta.date || meta.douyin_count !== undefined)) {
+      html += '<div class="sa-meta">数据日期：' + esc(meta.date || '--') +
+        ' · 抖音热搜 ' + (meta.douyin_count || 0) +
+        ' · 天猫匹配 ' + (meta.tmall_count || 0) +
+        ' · 爱搜匹配 ' + (meta.aisou_count || 0) + '</div>';
+    }
+    result.innerHTML = html;
+  }
+
+  // ==================== 种草监测中台 ====================
+  var _sdAccounts = [];
+  var _sdWorks = [];
+  var _sdTab = 'works';
+  var _sdAccountModalId = null;
+  var _sdWorksSortKey = 'publishTime';
+  var _sdWorksSortDir = -1;
+  var _sdDeptFilter = '';
+  var _sdPlatform = 'douyin';
+  var _sdAccountPlatformFilter = '';
+
+  function renderSeedingMonitor() {
+    _sdLoadCookie();
+    _sdLoadAccounts();
+    _sdLoadWorks();
+    sdSwitchTab(_sdTab);
+  }
+
+  function _sdLoadCookie() {
+    var elD = document.getElementById('sdDouyinCookie');
+    var elX = document.getElementById('sdXhsCookie');
+    if (!state.apiAvailable) {
+      if (elD) { elD.value = ''; elD.placeholder = '后端不可用，无法读取 Cookie'; }
+      if (elX) { elX.value = ''; elX.placeholder = '后端不可用，无法读取 Cookie'; }
+      return;
+    }
+    ApiService.getSeedingCookie('douyin').then(function(data) {
+      if (elD && data && data.cookie) { elD.value = data.cookie; elD.title = data.cookie; }
+    });
+    ApiService.getSeedingCookie('xhs').then(function(data) {
+      if (elX && data && data.cookie) { elX.value = data.cookie; elX.title = data.cookie; }
+    });
+  }
+
+  function _sdLoadAccounts() {
+    if (state.apiAvailable) {
+      ApiService.getSeedingAccounts().then(function(data) {
+        if (Array.isArray(data)) { _sdAccounts = data; sdRenderAccounts(); sdRenderWorks(); _sdUpdateHeader(); }
+      });
+    }
+    sdRenderAccounts();
+  }
+
+  function _sdLoadWorks() {
+    if (state.apiAvailable) {
+      ApiService.getSeedingWorks(_sdPlatform).then(function(data) {
+        if (Array.isArray(data)) { _sdWorks = data; sdRenderWorks(); _sdUpdateHeader(); }
+      });
+    }
+    sdRenderWorks();
+  }
+
+  function _sdUpdateHeader() {
+    var ac = document.getElementById('sdAccountCount');
+    var wc = document.getElementById('sdWorksCount');
+    if (ac) ac.textContent = _sdAccounts.length;
+    if (wc) wc.textContent = _sdWorks.length;
+  }
+
+  function sdSwitchTab(tab) {
+    _sdTab = tab;
+    document.querySelectorAll('#page-seeding-monitor .sd-tab').forEach(function(t) {
+      t.classList.toggle('active', t.dataset.tab === tab);
+    });
+    document.querySelectorAll('#page-seeding-monitor .sd-panel').forEach(function(p) {
+      p.classList.toggle('active', p.dataset.tab === tab);
+    });
+  }
+
+  function sdToggleUpdatePanel() {
+    var panel = document.getElementById('sdUpdatePanel');
+    if (panel) panel.classList.toggle('hidden');
+  }
+
+  function toggleSdDatePicker(e) { _calToggle('sd', e); }
+  function sdCalPick(y, m, d) { _calPick('sd', y, m, d); }
+  function sdCalNav(delta) { _calNav('sd', delta); }
+  function sdCalClear() { _calClear('sd'); }
+  function sdCalToday() { _calToday('sd'); }
+
+  function sdSortWorks(key) {
+    if (_sdWorksSortKey === key) {
+      _sdWorksSortDir = -_sdWorksSortDir;
+    } else {
+      _sdWorksSortKey = key;
+      _sdWorksSortDir = -1;
+    }
+    sdRenderWorks();
+  }
+
+  function sdFilterDept(dept) {
+    _sdDeptFilter = dept || '';
+    document.querySelectorAll('#page-seeding-monitor .sd-dept-btn').forEach(function(b) {
+      b.classList.toggle('active', (b.dataset.dept || '') === _sdDeptFilter);
+    });
+    sdRenderWorks();
+  }
+
+  function sdSwitchPlatform(platform) {
+    _sdPlatform = platform || 'douyin';
+    document.querySelectorAll('#page-seeding-monitor .sd-plat-btn').forEach(function(b) {
+      b.classList.toggle('active', b.dataset.plat === _sdPlatform);
+    });
+    _sdLoadCookie();
+    _sdLoadWorks();
+  }
+
+  function sdFilterAccountPlatform(platform) {
+    _sdAccountPlatformFilter = platform || '';
+    sdRenderAccounts();
+  }
+
+  function sdAccPlatformChange() {
+    var plat = (document.getElementById('sdAccPlatform') || {}).value || 'douyin';
+    var df = document.getElementById('sdAccDouyinField');
+    var rf = document.getElementById('sdAccRedField');
+    var hf = document.getElementById('sdAccHomepageField');
+    if (df) df.style.display = (plat === 'douyin' ? '' : 'none');
+    if (rf) rf.style.display = (plat === 'xhs' ? '' : 'none');
+    if (hf) hf.style.display = (plat === 'douyin' ? '' : 'none');
+  }
+
+  function sdRenderAccounts() {
+    var el = document.getElementById('sdAccountSearch');
+    var kw = (el && el.value || '').toLowerCase();
+    var list = _sdAccounts.slice();
+    if (kw) list = list.filter(function(a) {
+      return (a.name || '').toLowerCase().indexOf(kw) >= 0 ||
+             (a.douyinId || '').toLowerCase().indexOf(kw) >= 0 ||
+             (a.redId || '').toLowerCase().indexOf(kw) >= 0 ||
+             (a.homepage || '').toLowerCase().indexOf(kw) >= 0 ||
+             (a.department || '').toLowerCase().indexOf(kw) >= 0;
+    });
+    if (_sdAccountPlatformFilter) list = list.filter(function(a) {
+      return (a.platform || 'douyin') === _sdAccountPlatformFilter;
+    });
+    var info = document.getElementById('sdAccountInfo');
+    if (info) info.textContent = '共 ' + list.length + ' 个种草账号';
+    var tbody = document.getElementById('sdAccountTbody');
+    if (!tbody) return;
+    tbody.innerHTML = list.map(function(a) {
+      var plat = a.platform || 'douyin';
+      var platBadge = plat === 'xhs'
+        ? '<span style="font-size:11px;color:#e11d48;font-weight:600">小红书</span>'
+        : '<span style="font-size:11px;color:#0284c7;font-weight:600">抖音</span>';
+      var idField = plat === 'xhs' ? (a.redId || '-') : (a.douyinId || '-');
+      var hp = plat === 'xhs'
+        ? '<span style="color:#94a3b8">-</span>'
+        : (a.homepage
+            ? '<a href="' + esc(a.homepage) + '" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:none">' + esc(a.homepage) + '</a>'
+            : '<span style="color:#94a3b8">-</span>');
+      return '<tr><td>' + a.id + '</td><td>' + platBadge + '</td><td><strong>' + esc(a.name || '') + '</strong></td>' +
+        '<td style="font-family:monospace;font-size:12px">' + esc(idField) + '</td>' +
+        '<td>' + esc(a.department || '-') + '</td>' +
+        '<td style="font-size:12px;word-break:break-all">' + hp + '</td>' +
+        '<td><div class="ap-actions">' +
+        '<button class="ap-btn-sm edit" onclick="App.openSdAccountModal(' + a.id + ')"><i class="fa-solid fa-pen"></i></button>' +
+        '<button class="ap-btn-sm delete" onclick="App.deleteSdAccount(' + a.id + ')"><i class="fa-solid fa-trash"></i></button>' +
+        '</div></td></tr>';
+    }).join('');
+  }
+
+  function sdTitleCell(w) {
+    var t = esc(w.title || '');
+    var link = (w.link || w.url || '').toString().trim();
+    if (!link) return t;
+    return '<a href="' + esc(link) + '" target="_blank" rel="noopener noreferrer" ' +
+      'style="color:#1677ff;text-decoration:none" title="点击跳转作品：' + t + '">' + t + '</a>';
+  }
+
+  function sdRenderWorks() {
+    var searchEl = document.getElementById('sdWorksSearch');
+    var kw = (searchEl && searchEl.value || '').toLowerCase();
+    var list = _sdWorks.slice();
+
+    // 关键词筛选
+    if (kw) list = list.filter(function(w) {
+      return (w.title || '').toLowerCase().indexOf(kw) >= 0 ||
+             (w.name || '').toLowerCase().indexOf(kw) >= 0 ||
+             (w.account || '').toLowerCase().indexOf(kw) >= 0;
+    });
+
+    // 部门筛选（按账号所属部门过滤作品）
+    if (_sdDeptFilter) {
+      var deptMap = {};
+      _sdAccounts.forEach(function(a) {
+        if (a.douyinId) deptMap[a.douyinId] = a.department || '';
+        if (a.redId) deptMap[a.redId] = a.department || '';
+        if (a.name) deptMap[a.name] = a.department || '';
+      });
+      list = list.filter(function(w) {
+        return (deptMap[w.account] || deptMap[w.name] || '') === _sdDeptFilter;
+      });
+    }
+
+    // 时间筛选
+    var ds = document.getElementById('sdDateStart');
+    var de = document.getElementById('sdDateEnd');
+    var dateStart = (ds && ds.value || '').trim();
+    var dateEnd = (de && de.value || '').trim();
+    if (dateStart || dateEnd) {
+      list = list.filter(function(w) {
+        var d = (w.publishTime || '').slice(0, 10);
+        if (dateStart && d < dateStart) return false;
+        if (dateEnd && d > dateEnd) return false;
+        return true;
+      });
+    }
+
+    // 排序（默认按发布时间倒序；点赞/评论/收藏/分享可切换）
+    if (_sdWorksSortKey) {
+      list.sort(function(a, b) {
+        var av = a[_sdWorksSortKey];
+        var bv = b[_sdWorksSortKey];
+        var r;
+        if (typeof av === 'number' && typeof bv === 'number') {
+          r = av - bv;
+        } else {
+          r = String(av == null ? '' : av).localeCompare(String(bv == null ? '' : bv));
+        }
+        return r * _sdWorksSortDir;
+      });
+    }
+
+    // 更新排序箭头
+    ['likes', 'comments', 'collects', 'shares'].forEach(function(k) {
+      var arrow = document.getElementById('sdSortArrow-' + k);
+      if (arrow) arrow.textContent = (_sdWorksSortKey === k) ? (_sdWorksSortDir === -1 ? '▼' : '▲') : '';
+    });
+
+    var badge = document.getElementById('sdWorksBadge');
+    if (badge) badge.textContent = '共 ' + list.length + ' 条';
+    var tbody = document.getElementById('sdWorksTbody');
+    if (!tbody) return;
+    tbody.innerHTML = list.map(function(w) {
+      return '<tr><td><strong>' + esc(w.name || '') + '</strong></td>' +
+        '<td style="font-family:monospace;font-size:12px">' + esc(w.account || '-') + '</td>' +
+        '<td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + sdTitleCell(w) + '</td>' +
+        '<td class="ps-col-num" style="color:#dc2626;font-weight:600">' + (w.likes || 0).toLocaleString() + '</td>' +
+        '<td class="ps-col-num">' + (w.comments || 0).toLocaleString() + '</td>' +
+        '<td class="ps-col-num">' + (w.collects || 0).toLocaleString() + '</td>' +
+        '<td class="ps-col-num">' + (w.shares || 0).toLocaleString() + '</td>' +
+        '<td style="font-size:12px;color:#64748b">' + esc(w.publishTime || '-') + '</td></tr>';
+    }).join('');
+  }
+
+  function openSdAccountModal(id) {
+    _sdAccountModalId = id || null;
+    var acc = id ? _sdAccounts.find(function(a) { return a.id === id; }) : null;
+    var plat = acc ? (acc.platform || 'douyin') : 'douyin';
+    document.getElementById('modalTitle').textContent = acc ? '编辑种草账号' : '新增种草账号';
+    document.getElementById('modalBody').innerHTML =
+      '<div class="ap-form-group"><label>平台</label><select class="ap-form-input" id="sdAccPlatform" onchange="App.sdAccPlatformChange()">' +
+        '<option value="douyin"' + (plat === 'douyin' ? ' selected' : '') + '>抖音</option>' +
+        '<option value="xhs"' + (plat === 'xhs' ? ' selected' : '') + '>小红书</option>' +
+      '</select></div>' +
+      '<div class="ap-form-group"><label>账号名称</label><input class="ap-form-input" id="sdAccName" autocomplete="off" value="' + esc(acc ? acc.name || '' : '') + '" placeholder="例如：聚浪好物研究所"></div>' +
+      '<div id="sdAccDouyinField"><div class="ap-form-group"><label>抖音号</label><input class="ap-form-input" id="sdAccDouyin" autocomplete="off" value="' + esc(acc ? acc.douyinId || '' : '') + '" placeholder="抖音号（如 julang_haowu）"></div></div>' +
+      '<div id="sdAccRedField"><div class="ap-form-group"><label>小红书号</label><input class="ap-form-input" id="sdAccRed" autocomplete="off" value="' + esc(acc ? acc.redId || '' : '') + '" placeholder="小红书号（如 18930360363）"></div></div>' +
+      '<div class="ap-form-group"><label>部门</label><input class="ap-form-input" id="sdAccDept" autocomplete="off" value="' + esc(acc ? acc.department || '' : '') + '" placeholder="例如：三部 / 四部 / 五部"></div>' +
+      '<div id="sdAccHomepageField"><div class="ap-form-group"><label>主页链接</label><input class="ap-form-input" id="sdAccHomepage" autocomplete="off" value="' + esc(acc ? acc.homepage || '' : '') + '" placeholder="https://www.douyin.com/user/MS4wLjAB..."></div>' +
+      '<div style="font-size:11px;color:#94a3b8">抖音需填写主页链接（自动解析 sec_user_id）；小红书无需主页链接，抓取时按小红书号解析。</div></div>';
+    document.getElementById('modalSaveBtn').onclick = saveSdAccount;
+    document.getElementById('formModal').classList.remove('hidden');
+    sdAccPlatformChange();
+  }
+
+  async function saveSdAccount() {
+    var platform = (document.getElementById('sdAccPlatform').value || 'douyin').trim();
+    var name = (document.getElementById('sdAccName').value || '').trim();
+    var douyinId = (document.getElementById('sdAccDouyin').value || '').trim();
+    var redId = (document.getElementById('sdAccRed').value || '').trim();
+    var dept = (document.getElementById('sdAccDept').value || '').trim();
+    var homepage = (document.getElementById('sdAccHomepage').value || '').trim();
+    if (!name) { showToast('请输入账号名称', 'error'); return; }
+    if (platform === 'xhs') {
+      if (!redId) { showToast('请输入小红书号', 'error'); return; }
+      homepage = '';
+    } else {
+      if (!homepage) { showToast('请输入主页链接', 'error'); return; }
+      redId = '';
+    }
+
+    var payload = { platform: platform, name: name, douyinId: douyinId, redId: redId, homepage: homepage, department: dept };
+    var saved = null;
+
+    if (state.apiAvailable) {
+      if (_sdAccountModalId) {
+        saved = await ApiService.updateSeedingAccount(_sdAccountModalId, payload);
+      } else {
+        saved = await ApiService.createSeedingAccount(payload);
+      }
+    }
+
+    // 立即更新本地列表并渲染
+    if (saved) {
+      if (_sdAccountModalId) {
+        var idx = _sdAccounts.findIndex(function(a) { return a.id === _sdAccountModalId; });
+        if (idx >= 0) { _sdAccounts[idx] = saved; } else { _sdAccounts.push(saved); }
+      } else {
+        _sdAccounts.push(saved);
+      }
+    } else if (!state.apiAvailable) {
+      if (_sdAccountModalId) {
+        var t = _sdAccounts.find(function(a) { return a.id === _sdAccountModalId; });
+        if (t) { t.platform = platform; t.name = name; t.douyinId = douyinId; t.redId = redId; t.homepage = homepage; t.department = dept; }
+      } else {
+        var newId = _sdAccounts.length ? Math.max.apply(null, _sdAccounts.map(function(a) { return a.id; })) + 1 : 1;
+        _sdAccounts.push({ id: newId, platform: platform, name: name, douyinId: douyinId, redId: redId, homepage: homepage, department: dept });
+      }
+    }
+
+    document.getElementById('formModal').classList.add('hidden');
+    showToast(_sdAccountModalId ? '种草账号已更新' : '种草账号已添加');
+    sdRenderAccounts();
+    _sdUpdateHeader();
+    _sdLoadAccounts();
+  }
+
+  function deleteSdAccount(id) {
+    var acc = _sdAccounts.find(function(a) { return a.id === id; });
+    if (!acc) return;
+    document.getElementById('confirmMsg').textContent = '确定删除种草账号「' + (acc.name || '') + '」吗？';
+    document.getElementById('confirmDeleteBtn').onclick = async function() {
+      if (state.apiAvailable) {
+        await ApiService.deleteSeedingAccount(id);
+      }
+      // 立即从本地列表移除并渲染
+      _sdAccounts = _sdAccounts.filter(function(a) { return a.id !== id; });
+      document.getElementById('confirmModal').classList.add('hidden');
+      showToast('种草账号已删除');
+      sdRenderAccounts();
+      _sdUpdateHeader();
+      _sdLoadAccounts();
+    };
+    document.getElementById('confirmModal').classList.remove('hidden');
+  }
+
+  async function sdSaveCookie(platform) {
+    platform = platform || _sdPlatform;
+    var el = platform === 'xhs' ? document.getElementById('sdXhsCookie') : document.getElementById('sdDouyinCookie');
+    var cookie = (el && el.value || '').trim();
+    if (!cookie) { showToast('请输入 Cookie', 'error'); return; }
+    if (!state.apiAvailable) { showToast('后端不可用，无法保存 Cookie', 'error'); return; }
+    var res = await ApiService.saveSeedingCookie(platform, cookie);
+    showToast(res !== null ? 'Cookie 已保存' : 'Cookie 保存失败', res !== null ? 'success' : 'error');
+  }
+
+  async function sdTriggerScrape(platform) {
+    platform = platform || _sdPlatform;
+    if (!state.apiAvailable) { showToast('后端不可用，无法触发抓取', 'error'); return; }
+    var res = await ApiService.triggerSeedingScrape(platform);
+    if (res === null) { showToast('触发抓取失败', 'error'); return; }
+    var beforeMtime = res.mtime || 0;
+    showToast('已触发' + (platform === 'xhs' ? '小红书' : '抖音') + '抓取，正在后台执行…');
+    _sdPollScrape(platform, beforeMtime);
+  }
+
+  function _sdPollScrape(platform, beforeMtime) {
+    var tries = 0;
+    var maxTries = 40; // 40 * 3s = 120s
+    var timer = setInterval(async function() {
+      tries++;
+      var meta = await ApiService.getSeedingWorksMeta(platform);
+      if (meta && meta.mtime && (!beforeMtime || meta.mtime > beforeMtime)) {
+        clearInterval(timer);
+        if (platform === _sdPlatform) _sdLoadWorks();
+        showToast('抓取完成，作品数据已更新');
+        return;
+      }
+      if (tries >= maxTries) {
+        clearInterval(timer);
+        if (platform === _sdPlatform) _sdLoadWorks();
+        showToast('抓取可能仍在进行或未完成，请稍后手动点击「数据更新」查看', 'error');
+      }
+    }, 3000);
+  }
+
   return {
     init, initApp, navigateTo,
     openFormModal, closeFormModal,
@@ -4162,13 +5167,22 @@ const App = (() => {
     filterAdminTable, switchAdminTab,
     // Marketing
     renderMarketingOverview, setDateRange, toggleMktDatePicker, mktCalPick, mktCalNav, mktCalClear, mktCalToday,
+    renderCategoryMarketing, setCatRange, setCatCustomDate, showCatKeywords, hideCatKeywords,
     // Platform & Store
     renderPlatformStore, toggleStoreDetail, closePsDetail, psGoPage, filterByPlatform, togglePsDatePicker, psCalPick, psCalNav, psCalClear, psCalToday,
     generateDailyReport, renderDailyAnalysis, downloadReport,
+    daAgentAsk, daAgentSend,
     // Store Account
     renderStoreAccount, filterSATable, openSAModal,
+    // Seeding Monitor
+    renderSeedingMonitor, sdSwitchTab, sdToggleUpdatePanel, sdSortWorks, sdFilterDept, sdSwitchPlatform, sdFilterAccountPlatform, sdAccPlatformChange, toggleSdDatePicker, sdCalPick, sdCalNav, sdCalClear, sdCalToday, sdRenderAccounts, sdRenderWorks, openSdAccountModal, saveSdAccount, deleteSdAccount, sdSaveCookie, sdTriggerScrape,
     // Operation Performance
     renderOperationPerformance, opGoPage,
+    // Product Selection
+    renderProductSelection, switchSelectionTab, filterTmall, resetTmall, filterDouyin, runDouyinFilter,
+    closeDouyinFilterModal, confirmDouyinFilter,
+    filterAisou, resetAisou,
+    psAgentAsk, psAgentSend,
     // Finance
     renderFinance, finGoPage,
     // HR
@@ -4181,7 +5195,7 @@ const App = (() => {
     // AI Assistant
     aiToggleChat, aiSendMessage,
     // Order Details
-    renderOrderDetails, _odGoPage, _odSetDateRange, toggleOdColPanel, toggleOdCol, toggleOdDatePicker, odSetLinkType, odCalPick, odCalNav, odCalClear, odCalToday,
+    renderOrderDetails, _odGoPage, _odSetDateRange, toggleOdColPanel, toggleOdCol, toggleOdDatePicker, odCalPick, odCalNav, odCalClear, odCalToday,
   };
 })();
 

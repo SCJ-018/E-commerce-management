@@ -5,6 +5,7 @@
 """
 import os
 import json
+import re
 import traceback
 import time
 import subprocess
@@ -17,12 +18,30 @@ from threading import Lock
 import requests
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+from werkzeug.exceptions import RequestEntityTooLarge
 import pymysql
 
-from config import DB_CONFIG, DB_POOL_SIZE, DB_PING_BEFORE_QUERY, DEEPSEEK_API_KEY, DEEPSEEK_API_URL, DEEPSEEK_MODEL
+from config import DB_CONFIG, DB_POOL_SIZE, DB_PING_BEFORE_QUERY, DEEPSEEK_API_KEY, DEEPSEEK_API_URL, DEEPSEEK_MODEL, DEEPSEEK_SELECTION_API_KEY
+
+# 品类分类规则（供「品类营销数据」返回各品类的命中关键词）
+try:
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), 'tools', 'category_mapper'))
+    import mapper as _category_mapper
+except Exception:
+    _category_mapper = None
 
 app = Flask(__name__)
 CORS(app)
+
+# 限制单个请求体大小：违规词检测会把多张图片 base64 一次性上传，
+# 超过上限返回 413，由前端分批请求，避免超大请求被静默丢弃或超时。
+app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024  # 64 MB
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def _handle_413(e):
+    return jsonify({'error': '请求体过大，请减少单次上传图片数量', 'success': False, 'results': []}), 413
 
 
 # ======================== 数据库连接池 ========================
@@ -186,10 +205,10 @@ def db_execute_insert(sql, params=None, max_retries=2):
 
 # ======================== DeepSeek AI 分析引擎 ========================
 
-def call_deepseek_api(system_prompt, user_message, temperature=0.3, max_tokens=4096):
-    """调用 DeepSeek API 生成分析报告，返回文本内容；失败返回 None"""
+def call_deepseek_api(system_prompt, user_message, temperature=0.3, max_tokens=4096, api_key=None):
+    """调用 DeepSeek API 生成分析报告，返回文本内容；失败返回 None。api_key 可指定专用 key，默认用全局 key。"""
     headers = {
-        'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
+        'Authorization': f'Bearer {api_key or DEEPSEEK_API_KEY}',
         'Content-Type': 'application/json',
     }
     payload = {
@@ -213,6 +232,96 @@ def call_deepseek_api(system_prompt, user_message, temperature=0.3, max_tokens=4
     except Exception as e:
         print(f'[DeepSeek] 请求异常: {e}')
         return None
+
+
+def _clean_ai_html(raw):
+    """清洗 DeepSeek 返回：去掉开头的说明文字与 markdown 代码围栏，只保留 HTML 片段"""
+    if not raw:
+        return raw
+    s = raw.strip()
+    # 去掉开头的说明文字 / ```html 围栏：从第一个 '<' 开始
+    i = s.find('<')
+    if i > 0:
+        s = s[i:]
+    # 去掉结尾的 ``` 围栏及多余说明：截到最后一个 '>' 结束
+    j = s.rfind('>')
+    if j != -1 and j + 1 < len(s):
+        s = s[:j + 1]
+    return s.strip()
+
+
+def _escape_html(s):
+    """最小化 HTML 转义，防止 AI 文本中的特殊字符破坏页面"""
+    return (str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
+
+
+def _parse_json(raw):
+    """从 AI 返回中提取 JSON 对象（容忍 markdown 围栏、前后说明文字、尾逗号）"""
+    if not raw:
+        return {}
+    s = raw.strip()
+    if s.startswith('```'):
+        nl = s.find('\n')
+        s = s[nl + 1:] if nl != -1 else ''
+    if s.rstrip().endswith('```'):
+        s = s.rstrip()[:-3]
+    s = s.strip()
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    i = s.find('{')
+    j = s.rfind('}')
+    if i != -1 and j > i:
+        frag = s[i:j + 1]
+        try:
+            return json.loads(frag)
+        except Exception:
+            try:
+                return json.loads(re.sub(r',\s*([}\]])', r'\1', frag))
+            except Exception:
+                return {}
+    return {}
+
+
+_fallback_kw_cache = {}
+
+
+def _category_keywords(category):
+    """品类关键词：优先用 RULES 规则词；无则从该品类实际商品标题提取（DeepSeek，带内存缓存）。"""
+    if _category_mapper:
+        kws = _category_mapper.RULES.get(category)
+        if kws:
+            return kws
+    cached = _fallback_kw_cache.get(category)
+    if cached is not None:
+        return cached
+    titles = []
+    try:
+        rows = db_execute("SELECT `商品名称快照` FROM `商品品类映射表` WHERE `统一品类`=%s", [category])
+        titles = [r['商品名称快照'] for r in rows if r.get('商品名称快照')]
+    except Exception:
+        titles = []
+    kws = _extract_keywords(category, titles)
+    _fallback_kw_cache[category] = kws
+    return kws
+
+
+def _extract_keywords(category, titles):
+    """从商品标题提取关键词；LLM 不可用时退回用标题前段"""
+    if not titles:
+        return []
+    sample = '\n'.join(titles[:20])
+    sys_p = '你是电商商品关键词提取助手。从商品标题中提取最能代表这一类商品的 2-5 个简短关键词（每个 2-6 字）。'
+    user = f'品类「{category}」的商品标题：\n{sample}\n\n只输出一个 JSON 对象：{{"keywords":["关键词1","关键词2"]}}'
+    raw = call_deepseek_api(sys_p, user, max_tokens=300)
+    parsed = _parse_json(raw)
+    if isinstance(parsed, dict) and isinstance(parsed.get('keywords'), list):
+        kws = [str(k).strip() for k in parsed['keywords'] if str(k).strip()]
+        if kws:
+            return kws
+    # 退回：取标题前段
+    return [t[:10] for t in titles[:3]]
 
 
 def _gather_link_data(target_date):
@@ -529,6 +638,12 @@ def gather_daily_data(target_date):
     qianniu_promo = _gather_qianniu_promo(target_date)
     promo_issues = _analyze_qianniu_promo(qianniu_promo)
 
+    # 品类维度汇总（复用品类营销聚合逻辑）
+    try:
+        category = _gather_category_data(str(target_date), str(target_date))
+    except Exception as e:
+        category = {'totals': {}, 'categories': [], 'error': str(e)}
+
     return {
         'date': str(target_date),
         'summary': {
@@ -575,12 +690,63 @@ def gather_daily_data(target_date):
         'linkIssues': link_issues,
         'qianniuPromo': qianniu_promo,
         'promoIssues': promo_issues,
+        'category': category,
     }
 
 
-def _build_fallback_template(data, refund_rate, roi, conv, aov, warnings):
-    """当 DeepSeek API 不可用时使用的纯模板分析报告"""
+def _build_analysis_context(target_date):
+    """把 gather_daily_data 结果转成中文 key 的知识库上下文，供每日数据分析智能体使用"""
+    data = gather_daily_data(target_date)
     sm = data['summary']
+    return {
+        '日期': str(target_date),
+        '营销综合': {
+            '净支付金额': sm['netPayment'],
+            '支付金额': sm['payment'],
+            '退款金额': sm['refundAmount'],
+            '推广花费': sm['adSpend'],
+            '推广总成交': sm['adTotal'],
+            '访客数': sm['visitors'],
+            '支付买家数': sm['payers'],
+            '支付转化率(%)': sm['convRate'],
+            '订单退款率(%)': sm['orderRefundRate'],
+            '客单价': sm['aov'],
+        },
+        '分平台': [
+            {'平台': p['name'], '净支付金额': p['netPayment'], '退款金额': p['refundAmount'],
+             '推广花费': p['adSpend'], '推广总成交': p['adTotal'], '访客数': p['visitors'], '支付买家数': p['payers']}
+            for p in data['byPlatform']
+        ],
+        '分品牌': [
+            {'品牌': b['name'], '净支付金额': b['netPayment'], '访客数': b['visitors']}
+            for b in data['byBrand']
+        ],
+        '分店铺': [
+            {'平台': s['platform'], '店铺名': s['name'], '净支付金额': s['netPayment'], '退款金额': s['refundAmount'],
+             '推广花费': s['adSpend'], '推广总成交': s['adTotal'], '访客数': s['visitors'], '支付买家数': s['payers'],
+             '支付转化率(%)': s['convRate'], '退款率(%)': s['refundRate'], '客单价': s['aov']}
+            for s in data['byStore']
+        ],
+        '单链接数据': data['links'],
+        '单链接预警': data['linkIssues'],
+        '千牛推广数据': data['qianniuPromo'],
+        '千牛推广预警': data['promoIssues'],
+        '品类数据': data['category'],
+    }
+
+
+def _build_report_html(data, refund_rate, roi, conv, aov, warnings, insights=None, ai_available=False):
+    """固定 HTML 骨架 + AI 洞察填空：框架与数据表格由代码渲染，AI 只提供各章节分析文字"""
+    insights = insights or {}
+    sm = data['summary']
+
+    def insight(text):
+        if not text:
+            return ''
+        t = _escape_html(text).replace('\n', '<br>')
+        return (f'<div style="margin-top:12px;padding:12px 16px;background:#f0f9ff;'
+                f'border-left:3px solid #1677ff;border-radius:4px;font-size:0.9rem;'
+                f'color:#334155;line-height:1.7">{t}</div>')
     platforms_html = '<table class="da-table"><thead><tr><th>平台</th><th>净支付</th><th>退款</th><th>花费</th><th>ROI</th></tr></thead><tbody>'
     for p in data['byPlatform']:
         p_roi = round(p['adTotal'] / p['adSpend'], 2) if p['adSpend'] > 0 else 0
@@ -650,6 +816,31 @@ def _build_fallback_template(data, refund_rate, roi, conv, aov, warnings):
         if issues:
             store_warnings.append(f"<li class=\"da-warn-warning\">[{s['platform']}] {s['name']}：{'；'.join(issues)}</li>")
 
+    # 品类分析
+    cat = data.get('category', {})
+    cat_totals = cat.get('totals', {})
+    cat_list = cat.get('categories', [])
+    if cat.get('error'):
+        cat_html = f'<p style="color:#e11d48">品类数据读取异常：{cat["error"]}</p>'
+    elif cat_list:
+        cat_rows = ''
+        for c in cat_list:
+            rr_cls = ' style="color:#e11d48;font-weight:600"' if c['refundRate'] > 20 else ''
+            roi_cls = ' style="color:#e11d48;font-weight:600"' if (c['spend'] > 0 and c['roi'] < 1) else ''
+            kws = _category_keywords(c['category'])
+            kw_span = ''
+            if kws:
+                kw_text = '、'.join(kws)
+                kw_span = (f' <span title="{kw_text}" style="display:inline-block;max-width:150px;'
+                           f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
+                           f'vertical-align:bottom;color:#94a3b8;font-size:0.78rem;cursor:help">{kw_text}</span>')
+            cat_rows += (f'<tr><td>{c["category"]}{kw_span}</td><td>&yen;{c["payment"]:,.2f}</td><td{rr_cls}>{c["refundRate"]:.2f}%</td>'
+                         f'<td>&yen;{c["spend"]:,.2f}</td><td>&yen;{c["ad_gmv"]:,.2f}</td><td{roi_cls}>{c["roi"]:.2f}</td></tr>')
+        cat_html = ('<table class="da-table"><thead><tr><th>品类</th><th>成交</th><th>退款率</th><th>消耗</th><th>产出</th><th>ROI</th></tr></thead><tbody>'
+                    + cat_rows + '</tbody></table>')
+    else:
+        cat_html = '<p style="color:#94a3b8">暂无品类数据</p>'
+
     return f"""
 <div class="analysis-section">
   <h3><i class="fa-solid fa-coins"></i> 营销数据综合分析</h3>
@@ -657,26 +848,37 @@ def _build_fallback_template(data, refund_rate, roi, conv, aov, warnings):
   <p>推广花费 <span class="highlight">&yen;{sm['adSpend']:,.2f}</span>，推广总成交 <span class="highlight">&yen;{sm['adTotal']:,.2f}</span>，ROI <span class="{'danger' if roi < 1.0 else 'highlight'}">{roi:.2f}</span>。</p>
   <p>访客数 <span class="highlight">{sm['visitors']:,}</span>，支付买家数 <span class="highlight">{sm['payers']:,}</span>，支付转化率 <span class="{'warn' if conv < 2 else 'highlight'}">{conv:.2f}%</span>，客单价 <span class="highlight">&yen;{aov:.2f}</span>。</p>
   {platforms_html}
+  {insight(insights.get('营销综合'))}
 </div>
 <div class="analysis-section">
   <h3><i class="fa-solid fa-chart-simple"></i> 单链接数据综合分析</h3>
   <p>下表为抖店/京东/千牛单链接数据（按日期汇总）。<span class="highlight">综合消耗产出比 = 成交金额 ÷ (投放消耗+佣金+补贴)</span>，低于 1 表示投入产出倒挂、整体亏损。</p>
   {links_html}
+  {insight(insights.get('单链接'))}
 </div>
 <div class="analysis-section">
   <h3><i class="fa-solid fa-bullhorn"></i> 千牛单链接推广数据分析</h3>
   <p>千牛推广数据：推广消耗与直接/总引导成交的产出比。<span class="highlight">总ROI = 总引导成交金额 ÷ 推广消耗</span>，低于 1 表示推广投入亏损。</p>
   {promo_html}
+  {insight(insights.get('千牛推广'))}
+</div>
+<div class="analysis-section">
+  <h3><i class="fa-solid fa-tags"></i> 品类分析</h3>
+  <p>按统一品类汇总的成交、退款、消耗与产出比。<span class="highlight">ROI = 产出 ÷ 消耗</span>，低于 1 表示该品类投放亏损。</p>
+  {cat_html}
+  {insight(insights.get('品类'))}
 </div>
 <div class="analysis-section">
   <h3><i class="fa-solid fa-shop"></i> 店铺经营分析</h3>
   {stores_html}
   {"<ul class=\"da-warn-list\">" + ''.join(store_warnings) + "</ul>" if store_warnings else "<p style=\"color:#16a34a\">各店铺核心指标均处于正常范围。</p>"}
+  {insight(insights.get('店铺'))}
 </div>
 <div class="analysis-section">
   <h3><i class="fa-solid fa-triangle-exclamation"></i> 异常预警与建议</h3>
   <ul class="da-warn-list">{warn_html}{link_warn_html}{promo_warn_html}</ul>
-  <p style="margin-top:12px;color:#94a3b8;font-size:0.85rem">注：AI 分析服务暂不可用，以上为模板规则生成的简化版报告。</p>
+  {insight(insights.get('异常建议'))}
+  {'' if ai_available else '<p style="margin-top:12px;color:#94a3b8;font-size:0.85rem">注：AI 分析服务暂不可用，以上为规则生成的报告。</p>'}
 </div>
 """
 
@@ -1267,7 +1469,7 @@ def marketing_overview():
         for trow in trows:
             net = float(trow['net'])
             refund = float(trow['refund'])
-            ad_spend = float(trow['ad_spend'])
+            day_ad_spend = float(trow['ad_spend'])
             pay = int(trow['pay'])
             vis = int(trow['vis'])
             cart = int(trow['cart'])
@@ -1275,15 +1477,15 @@ def marketing_overview():
             conv = float(trow['conv_rate'])
             order_rr = float(trow['order_refund_rate'])
             aov = float(trow['aov'])
-            ad_total = float(trow['ad_total'])
+            day_ad_total = float(trow['ad_total'])
 
             trends.append({
                 'date': str(trow['日期']),
                 'netPayment': net,
                 'refundAmount': refund,
                 'refundRate': round(refund / net * 100, 2) if net > 0 else 0,
-                'adSpend': ad_spend,
-                'roi': round(ad_total / ad_spend, 4) if ad_spend > 0 else 0,
+                'adSpend': day_ad_spend,
+                'roi': round(day_ad_total / day_ad_spend, 4) if day_ad_spend > 0 else 0,
                 'visitors': vis,
                 'payers': pay,
                 'payment': day_payment,
@@ -1291,16 +1493,16 @@ def marketing_overview():
                 'convRate': round(conv * 100, 2),
                 'orderRefundRate': round(order_rr * 100, 2),
                 'aov': round(aov, 2),
-                'adTotal': ad_total,
+                'adTotal': day_ad_total,
             })
             agg['totalVisitors'] += vis
             agg['totalCart'] += cart
             agg['totalPayers'] += pay
             agg['totalPayment'] += day_payment
             agg['totalRefund'] += refund
-            agg['totalAdSpend'] += ad_spend
-            agg['totalAdRev'] += ad_total
-            agg['totalAdTotal'] += ad_total
+            agg['totalAdSpend'] += day_ad_spend
+            agg['totalAdRev'] += day_ad_total
+            agg['totalAdTotal'] += day_ad_total
 
         # 汇总平均
         n = len(trends) or 1
@@ -1323,6 +1525,142 @@ def marketing_overview():
             'agg':          agg,
         })
     except Exception as e:
+        return fail(str(e))
+
+
+# ======================== 品类营销数据 ========================
+
+# 各平台单链接表 → 品类映射聚合的字段口径（与订单详情「全部平台」共同字段一致）
+_CAT_PLATFORM = {
+    '抖店': {'table': '抖店单链接数据表', 'id': '商品编码', 'date': '统计周期',
+             'payment': '成交金额', 'orders': '成交订单数', 'buyers': '成交人数', 'refund': '成交退款金额',
+             'spend_sql': "COALESCE(SUM(t.`投放消耗（店铺被投）`),0) + COALESCE(SUM(t.`投放消耗（推商品）`),0)",
+             'ad_gmv': '投放贡献成交金额'},
+    '京东': {'table': '京东单链接数据表', 'id': 'SPU', 'date': '时间',
+             'payment': '成交金额', 'orders': '成交单量', 'buyers': '成交客户数', 'refund': '取消及售后退款金额'},
+    '千牛': {'table': '千牛单链接数据表', 'id': '商品ID', 'date': '统计日期',
+             'payment': '支付金额', 'orders': '支付件数', 'buyers': '支付买家数', 'refund': '成功退款金额'},
+}
+
+# 千牛投放数据在单独的推广表（按商品ID关联）
+_QN_PROMO = {'table': '千牛单链接推广数据表', 'id': '商品ID', 'date': '统计日期',
+             'spend': '推广消耗', 'ad_gmv': '总引导成交金额'}
+
+
+def _gather_category_data(start_date='', end_date=''):
+    """按统一品类汇总成交/消耗/产出数据（品类营销页 + 每日分析共用）。
+    返回 {'totals': {...}, 'categories': [...]}"""
+    agg = {}  # 品类 -> {payment, orders, buyers, refund, products, spend, ad_gmv}
+    for plat, meta in _CAT_PLATFORM.items():
+        where = ["m.`平台` = %s"]
+        params = [plat]
+        if start_date:
+            where.append(f"t.`{meta['date']}` >= %s")
+            params.append(start_date)
+        if end_date:
+            where.append(f"t.`{meta['date']}` <= %s")
+            params.append(end_date)
+        spend_sql = meta.get('spend_sql', '0')
+        ad_gmv_col = meta.get('ad_gmv')
+        ad_gmv_sql = f"COALESCE(SUM(t.`{ad_gmv_col}`), 0)" if ad_gmv_col else '0'
+        sql = f"""
+            SELECT m.`统一品类` AS cat,
+                   COALESCE(SUM(t.`{meta['payment']}`), 0) AS payment,
+                   COALESCE(SUM(t.`{meta['orders']}`), 0)   AS orders,
+                   COALESCE(SUM(t.`{meta['buyers']}`), 0)   AS buyers,
+                   COALESCE(SUM(t.`{meta['refund']}`), 0)   AS refund,
+                   COUNT(DISTINCT t.`{meta['id']}`)         AS products,
+                   {spend_sql}                               AS spend,
+                   {ad_gmv_sql}                              AS ad_gmv
+            FROM `商品品类映射表` m
+            JOIN `{meta['table']}` t ON m.`平台商品ID` = t.`{meta['id']}`
+            WHERE {' AND '.join(where)}
+              AND m.`统一品类` NOT IN ('补差价链接')
+            GROUP BY m.`统一品类`
+        """
+        rows = db_execute(sql, params)
+        for r in rows:
+            cat = r['cat']
+            g = agg.get(cat)
+            if g is None:
+                g = {'category': cat, 'payment': 0.0, 'orders': 0, 'buyers': 0,
+                     'refund': 0.0, 'products': 0, 'spend': 0.0, 'ad_gmv': 0.0}
+                agg[cat] = g
+            g['payment'] += float(r['payment'])
+            g['orders'] += int(r['orders'])
+            g['buyers'] += int(r['buyers'])
+            g['refund'] += float(r['refund'])
+            g['products'] += int(r['products'])
+            g['spend'] += float(r['spend'])
+            g['ad_gmv'] += float(r['ad_gmv'])
+
+    # 千牛：投放数据在推广表，单独按商品ID聚合后并入
+    qn_where = ["m.`平台` = '千牛'"]
+    qn_params = []
+    if start_date:
+        qn_where.append(f"p.`{_QN_PROMO['date']}` >= %s")
+        qn_params.append(start_date)
+    if end_date:
+        qn_where.append(f"p.`{_QN_PROMO['date']}` <= %s")
+        qn_params.append(end_date)
+    qn_sql = f"""
+        SELECT m.`统一品类` AS cat,
+               COALESCE(SUM(p.`{_QN_PROMO['spend']}`), 0)  AS spend,
+               COALESCE(SUM(p.`{_QN_PROMO['ad_gmv']}`), 0) AS ad_gmv
+        FROM `商品品类映射表` m
+        JOIN `{_QN_PROMO['table']}` p ON m.`平台商品ID` = p.`{_QN_PROMO['id']}`
+        WHERE {' AND '.join(qn_where)}
+          AND m.`统一品类` NOT IN ('补差价链接')
+        GROUP BY m.`统一品类`
+    """
+    for r in db_execute(qn_sql, qn_params):
+        g = agg.get(r['cat'])
+        if g is not None:
+            g['spend'] += float(r['spend'])
+            g['ad_gmv'] += float(r['ad_gmv'])
+
+    categories = list(agg.values())
+    for c in categories:
+        c['payment'] = round(c['payment'], 2)
+        c['refund'] = round(c['refund'], 2)
+        c['spend'] = round(c['spend'], 2)
+        c['ad_gmv'] = round(c['ad_gmv'], 2)
+        c['refundRate'] = round(c['refund'] / c['payment'] * 100, 2) if c['payment'] > 0 else 0
+        c['roi'] = round(c['ad_gmv'] / c['spend'], 4) if c['spend'] > 0 else 0
+    categories.sort(key=lambda x: x['payment'], reverse=True)
+
+    total_payment = round(sum(c['payment'] for c in categories), 2)
+    total_refund = round(sum(c['refund'] for c in categories), 2)
+    total_spend = round(sum(c['spend'] for c in categories), 2)
+    total_ad_gmv = round(sum(c['ad_gmv'] for c in categories), 2)
+    totals = {
+        'categoryCount': len(categories),
+        'productCount': sum(c['products'] for c in categories),
+        'payment': total_payment,
+        'orders': sum(c['orders'] for c in categories),
+        'buyers': sum(c['buyers'] for c in categories),
+        'refund': total_refund,
+        'refundRate': round(total_refund / total_payment * 100, 2) if total_payment > 0 else 0,
+        'spend': total_spend,
+        'adGmv': total_ad_gmv,
+        'roi': round(total_ad_gmv / total_spend, 4) if total_spend > 0 else 0,
+    }
+    return {'totals': totals, 'categories': categories}
+
+
+@app.route('/api/category-marketing/data', methods=['GET'])
+def category_marketing_data():
+    """品类营销数据：把「商品品类映射表」关联三张单链接表，按统一品类汇总真实成交数据"""
+    try:
+        start_date = request.args.get('start', '').strip()
+        end_date = request.args.get('end', '').strip()
+        result = _gather_category_data(start_date, end_date)
+        # 附上各品类的命中关键词（供前端展示）
+        for c in result['categories']:
+            c['keywords'] = _category_keywords(c['category'])
+        return success(result)
+    except Exception as e:
+        traceback.print_exc()
         return fail(str(e))
 
 
@@ -1945,6 +2283,118 @@ def db_delete_row(table_name, pk_value):
 
 # ======================== 每日数据分析 ========================
 
+@app.route('/api/analysis/agent', methods=['POST'])
+def analysis_agent():
+    """每日数据分析智能体：检索该模块知识库（店铺营销/单链接/推广/品类）+ DeepSeek 分析"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        question = (payload.get('question') or '').strip()
+        if not question:
+            return fail('请输入分析需求')
+
+        target_str = (payload.get('date') or '').strip()
+        try:
+            target_date = datetime.strptime(target_str, '%Y-%m-%d').date() if target_str else (date.today() - timedelta(days=1))
+        except ValueError:
+            target_date = date.today() - timedelta(days=1)
+
+        context = _build_analysis_context(target_date)
+        ctx_json = json.dumps(context, ensure_ascii=False, default=str)
+
+        sys_p = (
+            '# 角色定义\n'
+            '你是"数据分析智能体"，一名资深电商经营数据分析师，服务于同时经营多平台（淘宝/京东/拼多多/抖音/快手等）的商家。'
+            '你只基于给定的知识库数据做分析，绝不编造。\n\n'
+            '# 数据来源与结构\n'
+            '你会收到一份结构化的知识库检索结果（JSON），包含该商家的四类经营数据，均为同一天（指定日期）：\n\n'
+            '1. 营销综合（营销综合）\n'
+            '   字段：净支付金额、支付金额、退款金额、推广花费、推广总成交、访客数、支付买家数、支付转化率(%)、订单退款率(%)、客单价\n'
+            '   含义：整体经营健康度\n\n'
+            '2. 分平台 / 分品牌 / 分店铺数据（分平台 / 分品牌 / 分店铺）\n'
+            '   字段：平台、店铺名、品牌、净支付金额、退款金额、推广花费、推广总成交、访客数、支付买家数、支付转化率(%)、退款率(%)、客单价\n'
+            '   含义：横向对比各平台与各店铺表现差异\n\n'
+            '3. 单链接数据（单链接数据：抖店/京东/千牛）\n'
+            '   字段：成交金额、订单数、买家数、退款、退款率、客单价、投放消耗、佣金、补贴、投放成交、投放产出比、综合消耗产出比\n'
+            '   含义：各平台单链接的成交质量与投放效率\n\n'
+            '4. 千牛推广数据（千牛推广数据）\n'
+            '   字段：推广消耗、直接引导成交、直接ROI、总引导成交、总ROI、展现量、点击量、点击率、单次点击成本、成交笔数、推广商品数、涉及店铺数\n'
+            '   含义：千牛付费投放的效率\n\n'
+            '5. 品类汇总数据（品类数据）\n'
+            '   字段：品类、成交、退款率、推广消耗、推广产出、ROI\n'
+            '   含义：各品类贡献与盈亏\n\n'
+            '# 分析框架（严格按此顺序执行）\n\n'
+            '## 第一步：经营总览\n'
+            '基于营销综合判断当日整体健康度：\n'
+            '- 净支付金额规模、退款率（>20% 偏高、>30% 严重）、ROI（<1 亏损）、转化率（<2% 偏低）、客单价\n'
+            '- 一句话定性：今日经营是"盈利/持平/亏损"\n\n'
+            '## 第二步：平台对比\n'
+            '对比各平台净支付、退款率、投放 ROI 差异，指出贡献最大与拖后腿的平台。\n\n'
+            '## 第三步：店铺诊断\n'
+            '对比各店铺核心指标，点名表现优异（高成交+低退款+高ROI）与需关注（有流量无成交、退款率/转化率异常）的店铺。\n\n'
+            '## 第四步：单链接与投放效率\n'
+            '分析抖店/京东/千牛单链接的成交质量与消耗产出比，评估付费投放是否划算，指出投放效率最高/最低的平台。\n\n'
+            '## 第五步：品类分析\n'
+            '对比各品类成交、退款率、ROI，点名贡献最大、亏损（ROI<1）或退款率异常的品类。\n\n'
+            '## 第六步：异常与建议\n'
+            '汇总所有异常（退款率偏高、ROI<1、转化率极低、有流量无成交等），给出具体可执行的优化建议（按优先级排序）。\n\n'
+            '# 输出格式（严格遵守）\n\n'
+            '## 第一部分：分析结论\n'
+            '标题用"## 分析结论"，中文自然语言，分要点，200~400字，包含：\n'
+            '- 当日经营定性（1句）\n'
+            '- 平台/店铺/品类层面的关键发现（2~3句）\n'
+            '- 最需要立即处理的异常与行动建议（1~2句）\n\n'
+            '## 第二部分：推荐卡片\n'
+            '紧接一个 JSON 数组（用 ```json 代码块包裹），每个元素字段如下：\n'
+            '{"type":"store"|"platform"|"category"|"alert","title":"卡片标题","subtitle":"说明","metric":"关键数值","tags":"逗号分隔标签","reason":"一句话点评/建议"}\n\n'
+            '卡片生成规则：\n'
+            '- 只挑数据中真实存在、最值得关注的 3~8 条\n'
+            '- store 卡片：title=店铺名（含平台），subtitle=净支付/退款率/转化率，metric=净支付金额，type="store"\n'
+            '- platform 卡片：title=平台名，subtitle=投放ROI/退款率，metric=净支付金额，type="platform"\n'
+            '- category 卡片：title=品类名，subtitle=消耗/产出，metric=ROI，type="category"\n'
+            '- alert 卡片：title=异常项（如"退款率偏高"），subtitle=涉及对象，metric=异常数值，type="alert"\n'
+            '- tags 须含关键标签，如：盈利/亏损、预警、优化、表现优异等\n'
+            '- 金额数据直接引用原始数值，不做计算或估算\n\n'
+            '## 第三部分：后续引导\n'
+            '在 JSON 代码块之后，用一句话引导用户下一步操作，例如：\n'
+            '- "需要我深挖某个店铺的退款原因吗？"\n'
+            '- "要我对比近几天的趋势变化吗？"\n\n'
+            '# 硬性约束\n'
+            '- 所有数据必须来自知识库检索结果，严禁编造不存在的商品、数字或关键词\n'
+            '- 金额、ROI、退款率等直接引用原始数据，不做计算或估算（除已有字段外不自行换算）\n'
+            '- 涉及具体店铺名/品牌名时客观陈述数据表现，不做主观贬低\n'
+            '- 若某数据源无数据或读取异常，在结论中明确说明"XX数据缺失/异常"\n'
+            '- 分析结论、卡片、预警必须对应知识库中真实存在的数据'
+        )
+        user_msg = f'知识库检索结果（JSON）：\n{ctx_json}\n\n用户需求：{question}\n\n请按要求输出分析结论和推荐卡片。'
+
+        raw = call_deepseek_api(sys_p, user_msg, temperature=0.4, max_tokens=4096,
+                                api_key=DEEPSEEK_SELECTION_API_KEY)
+
+        cards = _ps_agent_parse_cards(raw)
+        analysis = raw or ''
+        if raw:
+            analysis = re.sub(r'```json\s*\[.*?\]\s*```', '', analysis, flags=re.DOTALL)
+            analysis = re.sub(r'\[\s*\{.*?\}\s*(?:,\s*\{.*?\}\s*)*\]', '', analysis, flags=re.DOTALL)
+            analysis = re.sub(r'```[a-zA-Z]*', '', analysis)
+            analysis = analysis.strip()
+
+        sm = context['营销综合']
+        return success({
+            'analysis': analysis,
+            'cards': cards,
+            'meta': {
+                'date': str(target_date),
+                '净支付金额': sm['净支付金额'],
+                '退款率': sm['订单退款率(%)'],
+                'ROI': round(sm['推广总成交'] / sm['推广花费'], 2) if sm['推广花费'] > 0 else 0,
+                'raw_available': bool(raw),
+            },
+        }, 'ok')
+    except Exception as e:
+        traceback.print_exc()
+        return fail(str(e))
+
+
 @app.route('/api/analysis/generate', methods=['POST'])
 def generate_analysis():
     """生成指定日期数据分析报告 — 模板规则 + DeepSeek AI 洞见，默认分析昨日"""
@@ -2021,25 +2471,33 @@ def generate_analysis():
                           f"- 直接成交笔数 {promo['directOrders']:,}，总引导成交笔数 {promo['totalOrders']:,}，推广商品数 {promo['products']:,}，涉及店铺 {promo['stores']:,}")
 
         # 构建 DeepSeek prompt
-        system_prompt = """你是一位资深的电商数据分析师。请根据提供的店铺营销数据、抖店/京东/千牛单链接销售数据与千牛单链接推广数据，撰写一份专业、有洞察力的每日数据分析报告。
+        system_prompt = """你是一位资深的电商数据分析师。请根据提供的店铺营销数据、抖店/京东/千牛单链接销售数据、千牛单链接推广数据与品类汇总数据，输出一份 JSON 格式的分析洞察。
 
-报告必须包含以下部分：
-1. 【营销数据综合分析】- 分析店铺营销数据整体表现：净支付金额、退款金额、退款率、推广花费、ROI、访客数、支付转化率、客单价；对比各平台表现差异
-2. 【单链接数据综合分析】- 汇总抖店/京东/千牛三平台单链接数据的成交金额、订单数、买家数、退款、客单价，做横向对比，找出表现最好和最差的平台
-3. 【各平台单链接数据单独分析】- 分别深入分析抖店、京东、千牛各自的成交、退款、客单价、流量表现，点名异常并给出针对性建议
-4. 【千牛单链接推广数据分析】- 分析千牛推广数据的推广消耗、直接引导成交、总引导成交、直接ROI、总ROI、点击率、单次点击成本等，评估推广投放效率
-5. 【推广花费/消耗与产出比专项分析】- 这是本报告的重点。重点分析推广花费、投放消耗、佣金、补贴等成本与产出的比例（投放产出比、综合消耗产出比、千牛推广ROI），识别亏损或低效投放，给出具体可行的优化建议
-6. 【店铺经营分析】- 对比各店铺的核心指标（净支付、退款率、转化率、客单价），找出表现优异和需要关注的店铺
-7. 【异常预警与建议】- 汇总整体、各平台、各店铺的突出异常指标（尤其退款率偏高、消耗产出比/推广ROI低于1的亏损情况），给出具体可执行的优化建议
+JSON 必须包含以下 6 个字符串字段：
+- "营销综合"：店铺营销数据整体表现（净支付、退款率、ROI、转化率、客单价），对比各平台差异
+- "单链接"：抖店/京东/千牛单链接成交、退款、客单价的横向对比，指出表现最好和最差的平台
+- "千牛推广"：千牛推广的消耗、直接/总引导成交、ROI、点击率、单次点击成本，评估投放效率
+- "品类"：各品类成交/消耗/ROI 表现，点名贡献最大、亏损(ROI<1)或退款率异常的品类
+- "店铺"：各店铺核心指标对比，点名表现优异和需关注的店铺
+- "异常建议"：汇总退款率偏高、ROI低于1等异常，给出具体可执行的优化建议
 
-输出格式要求：
-- 直接输出HTML代码片段（不含```html标记，不含<!DOCTYPE>、<html>、<head>、<body>标签），只输出<body>内部的内容
-- 使用 <div class="analysis-section"> 包裹每个大段
-- 使用 <h3> 作段落标题并用 <i> 标签加Font Awesome图标
-- 数据对比用 <table class="da-table"> 展示，各对比表务必包含所有提供的数据
-- 关键数据用 <span class="highlight"> 标亮，预警用 <span class="warn"> 或 <span class="danger"> 标记
-- 对问题平台、亏损投放和问题店铺要给出点名分析和具体建议
-- 风格专业、简洁，数据准确"""
+要求：
+- 只输出一个 JSON 对象，不要任何其他文字、不要 markdown 代码块、不要 HTML 标签
+- 每个字段 2-4 句简洁专业的分析，可引用数据中的数字
+- 对亏损、退款率异常要直接点名"""
+
+        # 品类数据可读化（供 prompt 使用）
+        cat = data.get('category', {})
+        cat_totals = cat.get('totals', {})
+        cat_list = cat.get('categories', [])
+        if cat.get('error'):
+            cat_lines = [f"- 品类数据读取异常：{cat['error']}"]
+        elif cat_list:
+            cat_lines = [f"- 品类总数 {cat_totals.get('categoryCount', 0)}，成交 {cat_totals.get('payment', 0):,.2f} 元，退款率 {cat_totals.get('refundRate', 0):.2f}%，推广消耗 {cat_totals.get('spend', 0):,.2f} 元，产出 {cat_totals.get('adGmv', 0):,.2f} 元，总ROI {cat_totals.get('roi', 0):.4f}"]
+            for c in cat_list:
+                cat_lines.append(f"- {c['category']}：成交 {c['payment']:,.2f} 元，退款率 {c['refundRate']:.2f}%，消耗 {c['spend']:,.2f} 元，产出 {c['ad_gmv']:,.2f} 元，ROI {c['roi']}")
+        else:
+            cat_lines = ['- 暂无品类数据']
 
         user_message = f"""请分析以下电商数据并生成 HTML 报告：
 
@@ -2069,6 +2527,9 @@ def generate_analysis():
 ## 三、千牛单链接推广数据
 {promo_line}
 
+## 四、品类分析数据（按统一品类汇总）
+{chr(10).join(cat_lines)}
+
 ## 系统预判预警
 {chr(10).join([f"- {w['dim']}：{w['value']}（级别：{w['level']}）" for w in warnings]) if warnings else '无显著异常'}
 
@@ -2081,12 +2542,14 @@ def generate_analysis():
 ## 千牛推广预警
 {chr(10).join([f"- [{w['platform']}] {w['dim']}：{w['value']}（级别：{w['level']}）{w['msg']}" for w in promo_warnings]) if promo_warnings else '千牛推广数据ROI正常'}
 
-请为以上所有数据生成专业的 HTML 分析报告。重点：①推广花费/投放消耗/佣金/补贴等成本与产出的比例，亏损或低效投放必须点名分析并给出建议；②千牛单链接推广数据的 ROI 表现；③对各平台单链接数据做综合+单独分析。"""
+请为以上数据输出 JSON 分析结果（6 个字段：营销综合、单链接、千牛推广、品类、店铺、异常建议），每个字段 2-4 句，只输出一个 JSON 对象。"""
 
-        # 调用 DeepSeek
-        ai_html = call_deepseek_api(system_prompt, user_message)
+        # 调用 DeepSeek 获取各章节分析洞察（JSON），解析失败则降级为纯规则报告
+        raw = call_deepseek_api(system_prompt, user_message, max_tokens=8192)
+        insights = _parse_json(raw) if raw else {}
+        ai_available = bool(insights and any(k in insights for k in ('营销综合', '单链接', '千牛推广', '品类', '店铺', '异常建议')))
 
-        # 构建完整 HTML（模板头部 + AI 内容）
+        # 构建完整 HTML（固定头部 + 固定骨架 + AI 洞察）
         template_header = f"""<div class="da-report">
 <div class="da-header">
   <div class="da-date-badge">
@@ -2095,7 +2558,7 @@ def generate_analysis():
   </div>
   <div class="da-meta">
     <span>报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}</span>
-    <span>数据来源：店铺营销数据 + 抖店/京东/千牛单链接数据 + 千牛推广数据</span>
+    <span>数据来源：店铺营销数据 + 抖店/京东/千牛单链接数据 + 千牛推广数据 + 品类汇总</span>
   </div>
 </div>
 <div class="da-kpi-row">
@@ -2124,12 +2587,8 @@ def generate_analysis():
 
         template_footer = """</div><!-- .da-report -->"""
 
-        if ai_html:
-            full_html = template_header + ai_html + template_footer
-            gen_by = 'ai'
-        else:
-            full_html = template_header + _build_fallback_template(data, refund_rate, roi, conv, aov, warnings) + template_footer
-            gen_by = 'template'
+        full_html = template_header + _build_report_html(data, refund_rate, roi, conv, aov, warnings, insights, ai_available) + template_footer
+        gen_by = 'ai' if ai_available else 'template'
 
         # 写入数据库（先删旧记录再插新记录，实现覆盖式更新）
         db_execute(
@@ -2140,7 +2599,7 @@ def generate_analysis():
             """INSERT INTO daily_analysis_reports (report_date, html_report, metrics_json, status, error_msg)
                VALUES (%s, %s, %s, %s, %s)""",
             [target_date, full_html, json.dumps(data, ensure_ascii=False),
-             'success', '' if ai_html else 'DeepSeek API不可用，已使用模板生成基本报告']
+             'success', '' if ai_available else 'DeepSeek API不可用或解析失败，已使用规则生成报告']
         )
 
         return success({
@@ -2341,6 +2800,292 @@ def download_analysis_report():
             }
         )
 
+    except Exception as e:
+        return fail(str(e))
+
+
+# ======================== 种草监测中台 ========================
+
+_SEEDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools')
+_SEEDING_ACCOUNTS_FILE = os.path.join(_SEEDING_DIR, 'seeding_accounts.json')
+_DOUYIN_COOKIE_FILE = os.path.join(_SEEDING_DIR, 'douyin_cookie.txt')
+_DOUYIN_WORKS_CSV = os.path.join(_SEEDING_DIR, '_douyin_works.csv')
+_XHS_COOKIE_FILE = os.path.join(_SEEDING_DIR, 'xhs_cookie.txt')
+_XHS_WORKS_FILE = os.path.join(_SEEDING_DIR, '_xhs_works.json')
+
+
+def _seeding_load_accounts():
+    """读取种草账号列表；文件不存在或损坏时返回空列表"""
+    if not os.path.exists(_SEEDING_ACCOUNTS_FILE):
+        return []
+    try:
+        with open(_SEEDING_ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _seeding_save_accounts(accounts):
+    with open(_SEEDING_ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(accounts, f, ensure_ascii=False, indent=2)
+
+
+# 作品数据 mock 用的样例账号与标题（数据库尚未建立，先用虚拟数据）
+_SEEDING_SAMPLE_ACCOUNTS = [
+    {'name': '聚浪好物研究所', 'douyinId': 'julang_haowu'},
+    {'name': '聚浪美妆种草', 'douyinId': 'julang_meizhuang'},
+    {'name': '聚浪户外测评', 'douyinId': 'julang_huwai'},
+]
+_SEEDING_SAMPLE_TITLES = [
+    '这款防晒霜也太好用了，油皮闭眼入！',
+    '姐妹们冲！这个精华平价又抗打',
+    '秋冬必备的保湿面霜测评来啦',
+    '被问爆的显白口红色号，真的绝',
+    '学生党也能入的抗老水乳',
+    '回购N次的宝藏洁面，性价比拉满',
+    '这个遮瑕居然能扛住暴汗',
+    '办公室人手一个的养生壶推荐',
+    '熬夜党救星眼霜，黑眼圈退退退',
+    '减脂期也能喝的奶茶替代来了',
+]
+
+
+def _seeding_mock_works():
+    """生成作品数据的虚拟数据（按账号逐个展开，字段与页面表格一致）"""
+    accounts = _seeding_load_accounts()
+    if not accounts:
+        accounts = _SEEDING_SAMPLE_ACCOUNTS
+    works = []
+    wid = 0
+    for a in accounts:
+        name = a.get('name') or a.get('douyinId') or '未命名账号'
+        douyin_id = a.get('douyinId') or ''
+        for j in range(4):
+            wid += 1
+            likes = 800 + ((wid * 137 + j * 233) % 90000)
+            works.append({
+                'id': wid,
+                'name': name,
+                'account': douyin_id,
+                'title': _SEEDING_SAMPLE_TITLES[(wid * 7 + j) % len(_SEEDING_SAMPLE_TITLES)],
+                'link': '',
+                'likes': likes,
+                'comments': likes // 23,
+                'collects': likes // 11,
+                'shares': likes // 37,
+                'publishTime': (datetime.now() - timedelta(days=(wid % 20), hours=(j * 5 + wid) % 24)).strftime('%Y-%m-%d %H:%M'),
+            })
+    works.sort(key=lambda x: x['publishTime'], reverse=True)
+    return works
+
+
+@app.route('/api/seeding/accounts', methods=['GET'])
+def seeding_list_accounts():
+    """种草账号列表"""
+    try:
+        return success(_seeding_load_accounts())
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/accounts', methods=['POST'])
+def seeding_create_account():
+    """新增种草账号：平台 / 账号名称 / 抖音号·小红书号 / 主页链接 / 部门"""
+    try:
+        data = request.get_json(force=True)
+        accounts = _seeding_load_accounts()
+        new_id = max([int(a.get('id', 0)) for a in accounts], default=0) + 1
+        acct = {
+            'id': new_id,
+            'platform': (data.get('platform') or 'douyin').strip(),
+            'name': (data.get('name') or '').strip(),
+            'douyinId': (data.get('douyinId') or data.get('douyin_id') or '').strip(),
+            'homepage': (data.get('homepage') or '').strip(),
+            'redId': (data.get('redId') or data.get('red_id') or '').strip(),
+            'department': (data.get('department') or '').strip(),
+        }
+        accounts.append(acct)
+        _seeding_save_accounts(accounts)
+        return success(acct, '种草账号已添加')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/accounts/<int:aid>', methods=['PUT'])
+def seeding_update_account(aid):
+    """更新种草账号"""
+    try:
+        data = request.get_json(force=True)
+        accounts = _seeding_load_accounts()
+        target = next((a for a in accounts if int(a.get('id', 0)) == aid), None)
+        if target is None:
+            return fail('账号不存在')
+        target['name'] = (data.get('name') if data.get('name') is not None else target.get('name', '')).strip()
+        target['platform'] = (data.get('platform') if data.get('platform') is not None else target.get('platform', 'douyin')).strip()
+        target['douyinId'] = (data.get('douyinId') if data.get('douyinId') is not None else target.get('douyinId', '')).strip()
+        target['homepage'] = (data.get('homepage') if data.get('homepage') is not None else target.get('homepage', '')).strip()
+        target['redId'] = (data.get('redId') if data.get('redId') is not None else target.get('redId', '')).strip()
+        target['department'] = (data.get('department') if data.get('department') is not None else target.get('department', '')).strip()
+        _seeding_save_accounts(accounts)
+        return success(target, '种草账号已更新')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/accounts/<int:aid>', methods=['DELETE'])
+def seeding_delete_account(aid):
+    """删除种草账号"""
+    try:
+        accounts = _seeding_load_accounts()
+        accounts = [a for a in accounts if int(a.get('id', 0)) != aid]
+        _seeding_save_accounts(accounts)
+        return success(None, '种草账号已删除')
+    except Exception as e:
+        return fail(str(e))
+
+
+def _seeding_load_works_csv():
+    """读取抓取脚本导出的作品 CSV；不存在或无数据时返回 None"""
+    import csv as _csv
+    if not os.path.exists(_DOUYIN_WORKS_CSV):
+        return None
+    rows = []
+    try:
+        with open(_DOUYIN_WORKS_CSV, 'r', encoding='utf-8-sig', newline='') as f:
+            for r in _csv.DictReader(f):
+                rows.append({
+                    'id': len(rows) + 1,
+                    'name': (r.get('名称') or '').strip(),
+                    'account': (r.get('账号') or '').strip(),
+                    'title': (r.get('标题') or '').strip(),
+                    'link': (r.get('链接') or '').strip(),
+                    'likes': int(r.get('点赞') or 0),
+                    'comments': int(r.get('评论') or 0),
+                    'collects': int(r.get('收藏') or 0),
+                    'shares': int(r.get('分享') or 0),
+                    'publishTime': (r.get('发布时间') or '').strip(),
+                })
+    except Exception as e:
+        print(f'[种草] 读取作品 CSV 失败: {e}')
+        return None
+    return rows if rows else None
+
+
+def _seeding_load_xhs_works():
+    """读取小红书作品汇总 JSON（tools/_xhs_works.json）；不存在或无数据时返回空列表"""
+    if not os.path.exists(_XHS_WORKS_FILE):
+        return []
+    try:
+        with open(_XHS_WORKS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f'[种草] 读取小红书作品失败: {e}')
+        return []
+
+
+@app.route('/api/seeding/works', methods=['GET'])
+def seeding_list_works():
+    """作品数据列表：platform=douyin 读抖音 CSV，platform=xhs 读小红书 JSON；抖音无真实数据时回退虚拟数据"""
+    try:
+        platform = (request.args.get('platform') or 'douyin').strip()
+        if platform == 'xhs':
+            return success(_seeding_load_xhs_works())
+        real = _seeding_load_works_csv()
+        if real is not None:
+            return success(real)
+        return success(_seeding_mock_works())
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/works/meta', methods=['GET'])
+def seeding_works_meta():
+    """作品数据来源与最后抓取时间，供前端轮询判断抓取是否完成"""
+    try:
+        platform = (request.args.get('platform') or 'douyin').strip()
+        if platform == 'xhs':
+            mtime = os.path.getmtime(_XHS_WORKS_FILE) if os.path.exists(_XHS_WORKS_FILE) else None
+            real = _seeding_load_xhs_works()
+            source = 'real' if real else 'empty'
+        else:
+            mtime = os.path.getmtime(_DOUYIN_WORKS_CSV) if os.path.exists(_DOUYIN_WORKS_CSV) else None
+            real = _seeding_load_works_csv()
+            source = 'real' if real is not None else 'mock'
+        return success({
+            'mtime': mtime,
+            'rows': len(real) if real else 0,
+            'source': source,
+        })
+    except Exception as e:
+        return fail(str(e))
+
+
+def _seeding_cookie_file(platform):
+    return _XHS_COOKIE_FILE if platform == 'xhs' else _DOUYIN_COOKIE_FILE
+
+
+@app.route('/api/seeding/cookie', methods=['GET'])
+def seeding_get_cookie():
+    """读取当前平台 Cookie（抖音 douyin_cookie.txt / 小红书 xhs_cookie.txt）"""
+    try:
+        platform = (request.args.get('platform') or 'douyin').strip()
+        cookie = ''
+        path = _seeding_cookie_file(platform)
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                cookie = f.read().strip()
+        return success({'cookie': cookie, 'exists': bool(cookie)})
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/cookie', methods=['POST'])
+def seeding_save_cookie():
+    """保存平台 Cookie"""
+    try:
+        data = request.get_json(force=True)
+        platform = (data.get('platform') or 'douyin').strip()
+        cookie = (data.get('cookie') or '').strip()
+        with open(_seeding_cookie_file(platform), 'w', encoding='utf-8') as f:
+            f.write(cookie)
+        return success({'saved': True}, 'Cookie 已保存')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/scrape', methods=['POST'])
+def seeding_trigger_scrape():
+    """按钮触发：后台异步执行作品抓取脚本（platform=douyin/xhs）"""
+    try:
+        import sys as _sys_scrape
+        data = request.get_json(force=True) or {}
+        platform = (data.get('platform') or 'douyin').strip()
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if platform == 'xhs':
+            scraper = os.path.join(_SEEDING_DIR, 'xhs_batch.py')
+            output_file = _XHS_WORKS_FILE
+            if not os.path.isdir(os.path.join(_SEEDING_DIR, 'Spider_XHS')):
+                return fail('缺少小红书抓取依赖：未找到 tools/Spider_XHS 目录，请先部署 Spider_XHS 开源项目')
+        else:
+            scraper = os.path.join(_SEEDING_DIR, 'douyin_video_scraper.py')
+            output_file = _DOUYIN_WORKS_CSV
+        if not os.path.exists(scraper):
+            return fail('抓取脚本不存在：' + scraper)
+        before_mtime = os.path.getmtime(output_file) if os.path.exists(output_file) else None
+        log_file = open(os.path.join(_SEEDING_DIR, '_scrape_%s.log' % platform), 'w', encoding='utf-8')
+        try:
+            subprocess.Popen(
+                [_sys_scrape.executable, scraper],
+                cwd=project_root,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+        finally:
+            log_file.close()
+        return success({'triggered': True, 'mtime': before_mtime}, '已触发抓取任务，正在后台执行')
     except Exception as e:
         return fail(str(e))
 
@@ -2642,10 +3387,12 @@ def ocr_detect():
     接口签名与 EasyOCR 版完全一致，前端无需改动。
     """
     try:
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({'error': '请求体解析失败，可能因图片过多导致数据被截断', 'success': False, 'results': []}), 400
         images = data.get('images', [])
         if not images:
-            return jsonify({'error': '未提供图片数据'}), 400
+            return jsonify({'error': '未提供图片数据', 'success': False, 'results': []}), 400
 
         results = []
         for idx, img_data in enumerate(images):
@@ -2903,6 +3650,14 @@ _OD_COMMON_MAP = {
              'payment_amount': '支付金额', 'order_count': '支付件数', 'buyer_count': '支付买家数', 'refund_amount': '成功退款金额'},
 }
 
+# 比率/均摊类字段：多日区间聚合时取「单日数据相加 ÷ 天数」（平均），不直接求和。
+_OD_AVERAGE_KEYWORDS = ('率', '占比', '转化', '费比', '价值', '单价', '成本', 'ROI', '人均', '平均')
+
+
+def _od_is_average_field(name):
+    """判断字段是否为比率/均摊类字段（聚合时求平均而非求和）"""
+    return any(k in name for k in _OD_AVERAGE_KEYWORDS)
+
 
 def _od_classify(name, ctype):
     """依据列名 + MySQL 列类型推断展示类型"""
@@ -2983,6 +3738,80 @@ def _od_to_common(plat, row):
     return out
 
 
+def _od_promo_only_fields():
+    """千牛推广表相对全部商品表独有的列（这些推广字段将合并到全部商品列表）"""
+    meta = _OD_PLATFORM_META['千牛']
+    all_cols = {f['key'] for f in _od_fields_for_table(meta['table'])}
+    return [f for f in _od_fields_for_table(meta['promo_table']) if f['key'] not in all_cols]
+
+
+def _od_qianniu_promo_map(start_date, end_date, store):
+    """千牛推广数据按商品ID聚合，返回 {商品ID: {推广字段: 值}}。
+    数值字段求和（比率/小数取均值），文本取首个，用于合并到全部商品列表。"""
+    meta = _OD_PLATFORM_META['千牛']
+    promo_fields = _od_fields_for_table(meta['promo_table'])
+    id_col = meta['id_col']
+    where, params = [], []
+    if start_date:
+        where.append(f"`{meta['date_col']}` >= %s")
+        params.append(start_date)
+    if end_date:
+        where.append(f"`{meta['date_col']}` <= %s")
+        params.append(end_date)
+    if store:
+        where.append(f"`{meta['store_col']}` = %s")
+        params.append(store)
+    sql = f"SELECT * FROM `{meta['promo_table']}`"
+    if where:
+        sql += ' WHERE ' + ' AND '.join(where)
+    try:
+        rows = db_execute(sql, params)
+    except Exception:
+        return {}
+
+    ftype = {f['key']: f['type'] for f in promo_fields}
+    groups = {}
+    for r in rows:
+        pid = str(r.get(id_col)) if r.get(id_col) is not None else ''
+        g = groups.get(pid)
+        if g is None:
+            g = {'first': r, 'acc': {}, 'cnt': {}}
+            groups[pid] = g
+        for f in promo_fields:
+            k = f['key']
+            v = r.get(k)
+            if v is None:
+                continue
+            if ftype[k] in ('money', 'int', 'pct', 'decimal'):
+                try:
+                    nv = float(v)
+                except (TypeError, ValueError):
+                    continue
+                g['acc'][k] = g['acc'].get(k, 0.0) + nv
+                g['cnt'][k] = g['cnt'].get(k, 0) + 1
+
+    out = {}
+    for pid, g in groups.items():
+        row = {}
+        for f in promo_fields:
+            k = f['key']
+            if k in g['acc']:
+                t = ftype[k]
+                if _od_is_average_field(k):
+                    # 比率/均摊字段：单日数据相加 ÷ 天数
+                    row[k] = round(g['acc'][k] / g['cnt'][k], 2)
+                elif t == 'money':
+                    row[k] = round(g['acc'][k], 2)
+                elif t == 'int':
+                    row[k] = int(round(g['acc'][k]))
+                else:  # pct / decimal 取均值
+                    row[k] = round(g['acc'][k] / g['cnt'][k], 2)
+            else:
+                row[k] = g['first'].get(k)
+        out[pid] = row
+    return out
+
+
 def _od_serialize(row):
     """把 Decimal/date/datetime 转成可 JSON 序列化的类型"""
     out = {}
@@ -3012,17 +3841,27 @@ def _od_sort_value(v):
 
 
 def _od_aggregate(rows, fields, start_date, end_date):
-    """多日区间聚合：每条链接合并为一行，金额/整数求和，比率/小数求均值，文本取首个，日期显示区间。"""
+    """多日区间聚合：每条链接合并为一行，金额/整数求和，比率/均摊字段求平均（单日相加÷天数），
+    文本取首个，日期显示区间。"""
     if not rows:
         return rows
     ftype = {f['key']: f['type'] for f in fields}
-    text_keys = [f['key'] for f in fields if f['type'] == 'text']
     date_keys = [f['key'] for f in fields if f['type'] == 'date']
     range_label = f'{start_date} ~ {end_date}'
 
+    def _link_key(r):
+        # 稳定标识：平台 + 链接ID（单平台视图用商品ID列，全部平台视图用 link_id）
+        # 不能把所有文本字段都当分组键——跳出率/转化率等每天变化，会把同一链接拆成多行，
+        # 导致按商品ID预汇总的推广字段被重复累加。
+        plat = r.get('platform')
+        if r.get('link_id') is not None:
+            return (plat, str(r.get('link_id')))
+        id_col = _OD_PLATFORM_META.get(plat, {}).get('id_col')
+        return (plat, str(r.get(id_col) if r.get(id_col) is not None else ''))
+
     groups = {}  # 分组键 -> 聚合中间态
     for r in rows:
-        key = tuple([r.get('platform')] + [r.get(k) for k in text_keys])
+        key = _link_key(r)
         g = groups.get(key)
         if g is None:
             g = {'first': r, 'acc': {}, 'cnt': {}}
@@ -3052,7 +3891,10 @@ def _od_aggregate(rows, fields, start_date, end_date):
             if k not in g['acc']:
                 continue
             t = ftype[k]
-            if t == 'money':
+            if _od_is_average_field(k):
+                # 比率/均摊字段：单日数据相加 ÷ 天数
+                row[k] = round(g['acc'][k] / g['cnt'][k], 2)
+            elif t == 'money':
                 row[k] = round(g['acc'][k], 2)
             elif t == 'int':
                 row[k] = int(round(g['acc'][k]))
@@ -3082,6 +3924,10 @@ def order_details_data():
 
         is_all = platform not in _OD_PLATFORMS
 
+        # 千牛「全部商品」需要把推广数据表的推广字段合并进来（未推广的链接补 0）
+        merge_promo = (platform == '千牛' and link_type == 'all')
+        promo_fields = _od_promo_only_fields() if merge_promo else []
+
         if is_all:
             # 全部平台：聚合视图（共同字段）
             fields = _OD_COMMON_FIELDS
@@ -3096,10 +3942,22 @@ def order_details_data():
             for r in _od_fetch_rows(platform, start_date, end_date, store, search, link_type):
                 r['platform'] = platform
                 rows.append(r)
+            if merge_promo and promo_fields:
+                fields = fields + promo_fields
 
         # 多日区间：按链接聚合，每条链接一行，避免「近7天/近30天」把同一链接拆成多行不同日期
         if start_date and end_date and start_date != end_date:
             rows = _od_aggregate(rows, fields, start_date, end_date)
+
+        # 千牛「全部商品」：聚合后按商品ID左连接推广字段（先聚合再合并，避免多日期重复累计）
+        if merge_promo and promo_fields:
+            promo_map = _od_qianniu_promo_map(start_date, end_date, store)
+            id_col = _OD_PLATFORM_META['千牛']['id_col']
+            for r in rows:
+                pid = str(r.get(id_col)) if r.get(id_col) is not None else ''
+                promo = promo_map.get(pid) or {}
+                for pf in promo_fields:
+                    r[pf['key']] = promo.get(pf['key'], 0)
 
         total = len(rows)
 
@@ -3179,6 +4037,815 @@ def order_details_stores():
                     stores.append(s)
         return success(sorted(stores))
     except Exception as e:
+        return fail(str(e))
+
+
+# ======================== 选品助手 ========================
+
+def _ps_parse_float(s):
+    """把字符串解析为 float，失败返回 None"""
+    if s is None or s == '':
+        return None
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+@app.route('/api/product-selection/tmall', methods=['GET'])
+def product_selection_tmall():
+    """天猫榜单：读取「天猫榜单表」，支持价格区间筛选"""
+    try:
+        min_price = _ps_parse_float(request.args.get('minPrice', '').strip())
+        max_price = _ps_parse_float(request.args.get('maxPrice', '').strip())
+
+        conditions = []
+        params = []
+        if min_price is not None:
+            conditions.append('价格 >= %s')
+            params.append(min_price)
+        if max_price is not None:
+            conditions.append('价格 <= %s')
+            params.append(max_price)
+
+        where_clause = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
+
+        rows = db_execute(f"""
+            SELECT 类别名, 排行榜名, 产品名, 价格, 日期
+            FROM 天猫榜单表
+            {where_clause}
+            ORDER BY 日期 DESC, 价格 ASC
+        """, params)
+        _serialize_rows(rows)
+
+        # 返回全表价格区间，供前端展示 / 占位提示
+        stats = db_execute("SELECT MIN(价格) AS min_p, MAX(价格) AS max_p FROM 天猫榜单表")
+        price_range = None
+        if stats and stats[0].get('min_p') is not None:
+            price_range = {'min': float(stats[0]['min_p']), 'max': float(stats[0]['max_p'])}
+
+        return success({'items': rows, 'total': len(rows), 'priceRange': price_range})
+    except Exception as e:
+        traceback.print_exc()
+        return fail(str(e))
+
+
+@app.route('/api/product-selection/douyin', methods=['GET'])
+def product_selection_douyin():
+    """抖音热搜榜：读取「抖音热搜品类表」（筛选后的电商热搜），支持日期选择"""
+    try:
+        selected_date = request.args.get('date', '').strip()
+
+        date_rows = db_execute("SELECT DISTINCT 日期 FROM 抖音热搜品类表 ORDER BY 日期 DESC")
+        dates = [str(r['日期']) for r in date_rows]
+
+        conditions = []
+        params = []
+        if selected_date:
+            conditions.append('日期 = %s')
+            params.append(selected_date)
+        elif dates:
+            # 未指定日期时默认展示最新一天
+            conditions.append('日期 = %s')
+            params.append(dates[0])
+
+        where_clause = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
+
+        rows = db_execute(f"""
+            SELECT 热搜名, 热搜值, 品类, 日期
+            FROM 抖音热搜品类表
+            {where_clause}
+        """, params)
+        # 按热度高低排序（把「热搜值」字符串解析为数值后降序）
+        rows.sort(key=lambda r: _dy_parse_heat(r['热搜值']), reverse=True)
+        # 去重：同一「热搜名+日期」可能因重复导入出现多行，榜单只保留一条
+        seen = set()
+        unique_rows = []
+        for r in rows:
+            key = (r['热搜名'], str(r['日期']))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_rows.append(r)
+        _serialize_rows(unique_rows)
+
+        return success({'items': unique_rows, 'total': len(unique_rows), 'dates': dates})
+    except Exception as e:
+        traceback.print_exc()
+        return fail(str(e))
+
+
+@app.route('/api/product-selection/douyin/raw-dates', methods=['GET'])
+def product_selection_douyin_raw_dates():
+    """返回「抖音热搜榜单表」（原始热搜）的日期列表，供筛选按钮选择要筛选的日期"""
+    try:
+        date_rows = db_execute("SELECT DISTINCT 日期 FROM 抖音热搜榜单表 ORDER BY 日期 DESC")
+        dates = [str(r['日期']) for r in date_rows]
+        return success({'dates': dates})
+    except Exception as e:
+        traceback.print_exc()
+        return fail(str(e))
+
+
+def _as_parse_num(s):
+    """解析爱搜人次字符串（如 '8081.47w'、'平均:10.76w'）为数值，仅用于排序"""
+    if s is None:
+        return 0.0
+    m = re.search(r'([\d.]+)\s*([wW万亿]?)', str(s))
+    if not m:
+        return 0.0
+    try:
+        n = float(m.group(1))
+    except ValueError:
+        return 0.0
+    unit = m.group(2)
+    if unit == '亿':
+        return n * 1e8
+    if unit in ('w', 'W', '万'):
+        return n * 1e4
+    return n
+
+
+@app.route('/api/product-selection/aisou', methods=['GET'])
+def product_selection_aisou():
+    """爱搜数据：读取「爱搜数据表」，支持日期选择 + 搜索词关键词模糊搜索"""
+    try:
+        selected_date = request.args.get('date', '').strip()
+        keyword = request.args.get('keyword', '').strip()
+
+        date_rows = db_execute("SELECT DISTINCT 日期 FROM 爱搜数据表 ORDER BY 日期 DESC")
+        dates = [str(r['日期']) for r in date_rows]
+
+        conditions = []
+        params = []
+        if selected_date and selected_date != 'all':
+            conditions.append('日期 = %s')
+            params.append(selected_date)
+        elif not selected_date and dates:
+            # 未指定日期时默认展示最新一天
+            selected_date = dates[0]
+            conditions.append('日期 = %s')
+            params.append(selected_date)
+        if keyword:
+            conditions.append('搜索词关键词 LIKE %s')
+            params.append('%' + keyword + '%')
+
+        where_clause = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
+
+        rows = db_execute(f"""
+            SELECT 日期, 搜索词关键词, 搜索词月覆盖人次, 搜索词七日搜索人次,
+                   电商词关键词, 电商词月覆盖人次, 电商词七日搜索人次
+            FROM 爱搜数据表
+            {where_clause}
+        """, params)
+        # 注意：fetchall() 在 0 行时返回空元组，包一层 list 统一成 list
+        rows = list(rows)
+
+        # 链式稳定排序（由次要键到主要键）：日期倒序 → 搜索词热度降序 → 搜索词名 → 电商词热度降序，
+        # 使同一搜索词下的电商词连续排列，便于查看
+        rows.sort(key=lambda r: -_as_parse_num(r['电商词月覆盖人次']))
+        rows.sort(key=lambda r: r['搜索词关键词'])
+        rows.sort(key=lambda r: -_as_parse_num(r['搜索词月覆盖人次']))
+        rows.sort(key=lambda r: str(r['日期']), reverse=True)
+        _serialize_rows(rows)
+
+        return success({
+            'items': rows,
+            'total': len(rows),
+            'dates': dates,
+            'date': selected_date,
+            'keyword': keyword,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return fail(str(e))
+
+
+# ======================== 选品助手智能体（RAG） ========================
+# 知识库：抖音热搜品类表（筛选后的电商热搜）→ 天猫榜单表 → 爱搜数据表。
+# 流程：从抖音已筛品类表取品类/热搜词 → 用词在天猫榜单与爱搜表中检索对应数据
+# → 拼成上下文交给 DeepSeek 生成「分析文字 + 推荐卡片」。
+
+
+def _ps_agent_parse_cards(raw):
+    """从 DeepSeek 返回文本中提取推荐卡片 JSON 数组；失败返回 []"""
+    if not raw:
+        return []
+    s = raw.strip()
+    # 去掉 markdown 代码围栏
+    s = re.sub(r'```(?:json)?', '', s).strip()
+    candidates = [s]
+    # 截取第一个 '[' 到最后一个 ']' 之间的内容
+    i = s.find('[')
+    j = s.rfind(']')
+    if i != -1 and j > i:
+        candidates.append(s[i:j + 1])
+    for cand in candidates:
+        try:
+            data = json.loads(cand)
+            if isinstance(data, list):
+                return [c for c in data if isinstance(c, dict)]
+            if isinstance(data, dict) and isinstance(data.get('cards'), list):
+                return [c for c in data['cards'] if isinstance(c, dict)]
+        except Exception:
+            continue
+    return []
+
+
+# 检索停用词：热搜短语中剔除这些弱语义词，避免切出大量无效关键词
+_PS_AGENT_STOP = {
+    '高级感', '2026', '新款', '爆款', '必备', '推荐', '专用', '神器', '网红',
+    '大容量', '超轻', '加厚', '防', '最', '好物', '好吃', '排行', '热门',
+    '最新', '流行', '百搭', '高端', '小众', '炸街', '大方得体', '轻奢',
+    '女装', '男装', '童装', '品牌', '官方', '旗舰', '同款',
+}
+
+_PS_AGENT_STOP_4 = {'高级感', '大方得体', '轻奢', '小众', '炸街'}
+
+
+def _ps_agent_keywords(terms, max_kw=80):
+    """把抖音热搜短语切分成检索关键词片段（优先完整词与 3 字片段，不足再补 2 字片段）。
+    返回按长度降序、去重后的关键词列表，控制数量避免 SQL 过长。"""
+    kws = []
+    seen = set()
+
+    def add(k):
+        k = k.strip()
+        if not k or k in seen:
+            return
+        seen.add(k)
+        kws.append(k)
+
+    # 先放完整热搜词（短词可直接匹配）
+    for t in sorted(terms, key=lambda x: -len(x)):
+        if len(t) <= 6:
+            add(t)
+
+    # 切分：按停用词切割，取子片段；再补 3 字、2 字滑窗
+    for t in terms:
+        # 用停用词切分短语
+        parts = [t]
+        for sw in sorted(_PS_AGENT_STOP, key=lambda x: -len(x)):
+            new_parts = []
+            for p in parts:
+                new_parts.extend(p.split(sw))
+            parts = [x for x in new_parts if x]
+        for p in parts:
+            p = p.strip()
+            if 2 <= len(p) <= 8:
+                add(p)
+            elif len(p) > 8:
+                # 长片段继续切 3 字滑窗
+                for i in range(len(p) - 2):
+                    seg = p[i:i + 3]
+                    if seg not in _PS_AGENT_STOP:
+                        add(seg)
+        # 补充 3 字滑窗
+        if len(t) >= 3:
+            for i in range(len(t) - 2):
+                seg = t[i:i + 3]
+                if seg not in _PS_AGENT_STOP:
+                    add(seg)
+
+    # 数量足够则去掉 2 字片段，减少噪音
+    result = sorted(kws, key=lambda x: -len(x))
+    if len([k for k in result if len(k) >= 3]) >= 40:
+        result = [k for k in result if len(k) >= 3]
+    return result[:max_kw]
+
+
+@app.route('/api/product-selection/agent', methods=['POST'])
+def product_selection_agent():
+    """选品助手智能体：检索三张知识库表 + DeepSeek 分析"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        question = (payload.get('question') or '').strip()
+        if not question:
+            return fail('请输入分析需求')
+
+        # ---- 1. 抖音已筛选电商热搜（知识库入口，读「抖音热搜品类表」） ----
+        dy_rows = db_execute(
+            "SELECT 热搜名, 热搜值, 品类, 日期 FROM `抖音热搜品类表` WHERE `是否电商` = 1 ORDER BY `热度数值` DESC LIMIT 200")
+        dy_rows = list(dy_rows)
+        dy_items = []
+        seen = set()
+        for r in dy_rows:
+            term = (r['热搜名'] or '').strip()
+            if not term or term in seen:
+                continue
+            seen.add(term)
+            dy_items.append({
+                'term': term,
+                'heat': r['热搜值'],
+                'category': r['品类'],
+                'date': str(r['日期']) if r['日期'] else '',
+            })
+
+        # 检索关键词：把热搜短语切分成短关键词片段（完整短语直接 LIKE 命中率太低）
+        terms = [d['term'] for d in dy_items]
+        keywords = _ps_agent_keywords(terms)
+
+        # ---- 2. 天猫榜单：按关键词匹配 产品名/类别名/排行榜名；同产品名只保留价格最低那条 ----
+        tmall = []
+        if keywords:
+            ors = []
+            params = []
+            for k in keywords:
+                like = '%' + k + '%'
+                ors.append('(产品名 LIKE %s OR 类别名 LIKE %s OR 排行榜名 LIKE %s)')
+                params.extend([like, like, like])
+            where = ' OR '.join(ors)
+            tmall_rows = db_execute(
+                f"SELECT 类别名, 排行榜名, 产品名, 价格, 日期 FROM `天猫榜单表` WHERE {where} LIMIT 400",
+                params)
+            tmall_rows = list(tmall_rows)
+            # 按产品名去重，保留价格最低的一条（价格缺省视为最高，优先被替换）
+            best = {}
+            for r in tmall_rows:
+                name = r['产品名']
+                price = float(r['价格']) if r['价格'] is not None else None
+                if name not in best or (price is not None and (best[name]['价格'] is None or price < best[name]['价格'])):
+                    best[name] = {
+                        '类别名': r['类别名'], '排行榜名': r['排行榜名'], '产品名': r['产品名'],
+                        '价格': price,
+                        '日期': str(r['日期']) if r['日期'] else '',
+                    }
+            tmall = list(best.values())
+
+        # ---- 3. 爱搜数据：按关键词匹配 搜索词关键词/电商词关键词 ----
+        aisou = []
+        aisou_seen = set()
+        if keywords:
+            ors = []
+            params = []
+            for k in keywords:
+                like = '%' + k + '%'
+                ors.append('(搜索词关键词 LIKE %s OR 电商词关键词 LIKE %s)')
+                params.extend([like, like])
+            where = ' OR '.join(ors)
+            aisou_rows = db_execute(
+                f"SELECT 日期, 搜索词关键词, 搜索词月覆盖人次, 搜索词七日搜索人次, "
+                f"电商词关键词, 电商词月覆盖人次, 电商词七日搜索人次 FROM `爱搜数据表` WHERE {where} LIMIT 200",
+                params)
+            aisou_rows = list(aisou_rows)
+            for r in aisou_rows:
+                key = (r['搜索词关键词'], r['电商词关键词'], str(r['日期']))
+                if key in aisou_seen:
+                    continue
+                aisou_seen.add(key)
+                aisou.append({
+                    '日期': str(r['日期']) if r['日期'] else '',
+                    '搜索词关键词': r['搜索词关键词'],
+                    '搜索词月覆盖人次': r['搜索词月覆盖人次'],
+                    '搜索词七日搜索人次': r['搜索词七日搜索人次'],
+                    '电商词关键词': r['电商词关键词'],
+                    '电商词月覆盖人次': r['电商词月覆盖人次'],
+                    '电商词七日搜索人次': r['电商词七日搜索人次'],
+                })
+
+        # ---- 4. 拼接上下文 → DeepSeek ----
+        dy_dates = sorted({d['date'] for d in dy_items if d['date']}, reverse=True)
+        date_label = dy_dates[0] if dy_dates else '（无）'
+
+        context = {
+            '日期': date_label,
+            '抖音电商热搜榜单': dy_items[:80],
+            '天猫榜单匹配': tmall[:80],
+            '爱搜数据匹配': aisou[:60],
+        }
+        ctx_json = json.dumps(context, ensure_ascii=False)
+
+        sys_p = (
+            '# 角色定义\n'
+            '你是"选品助手智能体"，一名专业的电商选品分析师，服务于同时经营抖音和天猫店铺的商家。'
+            '你只基于给定的知识库数据做分析，绝不编造。\n\n'
+            '# 数据来源与结构\n'
+            '你会收到一份结构化的知识库检索结果（JSON），包含以下三部分，它们通过同一批电商关键词串联：\n\n'
+            '1. 抖音电商热搜（数组，字段：term热搜词、heat热搜值、category品类、date日期）\n'
+            '   - 含义：反映需求侧趋势与热度\n'
+            '   - 注意：本数据无"排名"字段，热度高低仅用 heat（热搜值）判断，值越大热度越高\n'
+            '   - 注意：若某词在多条数据中出现（当前多为单日），仅作为热度参考，不必强判"持续热度"\n\n'
+            '2. 爱搜搜索数据（数组，字段：日期、搜索词关键词、搜索词月覆盖人次、搜索词七日搜索人次、电商词关键词、电商词月覆盖人次、电商词七日搜索人次）\n'
+            '   - 含义：反映用户主动搜索该词的真实购买意图强度\n'
+            '   - 核心指标是"搜索词月覆盖人次"（如 4161.77w），越大购买意图越真实\n'
+            '   - 注意：爱搜数据无排名信息，禁止在输出中编造排名\n\n'
+            '3. 天猫榜单匹配数据（数组，字段：类别名、排行榜名、产品名、价格、日期）\n'
+            '   - 含义：反映该词对应商品在天猫的供给侧竞争格局\n'
+            '   - 注意：同一"产品名"可能出现在多个排行榜中，请按产品名去重后再统计\n\n'
+            '# 数据匹配规则\n'
+            '- 三张表通过同一电商关键词串联，不需要做品类映射\n'
+            '- 天猫匹配方式：电商关键词出现在"排行榜名"或"产品名"中即视为匹配\n'
+            '- 若某关键词在三张表中只命中部分数据源，正常分析，并在结论中说明哪部分数据缺失\n'
+            '- 若用户询问的产品/关键词完全不在知识库中（三张表均无匹配），不要拒绝回答或只说"无数据"：\n'
+            '  改为基于你的电商市场分析能力，给出该产品的市场选品分析（需求趋势、目标人群、竞争格局判断、切入机会、裂变产品等），\n'
+            '  并在分析开头明确标注「该产品不在当前知识库，以下为基于市场认知的分析，建议后续抓取数据验证」\n\n'
+            '# 分析框架（严格按此顺序执行）\n\n'
+            '## 第一步：热度评估\n'
+            '基于抖音电商热搜数据判断每个词的热度：\n'
+            '- 热搜值越高 = 曝光量越大、热度越高\n'
+            '- 同义词簇可合并看热度\n\n'
+            '## 第二步：搜索意图验证\n'
+            '基于爱搜数据判断用户真实购买意图：\n'
+            '- 搜索词月覆盖人次越高 = 主动搜索购买的用户越多 = 需求越真实\n'
+            '- 同一词同时出现在抖音热搜和爱搜中 = 强信号（有曝光 + 有购买意图）\n'
+            '- 仅在抖音热搜出现而爱搜无数据 = 有热度但购买意图待验证，标注提醒\n\n'
+            '## 第三步：竞争格局分析\n'
+            '基于天猫匹配数据分析供给侧：\n'
+            '- 匹配到的产品数量越多 = 该词对应品类竞争越激烈\n'
+            '- 从原始"价格"字段统计价格分布（最低价、最高价、大致价位段），只引用原始价格，不做任何计算或估算\n'
+            '- 指出价格空档：哪个价位段几乎没有产品覆盖\n'
+            '- 匹配到的排行榜数量越多 = 该品类在天猫越成熟\n\n'
+            '## 第四步：综合排序\n'
+            '对所有关键词按以下逻辑排序：\n'
+            '1. 三张表全部命中 > 命中两张 > 仅命中一张\n'
+            '2. 抖音热搜值高 + 爱搜月覆盖人次高 = 优先\n'
+            '3. 天猫匹配产品数少（竞争低）+ 有价格空档 = 加分\n'
+            '4. 天猫匹配产品数多但价格分布分散 = 仍有切入机会\n\n'
+            '## 第五步：裂变产品衍生\n'
+            '针对每个值得关注的主品/主关键词，衍生出 1~2 个靠谱的裂变产品，衍生方向包括：\n'
+            '- 配套耗材：如「拼豆」→「拼豆板」「拼豆镊子」「拼豆图纸」\n'
+            '- 工具配件：如「空气炸锅」→「空气炸锅专用锡纸/纸托」\n'
+            '- 场景延伸：如「露营车」→「露营桌板」「车顶行李架」\n'
+            '- 细分人群/功能：如「内衣」→「聚拢防下垂内衣」「运动无痕内衣」\n'
+            '裂变规则：\n'
+            '- 不依赖知识库已有数据，由你基于电商市场分析能力独立判断裂变方向（从品类特性、使用场景、配套关系、耗材复购、人群细分等角度）\n'
+            '- 裂变品须是市场上已被验证、消费者普遍认可的品类或形态，不要编造虚构的规格或不存在的新概念\n'
+            '- 每个主品尽量给出 1~2 个靠谱裂变品，宁缺毋滥\n\n'
+            '# 输出格式（严格遵守）\n\n'
+            '## 第一部分：分析结论\n'
+            '标题用"## 分析结论"，中文自然语言，分要点，150~300字，包含：\n'
+            '- 当前最值得关注的选品方向（1~2句）\n'
+            '- 竞争格局与价格机会判断（1~2句）\n'
+            '- 具体行动建议（1~2句）\n'
+            '- 若某数据源缺失，明确说明"该词在XX平台暂无匹配数据"\n\n'
+            '## 第二部分：推荐卡片\n'
+            '紧接一个 JSON 数组（用 ```json 代码块包裹），每个元素字段如下：\n'
+            '{"type":"tmall"|"aisou","title":"卡片标题","subtitle":"说明","metric":"关键数值","tags":"逗号分隔标签","reason":"一句话推荐理由","derived":"裂变产品，逗号分隔"}\n\n'
+            '卡片生成规则：\n'
+            '- tmall 卡片必须来自天猫榜单匹配数据：title=产品名，subtitle=类别名+排行榜名，metric=价格(带¥)，type="tmall"\n'
+            '- aisou 卡片必须来自爱搜数据：title=搜索词关键词，subtitle=电商词关键词，metric=月覆盖人次(带单位)，type="aisou"\n'
+            '- 只挑数据中真实存在、最有选品价值的 3~8 条\n'
+            '- 两类卡片尽量均衡；若某类无匹配数据则只输出另一类，绝不编造\n'
+            '- 同一产品名只出现一次（去重）\n'
+            '- tags 须包含关键标签，如：蓝海/红海、趋势上升/平稳、价格空档等\n'
+            '- derived 列出该主品/关键词的裂变产品（1~2 个，逗号分隔，中文），没有靠谱裂变方向可留空字符串\n\n'
+            '## 第三部分：后续引导\n'
+            '在 JSON 代码块之后，用一句话引导用户下一步操作，例如：\n'
+            '- "想看这个词在天猫的完整价格带分布，可以继续问我"\n'
+            '- "需要我对比这几个方向的竞争情况吗？"\n\n'
+            '# 硬性约束\n'
+            '- 知识库命中的数据必须真实引用，严禁编造不存在的商品、数字或关键词\n'
+            '- 裂变产品（derived）基于市场分析独立产出，不属于知识库数据，但仍是市场上真实存在的品类，不得虚构\n'
+            '- 知识库外的产品分析属市场认知输出：可给出合理的市场判断与品类级建议，但必须明确标注，且不得虚构具体销量/价格等硬数据\n'
+            '- 若某数据源无匹配结果，在分析结论中明确说明"该词在XX平台暂无匹配数据"\n'
+            '- 涉及具体品牌名时仅作为竞争格局参考展示，不做品牌推荐或贬低\n'
+            '- 价格数据直接引用原始数据，不做计算或估算\n'
+            '- 爱搜数据中不存在排名信息，不要在输出中编造排名'
+        )
+        user_msg = f'知识库检索结果（JSON）：\n{ctx_json}\n\n用户需求：{question}\n\n请按要求输出分析结论和推荐卡片。'
+
+        raw = call_deepseek_api(sys_p, user_msg, temperature=0.4, max_tokens=4096,
+                                api_key=DEEPSEEK_SELECTION_API_KEY)
+
+        # 分离分析文字与卡片 JSON
+        cards = _ps_agent_parse_cards(raw)
+        # 分析文字：去掉 JSON 数组块和代码围栏，保留「分析结论」与「后续引导」两部分正文
+        analysis = raw or ''
+        if raw:
+            # 去掉 ```json ... ``` 代码围栏（连同内部的 JSON 数组）
+            analysis = re.sub(r'```json\s*\[.*?\]\s*```', '', analysis, flags=re.DOTALL)
+            # 去掉残留的裸 JSON 数组
+            analysis = re.sub(r'\[\s*\{.*?\}\s*(?:,\s*\{.*?\}\s*)*\]', '', analysis, flags=re.DOTALL)
+            # 去掉残留的 markdown 围栏
+            analysis = re.sub(r'```[a-zA-Z]*', '', analysis)
+            analysis = analysis.strip()
+
+        return success({
+            'analysis': analysis,
+            'cards': cards,
+            'meta': {
+                'date': date_label,
+                'douyin_count': len(dy_items),
+                'tmall_count': len(tmall),
+                'aisou_count': len(aisou),
+            },
+            'raw_available': bool(raw),
+        }, 'ok')
+    except Exception as e:
+        traceback.print_exc()
+        return fail(str(e))
+
+
+# ======================== 抖音热搜 → 电商热搜筛选 ========================
+# 筛选逻辑与「抖音热搜词筛选 skill」保持一致：命中品类关键词即保留，
+# 命中黑名单 / 超长 / 网红非商品则删除，其余（未命中品类）视为非电商。
+
+# 精确匹配黑名单：整个热搜词完全等于才删除（避免短词误杀）
+_DY_BLACKLIST_EXACT = {"声明", "后果", "吗"}
+
+# 子串匹配黑名单：热搜词中包含即删除
+_DY_BLACKLIST_SUBSTR = [
+    "明星", "电视剧", "综艺", "电影", "短剧", "剧集", "主演",
+    "代言人", "代言", "演唱会", "选秀", "爱豆", "追星", "恋情",
+    "离婚", "绯闻", "番剧",
+    "游戏", "王者荣耀", "手游", "网游", "端游",
+    "团购", "拼团", "主播", "股票", "股价", "酒店", "事件",
+    "是什么意思", "仅退款", "人民锐评",
+    "金价", "黄金价", "黄金价格", "今日黄金", "黄金走势",
+    "黄金今日价", "黄金大盘价", "黄金多少钱", "5斤黄金",
+    "大盘价", "黄金鸟窝", "黄金大盘", "黄金回收",
+    "华为", "小米", "苹果", "oppo", "vivo", "iphone",
+    "救援", "搭电", "广场舞", "音乐种草", "沙鹰", "donk",
+    "寡人", "放冰箱", "坦克", "女扮男装", "外卖", "速运",
+    "代驾", "京东健康", "鞋厂", "失火", "附近美食", "美团来电",
+    "钟丽缇", "的做法",
+]
+
+# 正向关键词：命中即保留
+_DY_CATS = {
+    "服饰鞋包": ["衣服", "服装", "服饰", "女装", "男装", "童装", "裤子",
+                "裙子", "外套", "卫衣", "t恤", "衬衫", "鞋", "运动鞋",
+                "凉鞋", "靴子", "包包", "背包", "帽子", "围巾", "内衣", "袜子"],
+    "食品饮料": ["食品", "饮料", "咖啡", "水果", "坚果",
+                "辣条", "巧克力", "饼干", "方便面", "螺蛳粉", "自热",
+                "白酒", "啤酒", "红酒", "葡萄酒", "喝酒", "酒馆", "茶叶",
+                "大米", "糖", "饮品", "小吃", "美食"],
+    "家电家居": ["家电", "冰箱", "洗衣机", "空调", "电视机", "电视柜",
+                "电视盒", "扫地机器人", "空气净化", "加湿", "电饭煲",
+                "空气炸锅", "炸锅", "微波炉", "净水", "热水器", "家具",
+                "沙发", "床", "床垫", "窗帘", "收纳", "灯具", "家居"],
+    "母婴玩具": ["母婴", "婴幼儿", "奶粉", "纸尿裤", "尿不湿", "玩具",
+                "童车", "辅食", "孕婴", "拼豆", "拼图", "积木", "乐高",
+                "手工", "diy", "粘土", "彩泥", "橡皮泥", "串珠", "钻石画", "盲盒", "手办"],
+    "汽车用品": ["脚垫", "座套", "坐垫", "后备箱垫", "车衣", "车载",
+                "方向盘", "行车记录仪", "车膜", "机油", "汽车"],
+    "健康保健": ["保健品", "维生素", "瘦身", "瑜伽", "体检", "牙齿"],
+    "黄金珠宝": ["黄金", "金店", "珠宝", "钻石", "翡翠", "银饰", "项链",
+                "戒指", "手镯"],
+    "宠物": ["猫粮", "狗粮", "修狗", "宠物用品", "撸猫", "吸猫"],
+}
+
+
+def _dy_parse_heat(s):
+    """解析热度字符串（如 '8222.7万'）为数值"""
+    if s is None:
+        return 0.0
+    s = str(s).strip()
+    m = re.search(r"([\d.]+)", s)
+    if not m:
+        return 0.0
+    n = float(m.group(1))
+    if "亿" in s:
+        return n * 1e8
+    if "万" in s:
+        return n * 1e4
+    return n
+
+
+def _dy_build_kw_index(cats):
+    """预构建关键词索引：{lower_kw: [cat_name, ...]}"""
+    index = {}
+    for cat_name, kws in cats.items():
+        for kw in kws:
+            index.setdefault(kw.lower(), []).append(cat_name)
+    return index
+
+
+def _dy_match_categories(term_lower, kw_index):
+    """返回该词命中的所有类别列表"""
+    hit_cats = set()
+    for kw_lower, cat_names in kw_index.items():
+        if kw_lower in term_lower:
+            hit_cats.update(cat_names)
+    return sorted(hit_cats)
+
+
+def _dy_split_categories(cat_str):
+    """把品类串（如 '食品饮料/健康保健'）拆成原子品类集合，兼容 / 逗号 顿号分隔"""
+    if not cat_str:
+        return set()
+    return {c for c in re.split(r'[/,，、]', str(cat_str)) if c}
+
+
+def _dy_prev_day_categories(target_date):
+    """返回「抖音热搜品类表」中 target_date 之前最近一天已出现的原子品类集合。
+
+    用于「前一天去重」：前一天已经出现的品类，今天筛选时自动剔除。
+    返回 (prev_date, prev_cats)；没有更早日期时返回 (None, set())。"""
+    if not target_date:
+        return None, set()
+    rows = db_execute(
+        "SELECT MAX(`日期`) AS d FROM `抖音热搜品类表` WHERE `日期` < %s", [target_date])
+    prev_date = rows[0].get('d') if rows else None
+    if prev_date is None:
+        return None, set()
+    cats = set()
+    for r in db_execute("SELECT `品类` FROM `抖音热搜品类表` WHERE `日期` = %s", [prev_date]):
+        cats |= _dy_split_categories(r.get('品类'))
+    return str(prev_date), cats
+
+
+def _ensure_douyin_hot_columns():
+    """确保「抖音热搜榜单表」具备筛选结果相关列（品类 / 是否电商 / 热度数值）"""
+    existing = {r['Field'] for r in db_execute("SHOW COLUMNS FROM `抖音热搜榜单表`")}
+    specs = {
+        '品类': "VARCHAR(255) NULL",
+        '是否电商': "TINYINT(1) NOT NULL DEFAULT 0",
+        '热度数值': "DECIMAL(20,2) NULL",
+    }
+    for col, ddl in specs.items():
+        if col not in existing:
+            db_execute(f"ALTER TABLE `抖音热搜榜单表` ADD COLUMN `{col}` {ddl}", fetch=False)
+
+
+def _ensure_douyin_category_columns():
+    """确保「抖音热搜品类表」结构与「抖音热搜榜单表」一致（热搜名/热搜值/日期/品类/是否电商/热度数值）"""
+    existing = {r['Field'] for r in db_execute("SHOW COLUMNS FROM `抖音热搜品类表`")}
+    specs = {
+        '热搜名': "VARCHAR(255) NOT NULL",
+        '热搜值': "VARCHAR(255) NOT NULL",
+        '日期': "DATE NOT NULL",
+        '品类': "VARCHAR(255) NULL",
+        '是否电商': "TINYINT(1) NOT NULL DEFAULT 0",
+        '热度数值': "DECIMAL(20,2) NULL",
+    }
+    for col, ddl in specs.items():
+        if col not in existing:
+            db_execute(f"ALTER TABLE `抖音热搜品类表` ADD COLUMN `{col}` {ddl}", fetch=False)
+
+
+def _summarize_douyin_categories(matched):
+    """调用 DeepSeek 总结筛选结果中电商会涉及的品类/单品名，返回列表；失败返回 None"""
+    if not matched:
+        return []
+
+    ordered = sorted(matched, key=lambda m: m.get('heat_num', 0), reverse=True)
+    groups = {}
+    for m in ordered:
+        groups.setdefault(m['categories'], []).append(m['term'])
+    sample = '\n'.join(f"{cat}：{'、'.join(terms)}" for cat, terms in groups.items())
+
+    sys_p = ('你是电商选品分析助手。请根据给定的抖音电商相关热搜词（按品类分组），'
+             '总结出其中电商会涉及的品类名或具体单品名。只输出结果，每行一个，'
+             '不要编号、不要解释、不要标点符号。')
+    user = (f'以下是筛选出的抖音电商相关热搜词（按品类分组）：\n{sample}\n\n'
+            f'请总结出电商会涉及的品类或单品名，每行输出一个。')
+    raw = call_deepseek_api(sys_p, user, temperature=0.3, max_tokens=2048)
+    if not raw:
+        return None
+
+    items = []
+    for line in raw.splitlines():
+        s = re.sub(r'^(?:\d+[.、)）]\s*|[-*•·]\s*)+', '', line).strip()
+        if s and s not in items:
+            items.append(s)
+    return items
+
+
+def _export_douyin_summary_excel(items, target_date, base_dir=r"Z:\抖音搜索榜"):
+    """把总结出的电商品类/单品名导出为一列 Excel。
+    成功返回文件完整路径，失败返回 None（不中断筛选主流程）。"""
+    try:
+        import openpyxl
+        from pathlib import Path
+    except Exception:
+        return None
+
+    try:
+        date_label = (target_date or '全表').strip().replace('/', '-')
+        folder = Path(base_dir) / f"{date_label} 品类关联词"
+        folder.mkdir(parents=True, exist_ok=True)
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "电商品类单品名"
+        ws.append(["电商品类/单品名"])
+        for it in items:
+            ws.append([it])
+        ws.column_dimensions['A'].width = 40
+
+        out = folder / "电商相关热搜词.xlsx"
+        wb.save(out)
+        return str(out)
+    except Exception:
+        traceback.print_exc()
+        return None
+
+
+@app.route('/api/product-selection/douyin/filter', methods=['POST'])
+def product_selection_douyin_filter():
+    """触发筛选：读取「抖音热搜榜单表」原始热搜词运行品类筛选，
+    筛选结果写入「抖音热搜品类表」（榜单表保留原始数据不被覆盖）"""
+    try:
+        _ensure_douyin_category_columns()
+
+        # 日期：优先从 JSON body 取，兼容 query 参数；为空则筛选全表
+        _payload = request.get_json(silent=True) or {}
+        target_date = (_payload.get('date') or request.args.get('date') or '').strip()
+
+        if target_date:
+            rows = db_execute(
+                "SELECT 热搜名, 热搜值, 日期 FROM `抖音热搜榜单表` WHERE `日期` = %s", [target_date])
+        else:
+            rows = db_execute("SELECT 热搜名, 热搜值, 日期 FROM `抖音热搜榜单表`")
+
+        # 按 (热搜名, 日期) 去重后逐条筛选
+        seen = set()
+        entries = []
+        for r in rows:
+            term = (r['热搜名'] or '').strip()
+            if not term:
+                continue
+            dt = str(r['日期']) if r['日期'] else ''
+            key = (term, dt)
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append({'term': term, 'heat_raw': (r['热搜值'] or '').strip(), 'date': dt})
+
+        kw_index = _dy_build_kw_index(_DY_CATS)
+        # 前一天去重：读取 target_date 之前最近一天已出现的品类，今天筛选时自动剔除
+        prev_date, prev_cats = _dy_prev_day_categories(target_date)
+        deduped = 0
+        matched = []
+        stats = {
+            "超长(>10字)": 0,
+            "黑名单精确匹配(删)": 0,
+            "黑名单子串匹配(删)": 0,
+            "网红非商品(删)": 0,
+            "网红商品(保留)": 0,
+            "前一天已出现(去重)": 0,
+        }
+        for e in entries:
+            term = e['term']
+            tl = term.lower()
+
+            if len(term) > 10:
+                stats["超长(>10字)"] += 1
+                continue
+            if term in _DY_BLACKLIST_EXACT:
+                stats["黑名单精确匹配(删)"] += 1
+                continue
+            if any(b.lower() in tl for b in _DY_BLACKLIST_SUBSTR):
+                stats["黑名单子串匹配(删)"] += 1
+                continue
+
+            hit_cats = _dy_match_categories(tl, kw_index)
+            is_wh = ("网红" in tl or "达人" in tl)
+            if is_wh and not hit_cats:
+                stats["网红非商品(删)"] += 1
+                continue
+
+            # 前一天去重：把前一天已出现的品类从该词命中品类里剔除，
+            # 全部被剔除则该词整体丢弃（前一天已出现，今天不再重复）。
+            if hit_cats and prev_cats:
+                kept = [c for c in hit_cats if c not in prev_cats]
+                if not kept:
+                    stats["前一天已出现(去重)"] += 1
+                    deduped += 1
+                    continue
+                hit_cats = kept
+
+            if hit_cats:
+                if is_wh:
+                    stats["网红商品(保留)"] += 1
+                matched.append({
+                    'term': term,
+                    'heat_raw': e['heat_raw'],
+                    'date': e['date'],
+                    'categories': '/'.join(hit_cats),
+                    'heat_num': _dy_parse_heat(e['heat_raw']),
+                })
+
+        # 覆盖写入「抖音热搜品类表」：先删除目标日期的旧筛选结果，再插入本次筛选出的电商热搜（幂等，可重复点击）
+        if target_date:
+            db_execute("DELETE FROM `抖音热搜品类表` WHERE `日期` = %s", [target_date], fetch=False)
+        else:
+            db_execute("DELETE FROM `抖音热搜品类表`", fetch=False)
+
+        for m in matched:
+            db_execute(
+                "INSERT INTO `抖音热搜品类表` (`热搜名`, `热搜值`, `日期`, `品类`, `是否电商`, `热度数值`) "
+                "VALUES (%s, %s, %s, %s, 1, %s)",
+                [m['term'], m['heat_raw'], m['date'], m['categories'], m['heat_num']], fetch=False)
+
+        summary = _summarize_douyin_categories(matched)
+        if not summary:
+            # 大模型不可用时，退回用代码筛选出的品类去重列表
+            cats = []
+            for m in matched:
+                for c in m['categories'].split('/'):
+                    if c and c not in cats:
+                        cats.append(c)
+            summary = cats
+        export_path = _export_douyin_summary_excel(summary, target_date)
+        return success({
+            'matched': len(matched), 'total': len(entries), 'stats': stats,
+            'deduped': deduped, 'prev_date': prev_date,
+            'date': target_date, 'export': export_path,
+        }, '筛选完成')
+    except Exception as e:
+        traceback.print_exc()
         return fail(str(e))
 
 

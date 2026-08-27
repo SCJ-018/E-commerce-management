@@ -28,3 +28,6 @@ DB_PING_BEFORE_QUERY = True
 DEEPSEEK_API_KEY = '请填写 API 密钥'
 DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions'
 DEEPSEEK_MODEL = 'deepseek-chat'
+
+# 选品助手智能体专用 DeepSeek Key（与全局 key 隔离，不影响其它 AI 功能）
+DEEPSEEK_SELECTION_API_KEY = '请填写选品助手专用 API 密钥'
