@@ -2,14 +2,16 @@
 数据库连接配置
 根据实际情况修改以下参数
 （复制本文件为 config.py 并填入真实值；config.py 已被 .gitignore 排除，不会被提交）
+敏感字段（密码等）支持从环境变量读取，未设置时回退到这里的默认值
 """
+import os
 
 DB_CONFIG = {
-    'host': '192.168.2.10',
-    'port': 3306,
-    'user': 'root',
-    'password': '请填写密码',
-    'database': '数据',
+    'host': os.environ.get('DB_HOST', '192.168.2.10'),
+    'port': int(os.environ.get('DB_PORT', '3306')),
+    'user': os.environ.get('DB_USER', 'root'),
+    'password': os.environ.get('DB_PASSWORD', '请填写密码'),
+    'database': os.environ.get('DB_NAME', '数据'),
     'charset': 'utf8mb4',
     'autocommit': True,
     # 连接超时 & 自动重连
