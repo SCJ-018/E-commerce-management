@@ -35,6 +35,16 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COOKIE_FILE = os.path.join(BASE_DIR, "douyin_cookie.txt")
 ACCOUNTS_FILE = os.path.join(BASE_DIR, "seeding_accounts.json")
 OUTPUT_CSV = os.path.join(BASE_DIR, "_douyin_works.csv")
+PROGRESS_FILE = os.path.join(BASE_DIR, "_seeding_progress_douyin.json")
+
+
+def write_progress(status, done, total):
+    """写进度文件，供后端 /status 接口读取"""
+    try:
+        with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
+            json.dump({"status": status, "done": done, "total": total}, f, ensure_ascii=False)
+    except Exception:
+        pass
 
 # 回退账号 sec_user_id：打开对方主页，网址 https://www.douyin.com/user/ 后面的那串（MS4wLjAB...）
 FALLBACK_SEC_USER_ID = "MS4wLjABAAAAmNgVBI7dikJ3OmLbDqK7G3eIF54FIURwJl0Qa8MOfCg"
@@ -138,7 +148,7 @@ def build_headers():
     }
 
 
-def fetch_page(sec_user_id, max_cursor="0", count=18):
+def fetch_page(sec_user_id, max_cursor="0", count=30):
     url = "https://www.douyin.com/aweme/v1/web/aweme/post/"
     params = {
         "device_platform": "webapp",
@@ -201,7 +211,7 @@ def fetch_account_works(account):
 
         if not has_more or not aweme_list:
             break
-        time.sleep(2)  # 分页间隔，降低风控概率
+        time.sleep(0.8)  # 分页间隔，降低风控概率
     return rows
 
 
@@ -209,8 +219,10 @@ def main():
     accounts = load_accounts()
     all_rows = []
 
-    for account in accounts:
+    write_progress("running", 0, len(accounts))
+    for i, account in enumerate(accounts):
         all_rows.extend(fetch_account_works(account))
+        write_progress("running", i + 1, len(accounts))
 
     if all_rows:
         fieldnames = ["名称", "账号", "标题", "链接", "点赞", "评论", "收藏", "分享", "发布时间"]
@@ -219,8 +231,10 @@ def main():
             writer.writeheader()
             writer.writerows(all_rows)
         print(f"\n✅ 共采集 {len(all_rows)} 条作品，已导出到：{OUTPUT_CSV}")
+        write_progress("done", len(accounts), len(accounts))
     else:
         print("\n未采集到任何作品，请检查 Cookie 是否有效")
+        write_progress("error", 0, len(accounts))
 
 
 if __name__ == "__main__":

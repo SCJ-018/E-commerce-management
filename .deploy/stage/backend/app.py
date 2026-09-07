@@ -13,7 +13,7 @@ import tempfile
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from queue import Queue
-from threading import Lock, RLock
+from threading import Lock
 
 import requests
 from flask import Flask, request, jsonify, send_from_directory
@@ -51,57 +51,52 @@ class DBConnectionPool:
 
     def __init__(self, pool_size=5):
         self._pool = Queue(maxsize=pool_size)
-        self._lock = RLock()  # RLock 允许 _create_conn/_discard 内再次加锁
+        self._lock = Lock()
         self._size = pool_size
-        self._count = 0  # 存活连接数（已借出 + 在池中）
+        self._count = 0
 
     def _create_conn(self):
-        """创建一个新连接并计数 +1"""
+        """创建一个新连接，并设置自动重连"""
         conn = pymysql.connect(**DB_CONFIG, cursorclass=pymysql.cursors.DictCursor)
+        # ping 检测连接是否存活
         conn.ping()
-        with self._lock:
-            self._count += 1
         return conn
-
-    def _discard(self, conn):
-        """关闭连接并递减存活连接计数（连接被判定失效时调用）"""
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-        with self._lock:
-            if self._count > 0:
-                self._count -= 1
 
     def get(self):
         """从池中获取一个可用连接"""
-        # 1) 优先取空闲连接
         try:
+            # 尝试从队列中取一个空闲连接
             conn = self._pool.get(block=False)
-        except Exception:
-            conn = None
-        if conn is not None and DB_PING_BEFORE_QUERY:
-            try:
-                conn.ping()
-            except Exception:
-                self._discard(conn)  # 失效：关闭并递减计数
-                conn = None
-        if conn is not None:
+            # 检测连接是否还活着
+            if DB_PING_BEFORE_QUERY:
+                try:
+                    conn.ping()
+                except Exception:
+                    # 连接断开，创建新的
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = self._create_conn()
             return conn
-        # 2) 池空，额度内新建（连接失败则计数不变，不会泄漏）
-        with self._lock:
-            if self._count < self._size:
-                return self._create_conn()
-        # 3) 池满，阻塞等待归还
-        conn = self._pool.get(block=True, timeout=5)
-        if DB_PING_BEFORE_QUERY:
-            try:
-                conn.ping()
-            except Exception:
-                self._discard(conn)
-                return self._create_conn()
-        return conn
+        except Exception:
+            # 队列为空或取连接失败，创建新连接
+            with self._lock:
+                if self._count < self._size:
+                    self._count += 1
+                    return self._create_conn()
+            # 池已满，阻塞等待
+            conn = self._pool.get(block=True, timeout=5)
+            if DB_PING_BEFORE_QUERY:
+                try:
+                    conn.ping()
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = self._create_conn()
+            return conn
 
     def put(self, conn):
         """归还连接到池中"""
@@ -109,14 +104,18 @@ class DBConnectionPool:
             try:
                 self._pool.put_nowait(conn)
             except Exception:
-                self._discard(conn)
+                # 池已满，关闭这个连接
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def close_all(self):
         """关闭池中所有连接"""
         while not self._pool.empty():
             try:
                 conn = self._pool.get_nowait()
-                self._discard(conn)
+                conn.close()
             except Exception:
                 pass
 
@@ -133,11 +132,6 @@ def get_db():
 def return_db(conn):
     """归还连接到连接池"""
     pool.put(conn)
-
-
-def discard_db(conn):
-    """丢弃失效连接（关闭并递减池计数），供 db_execute 在连接级错误时使用"""
-    pool._discard(conn)
 
 
 def db_execute(sql, params=None, fetch=True, max_retries=2):
@@ -160,7 +154,10 @@ def db_execute(sql, params=None, fetch=True, max_retries=2):
         except pymysql.err.OperationalError as e:
             # 连接级别错误 → 丢弃连接，重试
             if conn:
-                discard_db(conn)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             last_error = e
             if attempt < max_retries:
                 time.sleep(0.3 * (attempt + 1))  # 递增等待
@@ -189,7 +186,10 @@ def db_execute_insert(sql, params=None, max_retries=2):
                 return last_id
         except pymysql.err.OperationalError as e:
             if conn:
-                discard_db(conn)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             last_error = e
             if attempt < max_retries:
                 time.sleep(0.3 * (attempt + 1))
@@ -905,7 +905,10 @@ def health():
         return success({'db': 'connected', 'pool': 'active'}, '后端服务运行正常，数据库已连接')
     except Exception as e:
         if conn:
-            discard_db(conn)
+            try:
+                conn.close()
+            except Exception:
+                pass
         return fail(f'数据库连接失败: {str(e)}')
 
 
@@ -1861,37 +1864,6 @@ def platform_store_data():
         return fail(str(e))
 
 
-# ======================== 登录鉴权（token 会话） ========================
-
-import secrets
-
-# token -> {'account':..., 'name':..., 'role':..., 'expires': 时间戳}
-# ponytail: 内存存储，单 worker（systemd 里 --workers 1）够用；若以后多 worker 需换 Redis/DB
-_AUTH_TOKENS = {}
-_AUTH_TOKEN_TTL = 24 * 3600  # 24 小时，滑动续期
-
-# 无需登录即可访问的接口（登录本身、退出、健康检查）
-_AUTH_PUBLIC_PATHS = {'/api/auth/login', '/api/auth/logout', '/api/health'}
-
-
-@app.before_request
-def _require_auth():
-    """对所有 /api/* 接口做登录态校验（白名单除外），未登录返回 401"""
-    if not request.path.startswith('/api/'):
-        return None
-    if request.path in _AUTH_PUBLIC_PATHS:
-        return None
-    token = request.cookies.get('token', '')
-    rec = _AUTH_TOKENS.get(token)
-    now = time.time()
-    if not rec or rec.get('expires', 0) < now:
-        if rec:
-            _AUTH_TOKENS.pop(token, None)
-        return jsonify({'code': 401, 'msg': '未登录或登录已过期', 'data': None}), 401
-    rec['expires'] = now + _AUTH_TOKEN_TTL  # 滑动续期
-    return None
-
-
 # ======================== 管理员账户管理 ========================
 
 @app.route('/api/auth/login', methods=['POST'])
@@ -1934,14 +1906,7 @@ def auth_login():
             perms_data = role_row[0]['permissions']
             permissions = json.loads(perms_data) if isinstance(perms_data, str) else perms_data
 
-        token = secrets.token_hex(32)
-        _AUTH_TOKENS[token] = {
-            'account': admin['account'],
-            'name': admin['name'],
-            'role': admin['role'],
-            'expires': time.time() + _AUTH_TOKEN_TTL,
-        }
-        resp = success({
+        return success({
             'id': admin['id'],
             'name': admin['name'],
             'account': admin['account'],
@@ -1950,21 +1915,8 @@ def auth_login():
             'lastLogin': now_str,
             'permissions': permissions,
         }, '登录成功')
-        resp.set_cookie('token', token, max_age=_AUTH_TOKEN_TTL,
-                        httponly=True, samesite='Lax', path='/')
-        return resp
     except Exception as e:
         return fail(str(e))
-
-
-@app.route('/api/auth/logout', methods=['POST'])
-def auth_logout():
-    """退出登录 - 清除服务端 token 会话"""
-    token = request.cookies.get('token', '')
-    _AUTH_TOKENS.pop(token, None)
-    resp = success(None, '已退出登录')
-    resp.set_cookie('token', '', max_age=0, httponly=True, samesite='Lax', path='/')
-    return resp
 
 
 # ======================== 角色与权限管理 API ========================
@@ -2329,155 +2281,13 @@ def db_delete_row(table_name, pk_value):
         return fail(str(e))
 
 
-# ======================== Excel/CSV 网页导入 ========================
-
-# 允许网页上传导入的业务数据表
-IMPORT_TABLES = {
-    '抖店单链接数据表', '京东单链接数据表', '千牛单链接数据表',
-    '千牛单链接推广数据表', '店铺营销数据',
-}
-
-
-def _parse_upload_file(filename, stream, sheet_name=None):
-    """解析上传的 xlsx/xls/csv，返回 (列名列表, 行数据列表[{列:值}])。sheet_name 指定工作表，缺省取第一个。"""
-    ext = os.path.splitext(filename)[1].lower()
-    if ext in ('.xlsx', '.xls'):
-        import io
-        import openpyxl
-        wb = openpyxl.load_workbook(io.BytesIO(stream.read()), read_only=True, data_only=True)
-        ws = wb[sheet_name] if (sheet_name and sheet_name in wb.sheetnames) else wb[wb.sheetnames[0]]
-        cols, rows = [], []
-        for i, row in enumerate(ws.iter_rows(values_only=True)):
-            if i == 0:
-                cols = [str(c).strip() if c is not None else f'Column_{j}' for j, c in enumerate(row)]
-            elif row and any(v is not None and str(v).strip() != '' for v in row):
-                rows.append(dict(zip(cols, row)))
-        return cols, rows
-    if ext == '.csv':
-        import io
-        import csv as _csv
-        data = stream.read()
-        for enc in ('utf-8-sig', 'utf-8', 'gbk', 'gb18030'):
-            try:
-                text = data.decode(enc)
-                break
-            except (UnicodeDecodeError, UnicodeError):
-                continue
-        else:
-            text = data.decode('utf-8', errors='replace')
-        reader = _csv.DictReader(io.StringIO(text))
-        cols = [c.strip() for c in (reader.fieldnames or [])]
-        return cols, [dict(r) for r in reader]
-    raise ValueError('仅支持 .xlsx / .xls / .csv 文件')
-
-
-def _import_convert(value, col_type):
-    """按数据库列类型转换单元格值，无法转换返回 None。"""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.strftime('%Y-%m-%d')
-    if isinstance(value, date):
-        return value.strftime('%Y-%m-%d')
-    s = str(value).strip()
-    if s in ('', 'NULL', 'N/A', '-', 'null', 'None', 'nan', 'NaN'):
-        return None
-    tl = col_type.lower()
-    if any(t in tl for t in ('int', 'decimal', 'float', 'double', 'numeric')):
-        s2 = s.replace(',', '').replace('￥', '').replace('¥', '').replace('元', '').replace('%', '').replace(' ', '')
-        try:
-            return float(s2) if '.' in s2 else int(s2)
-        except ValueError:
-            return None
-    if 'date' in tl or 'time' in tl:
-        for fmt in ('%Y-%m-%d', '%Y/%m/%d', '%Y%m%d', '%Y-%m-%d %H:%M:%S', '%Y/%m/%d %H:%M:%S', '%Y年%m月%d日'):
-            try:
-                return datetime.strptime(s, fmt).strftime('%Y-%m-%d')
-            except ValueError:
-                continue
-        return s
-    return s
-
-
-@app.route('/api/import/sheets', methods=['POST'])
-def import_sheets():
-    """返回上传的 xlsx/xls 的工作表名列表，供前端选择要导入的 sheet。"""
-    try:
-        file = request.files.get('file')
-        if not file or not file.filename:
-            return fail('请选择要导入的文件')
-        ext = os.path.splitext(file.filename)[1].lower()
-        if ext not in ('.xlsx', '.xls'):
-            return success({'sheets': []})
-        import io
-        import openpyxl
-        wb = openpyxl.load_workbook(io.BytesIO(file.read()), read_only=True, data_only=True)
-        return success({'sheets': wb.sheetnames})
-    except Exception as e:
-        return fail(str(e))
-
-
-@app.route('/api/import/excel', methods=['POST'])
-def import_excel():
-    """上传 Excel/CSV 导入到业务数据表（按表主键 upsert，已存在则更新）。"""
-    try:
-        table = (request.form.get('table') or '').strip()
-        sheet = (request.form.get('sheet') or '').strip()
-        file = request.files.get('file')
-        if table not in IMPORT_TABLES:
-            return fail('该表不支持网页导入')
-        if not file or not file.filename:
-            return fail('请选择要导入的文件')
-
-        cols, rows = _parse_upload_file(file.filename, file, sheet)
-        if not rows:
-            return fail('文件里没有数据行')
-
-        col_types = {c['Field']: c['Type'] for c in db_execute(f'SHOW FULL COLUMNS FROM `{table}`')}
-        table_fields = list(col_types.keys())
-        insert_cols = [c for c in cols if c in table_fields]
-        if not insert_cols:
-            return fail('文件列与表字段无交集，请检查表头是否与目标表字段一致')
-
-        pk_cols = [r['Column_name'] for r in db_execute(f"SHOW KEYS FROM `{table}` WHERE Key_name='PRIMARY'")]
-
-        cols_sql = ', '.join([f'`{c}`' for c in insert_cols])
-        placeholders = ', '.join(['%s'] * len(insert_cols))
-        if pk_cols:
-            upd = ', '.join([f'`{c}`=VALUES(`{c}`)' for c in insert_cols if c not in pk_cols])
-            sql = (f'INSERT INTO `{table}` ({cols_sql}) VALUES ({placeholders})'
-                   + (f' ON DUPLICATE KEY UPDATE {upd}' if upd else ''))
-        else:
-            sql = f'INSERT INTO `{table}` ({cols_sql}) VALUES ({placeholders})'
-
-        ok, failed, first_err = 0, 0, ''
-        conn = get_db()
-        try:
-            with conn.cursor() as cur:
-                for row in rows:
-                    vals = [_import_convert(row.get(c), col_types[c]) for c in insert_cols]
-                    try:
-                        cur.execute(sql, vals)
-                        ok += 1
-                    except Exception as e:
-                        failed += 1
-                        if not first_err:
-                            first_err = str(e)
-                conn.commit()
-        finally:
-            return_db(conn)
-
-        return success({'inserted': ok, 'failed': failed, 'error': first_err},
-                       f'导入完成：成功 {ok} 行，失败 {failed} 行')
-    except Exception as e:
-        return fail(str(e))
-
-
 # ======================== 员工花名册 ========================
 
 # 员工花名册全部列（与数据库表结构一致）
 HR_COLS = ['工号', '姓名', '入职时间', '一级部门', '二级部门', '直带人', '岗级', '手机号',
            '身份证号', '紧急联系人电话', '状态', '薪资待遇', '转正日期', '银行卡号', '开户行', '主人事']
+# 数据库里这些列是 int 类型，插入时按数字处理
+HR_INT_COLS = {'手机号', '身份证号', '银行卡号'}
 
 
 @app.route('/api/hr/employees', methods=['GET'])
@@ -2504,7 +2314,12 @@ def add_employee():
         def val(k):
             v = str(data.get(k) or '').strip()
             if not v:
-                return None if k == '入职时间' else ''
+                return '00:00:00' if k == '入职时间' else (0 if k in HR_INT_COLS else '')
+            if k in HR_INT_COLS:
+                try:
+                    return int(v)
+                except ValueError:
+                    return v
             return v
 
         sql = 'INSERT INTO `员工花名册` (`' + '`,`'.join(HR_COLS) + '`) VALUES (' + ','.join(['%s'] * len(HR_COLS)) + ')'
@@ -3048,40 +2863,6 @@ _XHS_WORKS_FILE = os.path.join(_SEEDING_DIR, '_xhs_works.json')
 _SEEDING_STATE_FILE = os.path.join(_SEEDING_DIR, '_seeding_state.json')
 
 
-def _seeding_progress_file(platform):
-    return os.path.join(_SEEDING_DIR, '_seeding_progress_%s.json' % platform)
-
-
-def _seeding_progress_write(platform, status, done, total):
-    """写抓取进度文件，供前端进度条轮询"""
-    try:
-        with open(_seeding_progress_file(platform), 'w', encoding='utf-8') as f:
-            json.dump({'status': status, 'done': done, 'total': total}, f, ensure_ascii=False)
-    except Exception:
-        pass
-
-
-def _seeding_progress_read(platform):
-    """读抓取进度：{status, done, total, progress, finished}"""
-    info = {'status': 'idle', 'done': 0, 'total': 0, 'progress': 0, 'finished': False}
-    path = _seeding_progress_file(platform)
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                p = json.load(f)
-            info['status'] = p.get('status', 'idle')
-            info['done'] = int(p.get('done', 0) or 0)
-            info['total'] = int(p.get('total', 0) or 0)
-        except Exception:
-            pass
-    if info['total']:
-        info['progress'] = min(100, round(info['done'] / info['total'] * 100))
-    if info['status'] == 'done':
-        info['progress'] = 100
-        info['finished'] = True
-    return info
-
-
 def _seeding_load_accounts():
     """读取种草账号列表；文件不存在或损坏时返回空列表"""
     if not os.path.exists(_SEEDING_ACCOUNTS_FILE):
@@ -3327,58 +3108,37 @@ def seeding_save_cookie():
         return fail(str(e))
 
 
-def _seeding_launch(platform):
-    """后台异步启动指定平台的作品抓取脚本，写进度初始状态。返回 (error_msg or None)"""
-    import sys as _sys_scrape
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if platform == 'xhs':
-        scraper = os.path.join(_SEEDING_DIR, 'seeding_xhs.py')
-        if not os.path.isdir(os.path.join(_SEEDING_DIR, 'Spider_XHS')):
-            return '缺少小红书抓取依赖：未找到 tools/Spider_XHS 目录，请先部署 Spider_XHS 开源项目'
-    else:
-        scraper = os.path.join(_SEEDING_DIR, 'douyin_video_scraper.py')
-    if not os.path.exists(scraper):
-        return '抓取脚本不存在：' + scraper
-    _seeding_progress_write(platform, 'running', 0, 0)
-    log_file = open(os.path.join(_SEEDING_DIR, '_scrape_%s.log' % platform), 'w', encoding='utf-8')
-    try:
-        subprocess.Popen(
-            [_sys_scrape.executable, scraper],
-            cwd=project_root,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-        )
-    finally:
-        log_file.close()
-    return None
-
-
 @app.route('/api/seeding/scrape', methods=['POST'])
 def seeding_trigger_scrape():
     """按钮触发：后台异步执行作品抓取脚本（platform=douyin/xhs）"""
     try:
+        import sys as _sys_scrape
         data = request.get_json(force=True) or {}
         platform = (data.get('platform') or 'douyin').strip()
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if platform == 'xhs':
+            scraper = os.path.join(_SEEDING_DIR, 'seeding_xhs.py')
             output_file = _XHS_WORKS_FILE
+            if not os.path.isdir(os.path.join(_SEEDING_DIR, 'Spider_XHS')):
+                return fail('缺少小红书抓取依赖：未找到 tools/Spider_XHS 目录，请先部署 Spider_XHS 开源项目')
         else:
+            scraper = os.path.join(_SEEDING_DIR, 'douyin_video_scraper.py')
             output_file = _DOUYIN_WORKS_CSV
+        if not os.path.exists(scraper):
+            return fail('抓取脚本不存在：' + scraper)
         before_mtime = os.path.getmtime(output_file) if os.path.exists(output_file) else None
-        err = _seeding_launch(platform)
-        if err:
-            return fail(err)
+        log_file = open(os.path.join(_SEEDING_DIR, '_scrape_%s.log' % platform), 'w', encoding='utf-8')
+        try:
+            subprocess.Popen(
+                [_sys_scrape.executable, scraper],
+                cwd=project_root,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+        finally:
+            log_file.close()
         return success({'triggered': True, 'mtime': before_mtime}, '已触发抓取任务，正在后台执行')
-    except Exception as e:
-        return fail(str(e))
-
-
-@app.route('/api/seeding/scrape/status', methods=['GET'])
-def seeding_scrape_status():
-    """读取作品抓取进度（供前端进度条轮询）"""
-    try:
-        platform = (request.args.get('platform') or 'douyin').strip()
-        return success(_seeding_progress_read(platform))
     except Exception as e:
         return fail(str(e))
 
@@ -3665,7 +3425,7 @@ def _get_ocr_reader():
         print('[PaddleOCR] 正在加载模型...')
         _paddle_ocr = PaddleOCR(
             lang='ch',
-            use_textline_orientation=False,  # 关闭方向分类，显著提速（商品图文字基本为正方向）
+            use_textline_orientation=True,
             enable_mkldnn=False,
         )
         print('[PaddleOCR] 模型加载完成')
@@ -4531,18 +4291,10 @@ def _ps_parse_float(s):
 
 @app.route('/api/product-selection/tmall', methods=['GET'])
 def product_selection_tmall():
-    """天猫榜单：读取「天猫榜单表」，支持价格区间筛选 + 分页"""
+    """天猫榜单：读取「天猫榜单表」，支持价格区间筛选"""
     try:
         min_price = _ps_parse_float(request.args.get('minPrice', '').strip())
         max_price = _ps_parse_float(request.args.get('maxPrice', '').strip())
-        try:
-            page = max(1, int(request.args.get('page', '1') or 1))
-        except (TypeError, ValueError):
-            page = 1
-        try:
-            page_size = max(1, min(200, int(request.args.get('pageSize', '50') or 50)))
-        except (TypeError, ValueError):
-            page_size = 50
 
         conditions = []
         params = []
@@ -4555,16 +4307,12 @@ def product_selection_tmall():
 
         where_clause = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
 
-        total_rows = db_execute(f"SELECT COUNT(*) AS total FROM 天猫榜单表 {where_clause}", params)
-        total = int(total_rows[0]['total']) if total_rows else 0
-
         rows = db_execute(f"""
             SELECT 类别名, 排行榜名, 产品名, 价格, 日期
             FROM 天猫榜单表
             {where_clause}
             ORDER BY 日期 DESC, 价格 ASC
-            LIMIT %s OFFSET %s
-        """, params + [page_size, (page - 1) * page_size])
+        """, params)
         _serialize_rows(rows)
 
         # 返回全表价格区间，供前端展示 / 占位提示
@@ -4573,7 +4321,7 @@ def product_selection_tmall():
         if stats and stats[0].get('min_p') is not None:
             price_range = {'min': float(stats[0]['min_p']), 'max': float(stats[0]['max_p'])}
 
-        return success({'items': rows, 'total': total, 'page': page, 'pageSize': page_size, 'priceRange': price_range})
+        return success({'items': rows, 'total': len(rows), 'priceRange': price_range})
     except Exception as e:
         traceback.print_exc()
         return fail(str(e))
@@ -4624,6 +4372,18 @@ def product_selection_douyin():
         return fail(str(e))
 
 
+@app.route('/api/product-selection/douyin/raw-dates', methods=['GET'])
+def product_selection_douyin_raw_dates():
+    """返回「抖音热搜榜单表」（原始热搜）的日期列表，供筛选按钮选择要筛选的日期"""
+    try:
+        date_rows = db_execute("SELECT DISTINCT 日期 FROM 抖音热搜榜单表 ORDER BY 日期 DESC")
+        dates = [str(r['日期']) for r in date_rows]
+        return success({'dates': dates})
+    except Exception as e:
+        traceback.print_exc()
+        return fail(str(e))
+
+
 def _as_parse_num(s):
     """解析爱搜人次字符串（如 '8081.47w'、'平均:10.76w'）为数值，仅用于排序"""
     if s is None:
@@ -4645,9 +4405,8 @@ def _as_parse_num(s):
 
 @app.route('/api/product-selection/aisou', methods=['GET'])
 def product_selection_aisou():
-    """爱搜数据：读取「爱搜数据表」（智能体抓取写入），支持日期选择 + 词名称模糊搜索"""
+    """爱搜数据：读取「爱搜数据表」，支持日期选择 + 搜索词关键词模糊搜索"""
     try:
-        _ensure_aisou_columns()
         selected_date = request.args.get('date', '').strip()
         keyword = request.args.get('keyword', '').strip()
 
@@ -4660,20 +4419,30 @@ def product_selection_aisou():
             conditions.append('日期 = %s')
             params.append(selected_date)
         elif not selected_date and dates:
+            # 未指定日期时默认展示最新一天
             selected_date = dates[0]
             conditions.append('日期 = %s')
             params.append(selected_date)
         if keyword:
-            conditions.append('(词名称 LIKE %s OR 来源词 LIKE %s)')
-            params.extend(['%' + keyword + '%', '%' + keyword + '%'])
+            conditions.append('搜索词关键词 LIKE %s')
+            params.append('%' + keyword + '%')
 
         where_clause = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
 
-        rows = list(db_execute(f"""
-            SELECT 日期, 来源词, 词类型, 词名称, 月覆盖人次, 七日搜索人次
+        rows = db_execute(f"""
+            SELECT 日期, 搜索词关键词, 搜索词月覆盖人次, 搜索词七日搜索人次,
+                   电商词关键词, 电商词月覆盖人次, 电商词七日搜索人次
             FROM 爱搜数据表
             {where_clause}
-        """, params))
+        """, params)
+        # 注意：fetchall() 在 0 行时返回空元组，包一层 list 统一成 list
+        rows = list(rows)
+
+        # 链式稳定排序（由次要键到主要键）：日期倒序 → 搜索词热度降序 → 搜索词名 → 电商词热度降序，
+        # 使同一搜索词下的电商词连续排列，便于查看
+        rows.sort(key=lambda r: -_as_parse_num(r['电商词月覆盖人次']))
+        rows.sort(key=lambda r: r['搜索词关键词'])
+        rows.sort(key=lambda r: -_as_parse_num(r['搜索词月覆盖人次']))
         rows.sort(key=lambda r: str(r['日期']), reverse=True)
         _serialize_rows(rows)
 
@@ -4819,15 +4588,12 @@ def _market_status(platform):
             info['keyword'] = p.get('keyword', '')
             info['done'] = int(p.get('done', 0) or 0)
             info['total'] = int(p.get('total', 50) or 50)
-            info['error'] = p.get('error', '')
         except Exception:
             pass
     info['progress'] = min(100, round(info['done'] / info['total'] * 100)) if info['total'] else 0
     if info['status'] == 'done':
         info['progress'] = 100
         info['finished'] = True
-    elif info['status'] == 'error':
-        info['finished'] = True  # 失败也视为终态，前端据此停止轮询并提示
     return info
 
 
@@ -4966,200 +4732,394 @@ def product_selection_1688_market_status():
         return fail(str(e))
 
 
-# ======================== 选品助手智能体 ========================
-# 流程：
-#   每日 8 点自动抓取抖音热点宝（搜索总榜 + 热度飙升榜，近一天，去重，不落库）
-#   → 品类筛选写入「抖音热搜品类表」→ 前端抖音热搜榜自动展示。
-#   用户点击「当日热搜选品分析」→ 输入价格区间 → 智能体对比天猫榜单价格与市场客单价
-#   → 返回约 50 个具体商品卡片 → 用户勾选 10 个 → 智能体过爱搜 + 天猫销量前100
-#   → 输出 3 可用品 + 9 裂变品 + 300 字当日建议 → 存档可回看。
-
-_DOUYIN_HOT_COOKIE_FILE = os.path.join(_SEEDING_DIR, 'douyin_hot_cookie.txt')
-_DOUYIN_HOT_FILE = os.path.join(_SEEDING_DIR, '_douyin_hot.json')
-_DOUYIN_HOT_PROGRESS = os.path.join(_SEEDING_DIR, '_douyin_hot_progress.json')
-_DOUYIN_HOT_SCRAPER = os.path.join(_SEEDING_DIR, 'douyin_hot_scraper.py')
-
-_AISOU_LOCALSTORAGE_FILE = os.path.join(_SEEDING_DIR, 'aisou_localstorage.json')
-_AISOU_INPUT_FILE = os.path.join(_SEEDING_DIR, '_aisou_input.json')
-_AISOU_OUTPUT_FILE = os.path.join(_SEEDING_DIR, '_aisou_output.json')
-_AISOU_SCRAPER = os.path.join(_SEEDING_DIR, 'aisou_scraper.py')
-
-_TMALL_BATCH_INPUT = os.path.join(_SEEDING_DIR, '_tmall_input.json')
-_TMALL_BATCH_OUTPUT = os.path.join(_SEEDING_DIR, '_tmall_output.json')
-_TMALL_BATCH_SCRAPER = os.path.join(_SEEDING_DIR, 'tmall_batch_scraper.py')
-
-_SELECTION_JOB_FILE = os.path.join(_SEEDING_DIR, '_selection_job.json')
-_SELECTION_RESULT_FILE = os.path.join(_SEEDING_DIR, '_selection_result.json')
+# ======================== 选品助手智能体（RAG） ========================
+# 知识库：抖音热搜品类表（筛选后的电商热搜）→ 天猫榜单表 → 爱搜数据表。
+# 流程：从抖音已筛品类表取品类/热搜词 → 用词在天猫榜单与爱搜表中检索对应数据
+# → 拼成上下文交给 DeepSeek 生成「分析文字 + 推荐卡片」。
 
 
-# ======================== 表结构保障 ========================
-
-def _ensure_aisou_columns():
-    """确保「爱搜数据表」具备智能体写入所需的列，并让旧字段（非主键）允许 NULL，
-    否则只写新字段会因旧字段 NOT NULL 无默认值而报错。"""
-    info = {r['Field']: r for r in db_execute("SHOW COLUMNS FROM `爱搜数据表`")}
-    specs = {
-        '来源词': "VARCHAR(255) NULL",
-        '词类型': "VARCHAR(20) NULL",
-        '词名称': "VARCHAR(255) NULL",
-        '月覆盖人次': "VARCHAR(50) NULL",
-        '七日搜索人次': "VARCHAR(50) NULL",
-    }
-    for col, ddl in specs.items():
-        if col not in info:
-            db_execute(f"ALTER TABLE `爱搜数据表` ADD COLUMN `{col}` {ddl}", fetch=False)
-    # 旧字段（非主键）改成允许 NULL，避免只插新字段时报 1364
-    for col in ('搜索词关键词', '搜索词月覆盖人次', '搜索词七日搜索人次',
-                '电商词月覆盖人次', '电商词七日搜索人次'):
-        r = info.get(col)
-        if r and r.get('Null') == 'NO' and r.get('Key') != 'PRI':
-            db_execute(f"ALTER TABLE `爱搜数据表` MODIFY COLUMN `{col}` VARCHAR(255) NULL", fetch=False)
-
-
-def _ensure_selection_record_table():
-    """选品记录表：每日选品最终结果存档，供前端「历史选品记录」回看"""
-    db_execute(
-        "CREATE TABLE IF NOT EXISTS `选品记录表` ("
-        "id INT AUTO_INCREMENT PRIMARY KEY, "
-        "`日期` DATE NOT NULL, "
-        "`价格区间` VARCHAR(50) NULL, "
-        "`结果` MEDIUMTEXT NOT NULL, "
-        "`创建时间` DATETIME DEFAULT CURRENT_TIMESTAMP"
-        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4", fetch=False)
+def _ps_agent_parse_cards(raw):
+    """从 DeepSeek 返回文本中提取推荐卡片 JSON 数组；失败返回 []"""
+    if not raw:
+        return []
+    s = raw.strip()
+    # 去掉 markdown 代码围栏
+    s = re.sub(r'```(?:json)?', '', s).strip()
+    candidates = [s]
+    # 截取第一个 '[' 到最后一个 ']' 之间的内容
+    i = s.find('[')
+    j = s.rfind(']')
+    if i != -1 and j > i:
+        candidates.append(s[i:j + 1])
+    for cand in candidates:
+        try:
+            data = json.loads(cand)
+            if isinstance(data, list):
+                return [c for c in data if isinstance(c, dict)]
+            if isinstance(data, dict) and isinstance(data.get('cards'), list):
+                return [c for c in data['cards'] if isinstance(c, dict)]
+        except Exception:
+            continue
+    return []
 
 
-def _ensure_douyin_category_columns():
-    """确保「抖音热搜品类表」具备筛选结果相关列"""
-    existing = {r['Field'] for r in db_execute("SHOW COLUMNS FROM `抖音热搜品类表`")}
-    specs = {
-        '热搜名': "VARCHAR(255) NOT NULL",
-        '热搜值': "VARCHAR(255) NOT NULL",
-        '日期': "DATE NOT NULL",
-        '品类': "VARCHAR(255) NULL",
-        '是否电商': "TINYINT(1) NOT NULL DEFAULT 0",
-        '热度数值': "DECIMAL(20,2) NULL",
-    }
-    for col, ddl in specs.items():
-        if col not in existing:
-            db_execute(f"ALTER TABLE `抖音热搜品类表` ADD COLUMN `{col}` {ddl}", fetch=False)
+# 检索停用词：热搜短语中剔除这些弱语义词，避免切出大量无效关键词
+_PS_AGENT_STOP = {
+    '高级感', '2026', '新款', '爆款', '必备', '推荐', '专用', '神器', '网红',
+    '大容量', '超轻', '加厚', '防', '最', '好物', '好吃', '排行', '热门',
+    '最新', '流行', '百搭', '高端', '小众', '炸街', '大方得体', '轻奢',
+    '女装', '男装', '童装', '品牌', '官方', '旗舰', '同款',
+}
+
+_PS_AGENT_STOP_4 = {'高级感', '大方得体', '轻奢', '小众', '炸街'}
+
+
+def _ps_agent_keywords(terms, max_kw=80):
+    """把抖音热搜短语切分成检索关键词片段（优先完整词与 3 字片段，不足再补 2 字片段）。
+    返回按长度降序、去重后的关键词列表，控制数量避免 SQL 过长。"""
+    kws = []
+    seen = set()
+
+    def add(k):
+        k = k.strip()
+        if not k or k in seen:
+            return
+        seen.add(k)
+        kws.append(k)
+
+    # 先放完整热搜词（短词可直接匹配）
+    for t in sorted(terms, key=lambda x: -len(x)):
+        if len(t) <= 6:
+            add(t)
+
+    # 切分：按停用词切割，取子片段；再补 3 字、2 字滑窗
+    for t in terms:
+        # 用停用词切分短语
+        parts = [t]
+        for sw in sorted(_PS_AGENT_STOP, key=lambda x: -len(x)):
+            new_parts = []
+            for p in parts:
+                new_parts.extend(p.split(sw))
+            parts = [x for x in new_parts if x]
+        for p in parts:
+            p = p.strip()
+            if 2 <= len(p) <= 8:
+                add(p)
+            elif len(p) > 8:
+                # 长片段继续切 3 字滑窗
+                for i in range(len(p) - 2):
+                    seg = p[i:i + 3]
+                    if seg not in _PS_AGENT_STOP:
+                        add(seg)
+        # 补充 3 字滑窗
+        if len(t) >= 3:
+            for i in range(len(t) - 2):
+                seg = t[i:i + 3]
+                if seg not in _PS_AGENT_STOP:
+                    add(seg)
+
+    # 数量足够则去掉 2 字片段，减少噪音
+    result = sorted(kws, key=lambda x: -len(x))
+    if len([k for k in result if len(k) >= 3]) >= 40:
+        result = [k for k in result if len(k) >= 3]
+    return result[:max_kw]
+
+
+@app.route('/api/product-selection/agent', methods=['POST'])
+def product_selection_agent():
+    """选品助手智能体：检索三张知识库表 + DeepSeek 分析"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        question = (payload.get('question') or '').strip()
+        if not question:
+            return fail('请输入分析需求')
+
+        # ---- 1. 抖音已筛选电商热搜（知识库入口，读「抖音热搜品类表」） ----
+        dy_rows = db_execute(
+            "SELECT 热搜名, 热搜值, 品类, 日期 FROM `抖音热搜品类表` WHERE `是否电商` = 1 ORDER BY `热度数值` DESC LIMIT 200")
+        dy_rows = list(dy_rows)
+        dy_items = []
+        seen = set()
+        for r in dy_rows:
+            term = (r['热搜名'] or '').strip()
+            if not term or term in seen:
+                continue
+            seen.add(term)
+            dy_items.append({
+                'term': term,
+                'heat': r['热搜值'],
+                'category': r['品类'],
+                'date': str(r['日期']) if r['日期'] else '',
+            })
+
+        # 检索关键词：把热搜短语切分成短关键词片段（完整短语直接 LIKE 命中率太低）
+        terms = [d['term'] for d in dy_items]
+        keywords = _ps_agent_keywords(terms)
+
+        # ---- 2. 天猫榜单：按关键词匹配 产品名/类别名/排行榜名；同产品名只保留价格最低那条 ----
+        tmall = []
+        if keywords:
+            ors = []
+            params = []
+            for k in keywords:
+                like = '%' + k + '%'
+                ors.append('(产品名 LIKE %s OR 类别名 LIKE %s OR 排行榜名 LIKE %s)')
+                params.extend([like, like, like])
+            where = ' OR '.join(ors)
+            tmall_rows = db_execute(
+                f"SELECT 类别名, 排行榜名, 产品名, 价格, 日期 FROM `天猫榜单表` WHERE {where} LIMIT 400",
+                params)
+            tmall_rows = list(tmall_rows)
+            # 按产品名去重，保留价格最低的一条（价格缺省视为最高，优先被替换）
+            best = {}
+            for r in tmall_rows:
+                name = r['产品名']
+                price = float(r['价格']) if r['价格'] is not None else None
+                if name not in best or (price is not None and (best[name]['价格'] is None or price < best[name]['价格'])):
+                    best[name] = {
+                        '类别名': r['类别名'], '排行榜名': r['排行榜名'], '产品名': r['产品名'],
+                        '价格': price,
+                        '日期': str(r['日期']) if r['日期'] else '',
+                    }
+            tmall = list(best.values())
+
+        # ---- 3. 爱搜数据：按关键词匹配 搜索词关键词/电商词关键词 ----
+        aisou = []
+        aisou_seen = set()
+        if keywords:
+            ors = []
+            params = []
+            for k in keywords:
+                like = '%' + k + '%'
+                ors.append('(搜索词关键词 LIKE %s OR 电商词关键词 LIKE %s)')
+                params.extend([like, like])
+            where = ' OR '.join(ors)
+            aisou_rows = db_execute(
+                f"SELECT 日期, 搜索词关键词, 搜索词月覆盖人次, 搜索词七日搜索人次, "
+                f"电商词关键词, 电商词月覆盖人次, 电商词七日搜索人次 FROM `爱搜数据表` WHERE {where} LIMIT 200",
+                params)
+            aisou_rows = list(aisou_rows)
+            for r in aisou_rows:
+                key = (r['搜索词关键词'], r['电商词关键词'], str(r['日期']))
+                if key in aisou_seen:
+                    continue
+                aisou_seen.add(key)
+                aisou.append({
+                    '日期': str(r['日期']) if r['日期'] else '',
+                    '搜索词关键词': r['搜索词关键词'],
+                    '搜索词月覆盖人次': r['搜索词月覆盖人次'],
+                    '搜索词七日搜索人次': r['搜索词七日搜索人次'],
+                    '电商词关键词': r['电商词关键词'],
+                    '电商词月覆盖人次': r['电商词月覆盖人次'],
+                    '电商词七日搜索人次': r['电商词七日搜索人次'],
+                })
+
+        # ---- 3.5 淘宝天猫市场抓取数据（用户手动触发抓取后封存的变量，未抓取时为空） ----
+        tb_market = _ps_load_taobao_market()
+        # ---- 3.6 抖音市场抓取数据（用户手动触发抓取后封存的变量，未抓取时为空） ----
+        dy_market = _ps_load_douyin_market()
+        # ---- 3.7 1688 市场抓取数据（用户手动触发抓取后封存的变量，未抓取时为空） ----
+        b2b_market = _ps_load_1688_market()
+
+        # ---- 4. 拼接上下文 → DeepSeek ----
+        dy_dates = sorted({d['date'] for d in dy_items if d['date']}, reverse=True)
+        date_label = dy_dates[0] if dy_dates else '（无）'
+
+        context = {
+            '日期': date_label,
+            '抖音电商热搜榜单': dy_items[:80],
+            '天猫榜单匹配': tmall[:80],
+            '爱搜数据匹配': aisou[:60],
+            '淘宝天猫市场抓取数据': tb_market,
+            '抖音市场抓取数据': dy_market,
+            '1688市场抓取数据': b2b_market,
+        }
+        ctx_json = json.dumps(context, ensure_ascii=False)
+
+        sys_p = (
+            '# 角色定义\n'
+            '你是"选品助手智能体"，一名专业的电商选品分析师，服务于同时经营抖音和天猫店铺的商家。'
+            '你只基于给定的知识库数据做分析，绝不编造。\n\n'
+            '# 数据来源与结构\n'
+            '你会收到一份结构化的知识库检索结果（JSON），包含以下几部分，它们通过同一批电商关键词串联：\n\n'
+            '1. 抖音电商热搜（数组，字段：term热搜词、heat热搜值、category品类、date日期）\n'
+            '   - 含义：反映需求侧趋势与热度\n'
+            '   - 注意：本数据无"排名"字段，热度高低仅用 heat（热搜值）判断，值越大热度越高\n'
+            '   - 注意：若某词在多条数据中出现（当前多为单日），仅作为热度参考，不必强判"持续热度"\n\n'
+            '2. 爱搜搜索数据（数组，字段：日期、搜索词关键词、搜索词月覆盖人次、搜索词七日搜索人次、电商词关键词、电商词月覆盖人次、电商词七日搜索人次）\n'
+            '   - 含义：反映用户主动搜索该词的真实购买意图强度\n'
+            '   - 核心指标是"搜索词月覆盖人次"（如 4161.77w），越大购买意图越真实\n'
+            '   - 注意：爱搜数据无排名信息，禁止在输出中编造排名\n\n'
+            '3. 天猫榜单匹配数据（数组，字段：类别名、排行榜名、产品名、价格、日期）\n'
+            '   - 含义：反映该词对应商品在天猫的供给侧竞争格局\n'
+            '   - 注意：同一"产品名"可能出现在多个排行榜中，请按产品名去重后再统计\n\n'
+            '4. 淘宝天猫市场抓取数据（对象，字段：keyword 抓取关键词、products 数组；每个元素含 rank排名、title标题、price价格、sales销量、image封面图、shop店铺名）\n'
+            '   - 含义：用户手动触发抓取的、该关键词在淘宝「销量」排序前50的真实商品供给数据（实时变量）\n'
+            '   - 注意：仅当用户明确询问该关键词或"淘宝/天猫市场销量"时才引用；字段为 null 表示该项抓取失败；未抓取时整项为 null\n\n'
+            '5. 抖音市场抓取数据（对象，字段：keyword 抓取关键词、products 数组；每个元素含 rank排名、title标题、price价格、sales销量、image封面图、shop店铺名）\n'
+            '   - 含义：用户手动触发抓取的、该关键词在抖音商城「销量」排序前50的真实商品供给数据（实时变量）\n'
+            '   - 注意：仅当用户明确询问该关键词或"抖音市场销量"时才引用；字段为 null 表示该项抓取失败；未抓取时整项为 null\n\n'
+            '6. 1688市场抓取数据（对象，字段：keyword 抓取关键词、products 数组；每个元素含 rank排名、title标题、price价格、image封面图、shop店铺名、link商品链接）\n'
+            '   - 含义：用户手动触发抓取的、该关键词在1688「综合」排序前10页的真实批发供给数据（实时变量，无销量字段）\n'
+            '   - 注意：仅当用户明确询问该关键词或"1688市场/批发/货源"时才引用；字段为 null 表示该项抓取失败；未抓取时整项为 null\n\n'
+            '# 数据匹配规则\n'
+            '- 三张表通过同一电商关键词串联，不需要做品类映射\n'
+            '- 天猫匹配方式：电商关键词出现在"排行榜名"或"产品名"中即视为匹配\n'
+            '- 若某关键词在三张表中只命中部分数据源，正常分析，并在结论中说明哪部分数据缺失\n'
+            '- 若用户询问的产品/关键词完全不在知识库中（三张表均无匹配），不要拒绝回答或只说"无数据"：\n'
+            '  改为基于你的电商市场分析能力，给出该产品的市场选品分析（需求趋势、目标人群、竞争格局判断、切入机会、裂变产品等），\n'
+            '  并在分析开头明确标注「该产品不在当前知识库，以下为基于市场认知的分析，建议后续抓取数据验证」\n\n'
+            '# 分析框架（严格按此顺序执行）\n\n'
+            '## 第一步：热度评估\n'
+            '基于抖音电商热搜数据判断每个词的热度：\n'
+            '- 热搜值越高 = 曝光量越大、热度越高\n'
+            '- 同义词簇可合并看热度\n\n'
+            '## 第二步：搜索意图验证\n'
+            '基于爱搜数据判断用户真实购买意图：\n'
+            '- 搜索词月覆盖人次越高 = 主动搜索购买的用户越多 = 需求越真实\n'
+            '- 同一词同时出现在抖音热搜和爱搜中 = 强信号（有曝光 + 有购买意图）\n'
+            '- 仅在抖音热搜出现而爱搜无数据 = 有热度但购买意图待验证，标注提醒\n\n'
+            '## 第三步：竞争格局分析\n'
+            '基于天猫匹配数据分析供给侧：\n'
+            '- 匹配到的产品数量越多 = 该词对应品类竞争越激烈\n'
+            '- 从原始"价格"字段统计价格分布（最低价、最高价、大致价位段），只引用原始价格，不做任何计算或估算\n'
+            '- 指出价格空档：哪个价位段几乎没有产品覆盖\n'
+            '- 匹配到的排行榜数量越多 = 该品类在天猫越成熟\n\n'
+            '## 第四步：综合排序\n'
+            '对所有关键词按以下逻辑排序：\n'
+            '1. 三张表全部命中 > 命中两张 > 仅命中一张\n'
+            '2. 抖音热搜值高 + 爱搜月覆盖人次高 = 优先\n'
+            '3. 天猫匹配产品数少（竞争低）+ 有价格空档 = 加分\n'
+            '4. 天猫匹配产品数多但价格分布分散 = 仍有切入机会\n\n'
+            '## 第五步：裂变产品衍生\n'
+            '针对每个值得关注的主品/主关键词，衍生出 1~2 个靠谱的裂变产品，衍生方向包括：\n'
+            '- 配套耗材：如「拼豆」→「拼豆板」「拼豆镊子」「拼豆图纸」\n'
+            '- 工具配件：如「空气炸锅」→「空气炸锅专用锡纸/纸托」\n'
+            '- 场景延伸：如「露营车」→「露营桌板」「车顶行李架」\n'
+            '- 细分人群/功能：如「内衣」→「聚拢防下垂内衣」「运动无痕内衣」\n'
+            '裂变规则：\n'
+            '- 不依赖知识库已有数据，由你基于电商市场分析能力独立判断裂变方向（从品类特性、使用场景、配套关系、耗材复购、人群细分等角度）\n'
+            '- 裂变品须是市场上已被验证、消费者普遍认可的品类或形态，不要编造虚构的规格或不存在的新概念\n'
+            '- 每个主品尽量给出 1~2 个靠谱裂变品，宁缺毋滥\n\n'
+            '# 输出格式（严格遵守）\n\n'
+            '## 第一部分：分析结论\n'
+            '标题用"## 分析结论"，中文自然语言，分要点，150~300字，包含：\n'
+            '- 当前最值得关注的选品方向（1~2句）\n'
+            '- 竞争格局与价格机会判断（1~2句）\n'
+            '- 具体行动建议（1~2句）\n'
+            '- 若某数据源缺失，明确说明"该词在XX平台暂无匹配数据"\n\n'
+            '## 第二部分：推荐卡片\n'
+            '紧接一个 JSON 数组（用 ```json 代码块包裹），每个元素字段如下：\n'
+            '{"type":"tmall"|"aisou"|"tbmarket"|"dymarket"|"b2b","title":"卡片标题","subtitle":"说明","metric":"关键数值","tags":"逗号分隔标签","reason":"一句话推荐理由","derived":"裂变产品，逗号分隔"}\n\n'
+            '卡片生成规则：\n'
+            '- tmall 卡片必须来自天猫榜单匹配数据：title=产品名，subtitle=类别名+排行榜名，metric=价格(带¥)，type="tmall"\n'
+            '- aisou 卡片必须来自爱搜数据：title=搜索词关键词，subtitle=电商词关键词，metric=月覆盖人次(带单位)，type="aisou"\n'
+            '- tbmarket 卡片必须来自淘宝天猫市场抓取数据：title=标题，subtitle=店铺名+销量，metric=价格(带¥)，type="tbmarket"\n'
+            '- dymarket 卡片必须来自抖音市场抓取数据：title=标题，subtitle=店铺名+销量，metric=价格(带¥)，type="dymarket"\n'
+            '- b2b 卡片必须来自1688市场抓取数据：title=标题，subtitle=店铺名，metric=价格(带¥)，type="b2b"\n'
+            '- 只挑数据中真实存在、最有选品价值的 3~8 条\n'
+            '- 各类卡片尽量均衡；若某类无匹配数据则只输出另一类，绝不编造\n'
+            '- 同一产品名只出现一次（去重）\n'
+            '- tags 须包含关键标签，如：蓝海/红海、趋势上升/平稳、价格空档等\n'
+            '- derived 列出该主品/关键词的裂变产品（1~2 个，逗号分隔，中文），没有靠谱裂变方向可留空字符串\n\n'
+            '## 第三部分：后续引导\n'
+            '在 JSON 代码块之后，用一句话引导用户下一步操作，例如：\n'
+            '- "想看这个词在天猫的完整价格带分布，可以继续问我"\n'
+            '- "需要我对比这几个方向的竞争情况吗？"\n\n'
+            '# 硬性约束\n'
+            '- 知识库命中的数据必须真实引用，严禁编造不存在的商品、数字或关键词\n'
+            '- 裂变产品（derived）基于市场分析独立产出，不属于知识库数据，但仍是市场上真实存在的品类，不得虚构\n'
+            '- 知识库外的产品分析属市场认知输出：可给出合理的市场判断与品类级建议，但必须明确标注，且不得虚构具体销量/价格等硬数据\n'
+            '- 若某数据源无匹配结果，在分析结论中明确说明"该词在XX平台暂无匹配数据"\n'
+            '- 涉及具体品牌名时仅作为竞争格局参考展示，不做品牌推荐或贬低\n'
+            '- 价格数据直接引用原始数据，不做计算或估算\n'
+            '- 爱搜数据中不存在排名信息，不要在输出中编造排名'
+        )
+        user_msg = f'知识库检索结果（JSON）：\n{ctx_json}\n\n用户需求：{question}\n\n请按要求输出分析结论和推荐卡片。'
+
+        raw = call_deepseek_api(sys_p, user_msg, temperature=0.4, max_tokens=4096,
+                                api_key=DEEPSEEK_SELECTION_API_KEY)
+
+        # 分离分析文字与卡片 JSON
+        cards = _ps_agent_parse_cards(raw)
+        # 分析文字：去掉 JSON 数组块和代码围栏，保留「分析结论」与「后续引导」两部分正文
+        analysis = raw or ''
+        if raw:
+            # 去掉 ```json ... ``` 代码围栏（连同内部的 JSON 数组）
+            analysis = re.sub(r'```json\s*\[.*?\]\s*```', '', analysis, flags=re.DOTALL)
+            # 去掉残留的裸 JSON 数组
+            analysis = re.sub(r'\[\s*\{.*?\}\s*(?:,\s*\{.*?\}\s*)*\]', '', analysis, flags=re.DOTALL)
+            # 去掉残留的 markdown 围栏
+            analysis = re.sub(r'```[a-zA-Z]*', '', analysis)
+            analysis = analysis.strip()
+
+        return success({
+            'analysis': analysis,
+            'cards': cards,
+            'meta': {
+                'date': date_label,
+                'douyin_count': len(dy_items),
+                'tmall_count': len(tmall),
+                'aisou_count': len(aisou),
+                'tbmarket_count': len(tb_market.get('products', [])) if tb_market else 0,
+                'dymarket_count': len(dy_market.get('products', [])) if dy_market else 0,
+                'b2b_count': len(b2b_market.get('products', [])) if b2b_market else 0,
+            },
+            'raw_available': bool(raw),
+        }, 'ok')
+    except Exception as e:
+        traceback.print_exc()
+        return fail(str(e))
 
 
 # ======================== 抖音热搜 → 电商热搜筛选 ========================
-# 筛选优先级：边界拦截 → 精确黑名单 → 子串黑名单 → 正向品类关键词 → 兜底丢弃
-MAX_HOT_WORD_LEN = 20
+# 筛选逻辑与「抖音热搜词筛选 skill」保持一致：命中品类关键词即保留，
+# 命中黑名单 / 超长 / 网红非商品则删除，其余（未命中品类）视为非电商。
 
-_BLACKLIST_EXACT = {
-    "声明", "后果", "吗", "怎么样", "什么意思", "是真的吗",
-    "官方回应", "最新进展", "最新消息", "网友热议",
-}
+# 精确匹配黑名单：整个热搜词完全等于才删除（避免短词误杀）
+_DY_BLACKLIST_EXACT = {"声明", "后果", "吗"}
 
-_BLACKLIST_SUBSTR = [
+# 子串匹配黑名单：热搜词中包含即删除
+_DY_BLACKLIST_SUBSTR = [
     "明星", "电视剧", "综艺", "电影", "短剧", "剧集", "主演",
     "代言人", "代言", "演唱会", "选秀", "爱豆", "追星", "恋情",
-    "离婚", "绯闻", "番剧", "八卦", "塌房", "出轨",
-    "游戏", "王者荣耀", "手游", "网游", "端游", "原神",
-    "团购", "拼团", "外卖", "速运", "代驾", "酒店",
-    "附近美食", "美团来电", "京东健康",
+    "离婚", "绯闻", "番剧",
+    "游戏", "王者荣耀", "手游", "网游", "端游",
+    "团购", "拼团", "主播", "股票", "股价", "酒店", "事件",
+    "是什么意思", "仅退款", "人民锐评",
     "金价", "黄金价", "黄金价格", "今日黄金", "黄金走势",
     "黄金今日价", "黄金大盘价", "黄金多少钱", "5斤黄金",
     "大盘价", "黄金鸟窝", "黄金大盘", "黄金回收",
-    "股票", "股价", "基金", "理财", "涨幅",
     "华为", "小米", "苹果", "oppo", "vivo", "iphone",
-    "特斯拉", "比亚迪", "奔驰", "宝马",
-    "救援", "失火", "事件", "通报", "警方", "事故",
-    "人民锐评", "仅退款",
-    "的做法", "是什么意思", "如何评价", "怎么看待",
-    "主播", "广场舞", "音乐种草", "沙鹰", "donk",
-    "寡人", "放冰箱", "坦克", "女扮男装", "鞋厂", "钟丽缇",
+    "救援", "搭电", "广场舞", "音乐种草", "沙鹰", "donk",
+    "寡人", "放冰箱", "坦克", "女扮男装", "外卖", "速运",
+    "代驾", "京东健康", "鞋厂", "失火", "附近美食", "美团来电",
+    "钟丽缇", "的做法",
 ]
 
-_CATS = {
-    "服饰鞋包": [
-        "衣服", "服装", "服饰", "女装", "男装", "童装", "裤子",
-        "裙子", "外套", "卫衣", "t恤", "衬衫", "鞋", "运动鞋",
-        "凉鞋", "靴子", "包包", "背包", "帽子", "围巾", "内衣",
-        "袜子", "风衣", "羽绒服", "棉服", "西装", "西装裤",
-        "牛仔裤", "阔腿裤", "打底裤", "半身裙", "连衣裙",
-        "拖鞋", "帆布鞋", "皮鞋", "靴子", "雪地靴",
-        "行李箱", "钱包", "腰带", "墨镜", "手套",
-    ],
-    "食品饮料": [
-        "食品", "饮料", "咖啡", "水果", "坚果", "辣条",
-        "巧克力", "饼干", "方便面", "螺蛳粉", "自热",
-        "白酒", "啤酒", "红酒", "葡萄酒", "喝酒", "酒馆",
-        "茶叶", "大米", "糖", "饮品", "小吃",
-        "牛奶", "酸奶", "奶粉", "蜂蜜", "麦片",
-        "蛋糕", "面包", "月饼", "粽子", "汤圆",
-        "辣酱", "火锅底料", "调味料", "橄榄油",
-    ],
-    "美妆个护": [
-        "口红", "粉底", "眉笔", "眼影", "腮红", "遮瑕",
-        "防晒", "面膜", "精华", "水乳", "面霜", "洗面奶",
-        "洗发水", "护发素", "沐浴露", "牙膏", "香水",
-        "美甲", "化妆", "护肤", "美妆", "卸妆",
-        "防晒霜", "隔离霜", "散粉", "定妆",
-    ],
-    "家电家居": [
-        "家电", "冰箱", "洗衣机", "空调", "电视机", "电视柜",
-        "电视盒", "扫地机器人", "空气净化", "加湿", "电饭煲",
-        "空气炸锅", "炸锅", "微波炉", "净水", "热水器",
-        "家具", "沙发", "床", "床垫", "窗帘", "收纳",
-        "灯具", "家居", "四件套", "被子", "枕头",
-        "吹风机", "电动牙刷", "吸尘器", "挂烫机",
-        "置物架", "衣架", "垃圾桶", "保鲜膜",
-    ],
-    "母婴玩具": [
-        "母婴", "婴幼儿", "纸尿裤", "尿不湿", "玩具",
-        "童车", "辅食", "孕婴", "拼豆", "拼图", "积木",
-        "乐高", "手工", "diy", "粘土", "彩泥", "橡皮泥",
-        "串珠", "钻石画", "盲盒", "手办",
-        "婴儿车", "安全座椅", "学步鞋", "儿童餐",
-        "奶瓶", "安抚奶嘴", "温奶器", "吸奶器",
-    ],
-    "数码配件": [
-        "耳机", "充电宝", "数据线", "手机壳", "贴膜",
-        "键盘", "鼠标", "音箱", "麦克风", "摄像头",
-        "平板", "笔记本", "显示器", "路由器",
-    ],
-    "运动户外": [
-        "瑜伽垫", "瑜伽", "跑步", "健身", "哑铃",
-        "跳绳", "拉力器", "泳衣", "泳镜", "登山",
-        "帐篷", "露营", "钓鱼", "自行车", "骑行",
-        "滑板", "轮滑", "羽毛球", "乒乓球",
-    ],
-    "汽车用品": [
-        "脚垫", "座套", "坐垫", "后备箱垫", "车衣",
-        "车载", "方向盘套", "行车记录仪", "车膜",
-        "机油", "汽车", "雨刮器", "车灯",
-    ],
-    "健康保健": [
-        "保健品", "维生素", "瘦身", "体检", "牙齿",
-        "蛋白粉", "益生菌", "鱼油", "钙片",
-        "血压计", "体温计", "按摩仪", "泡脚桶",
-    ],
-    "黄金珠宝": [
-        "金店", "珠宝", "钻石", "翡翠", "银饰",
-        "项链", "戒指", "手镯", "耳钉", "耳环",
-        "金饰", "铂金", "水晶", "珍珠",
-    ],
-    "宠物": [
-        "猫粮", "狗粮", "修狗", "宠物用品", "撸猫", "吸猫",
-        "猫砂", "猫窝", "狗窝", "宠物", "猫罐头",
-        "猫条", "冻干", "驱虫",
-    ],
-    "文具办公": [
-        "笔记本", "中性笔", "钢笔", "书包", "文具",
-        "打印纸", "文件夹", "便签", "手账", "胶带",
-    ],
-    "厨房用品": [
-        "锅", "炒锅", "砂锅", "刀具", "砧板",
-        "保鲜盒", "饭盒", "水杯", "保温杯", "水壶",
-    ],
+# 正向关键词：命中即保留
+_DY_CATS = {
+    "服饰鞋包": ["衣服", "服装", "服饰", "女装", "男装", "童装", "裤子",
+                "裙子", "外套", "卫衣", "t恤", "衬衫", "鞋", "运动鞋",
+                "凉鞋", "靴子", "包包", "背包", "帽子", "围巾", "内衣", "袜子"],
+    "食品饮料": ["食品", "饮料", "咖啡", "水果", "坚果",
+                "辣条", "巧克力", "饼干", "方便面", "螺蛳粉", "自热",
+                "白酒", "啤酒", "红酒", "葡萄酒", "喝酒", "酒馆", "茶叶",
+                "大米", "糖", "饮品", "小吃", "美食"],
+    "家电家居": ["家电", "冰箱", "洗衣机", "空调", "电视机", "电视柜",
+                "电视盒", "扫地机器人", "空气净化", "加湿", "电饭煲",
+                "空气炸锅", "炸锅", "微波炉", "净水", "热水器", "家具",
+                "沙发", "床", "床垫", "窗帘", "收纳", "灯具", "家居"],
+    "母婴玩具": ["母婴", "婴幼儿", "奶粉", "纸尿裤", "尿不湿", "玩具",
+                "童车", "辅食", "孕婴", "拼豆", "拼图", "积木", "乐高",
+                "手工", "diy", "粘土", "彩泥", "橡皮泥", "串珠", "钻石画", "盲盒", "手办"],
+    "汽车用品": ["脚垫", "座套", "坐垫", "后备箱垫", "车衣", "车载",
+                "方向盘", "行车记录仪", "车膜", "机油", "汽车"],
+    "健康保健": ["保健品", "维生素", "瘦身", "瑜伽", "体检", "牙齿"],
+    "黄金珠宝": ["黄金", "金店", "珠宝", "钻石", "翡翠", "银饰", "项链",
+                "戒指", "手镯"],
+    "宠物": ["猫粮", "狗粮", "修狗", "宠物用品", "撸猫", "吸猫"],
 }
-
-_ALL_CAT_KEYWORDS = set()
-for _kws in _CATS.values():
-    _ALL_CAT_KEYWORDS.update(_kws)
 
 
 def _dy_parse_heat(s):
@@ -5179,6 +5139,7 @@ def _dy_parse_heat(s):
 
 
 def _dy_build_kw_index(cats):
+    """预构建关键词索引：{lower_kw: [cat_name, ...]}"""
     index = {}
     for cat_name, kws in cats.items():
         for kw in kws:
@@ -5187,6 +5148,7 @@ def _dy_build_kw_index(cats):
 
 
 def _dy_match_categories(term_lower, kw_index):
+    """返回该词命中的所有类别列表"""
     hit_cats = set()
     for kw_lower, cat_names in kw_index.items():
         if kw_lower in term_lower:
@@ -5194,654 +5156,236 @@ def _dy_match_categories(term_lower, kw_index):
     return sorted(hit_cats)
 
 
-def is_ecommerce_hot(word):
-    """判断热搜词是否电商相关，返回 (是否保留, 原因, 品类)"""
-    if not word or not isinstance(word, str):
-        return False, "空值或非字符串", None
-    word = word.strip()
-    if not word:
-        return False, "去除空白后为空", None
-    if len(word) > MAX_HOT_WORD_LEN:
-        return False, "超长", None
-    if word.isdigit() or all(not c.isalnum() for c in word):
-        return False, "纯数字或纯符号", None
-    if word in _BLACKLIST_EXACT:
-        return False, "命中精确黑名单", None
-    word_lower = word.lower()
-    for bw in _BLACKLIST_SUBSTR:
-        if bw in word_lower:
-            return False, "命中子串黑名单", None
-    for cat_name, keywords in _CATS.items():
-        for kw in keywords:
-            if kw in word_lower:
-                return True, "命中品类", cat_name
-    return False, "未命中品类", None
+def _dy_split_categories(cat_str):
+    """把品类串（如 '食品饮料/健康保健'）拆成原子品类集合，兼容 / 逗号 顿号分隔"""
+    if not cat_str:
+        return set()
+    return {c for c in re.split(r'[/,，、]', str(cat_str)) if c}
 
 
-# ======================== 通用小工具 ========================
+def _dy_prev_day_categories(target_date):
+    """返回「抖音热搜品类表」中 target_date 之前最近一天已出现的原子品类集合。
 
-def _run_py_script(script_path, timeout=1200):
-    """同步运行一个 Python 脚本（用于爬虫），成功返回 True"""
-    import sys as _sys
-    try:
-        subprocess.run([_sys.executable, script_path], check=False, timeout=timeout)
-        return True
-    except Exception as e:
-        print(f'[选品] 脚本运行异常 {script_path}: {e}')
-        return False
-
-
-def _read_json(path, default=None):
-    if not os.path.exists(path):
-        return default
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return default
+    用于「前一天去重」：前一天已经出现的品类，今天筛选时自动剔除。
+    返回 (prev_date, prev_cats)；没有更早日期时返回 (None, set())。"""
+    if not target_date:
+        return None, set()
+    rows = db_execute(
+        "SELECT MAX(`日期`) AS d FROM `抖音热搜品类表` WHERE `日期` < %s", [target_date])
+    prev_date = rows[0].get('d') if rows else None
+    if prev_date is None:
+        return None, set()
+    cats = set()
+    for r in db_execute("SELECT `品类` FROM `抖音热搜品类表` WHERE `日期` = %s", [prev_date]):
+        cats |= _dy_split_categories(r.get('品类'))
+    return str(prev_date), cats
 
 
-def _write_json(path, data):
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False)
+def _ensure_douyin_hot_columns():
+    """确保「抖音热搜榜单表」具备筛选结果相关列（品类 / 是否电商 / 热度数值）"""
+    existing = {r['Field'] for r in db_execute("SHOW COLUMNS FROM `抖音热搜榜单表`")}
+    specs = {
+        '品类': "VARCHAR(255) NULL",
+        '是否电商': "TINYINT(1) NOT NULL DEFAULT 0",
+        '热度数值': "DECIMAL(20,2) NULL",
+    }
+    for col, ddl in specs.items():
+        if col not in existing:
+            db_execute(f"ALTER TABLE `抖音热搜榜单表` ADD COLUMN `{col}` {ddl}", fetch=False)
 
 
-def _write_douyin_hot_progress(status, msg='', extra=None):
-    data = {'status': status, 'message': msg}
-    if extra:
-        data.update(extra)
-    _write_json(_DOUYIN_HOT_PROGRESS, data)
+def _ensure_douyin_category_columns():
+    """确保「抖音热搜品类表」结构与「抖音热搜榜单表」一致（热搜名/热搜值/日期/品类/是否电商/热度数值）"""
+    existing = {r['Field'] for r in db_execute("SHOW COLUMNS FROM `抖音热搜品类表`")}
+    specs = {
+        '热搜名': "VARCHAR(255) NOT NULL",
+        '热搜值': "VARCHAR(255) NOT NULL",
+        '日期': "DATE NOT NULL",
+        '品类': "VARCHAR(255) NULL",
+        '是否电商': "TINYINT(1) NOT NULL DEFAULT 0",
+        '热度数值': "DECIMAL(20,2) NULL",
+    }
+    for col, ddl in specs.items():
+        if col not in existing:
+            db_execute(f"ALTER TABLE `抖音热搜品类表` ADD COLUMN `{col}` {ddl}", fetch=False)
 
 
-# ======================== 抖音热点宝：Cookie ========================
+def _summarize_douyin_categories(matched):
+    """调用 DeepSeek 总结筛选结果中电商会涉及的品类/单品名，返回列表；失败返回 None"""
+    if not matched:
+        return []
 
-@app.route('/api/product-selection/douyin-hot/cookie', methods=['GET'])
-def ps_douyin_hot_cookie_get():
-    try:
-        cookie = ''
-        if os.path.exists(_DOUYIN_HOT_COOKIE_FILE):
-            with open(_DOUYIN_HOT_COOKIE_FILE, 'r', encoding='utf-8') as f:
-                cookie = f.read().strip()
-        return success({'cookie': cookie, 'exists': bool(cookie)})
-    except Exception as e:
-        return fail(str(e))
+    ordered = sorted(matched, key=lambda m: m.get('heat_num', 0), reverse=True)
+    groups = {}
+    for m in ordered:
+        groups.setdefault(m['categories'], []).append(m['term'])
+    sample = '\n'.join(f"{cat}：{'、'.join(terms)}" for cat, terms in groups.items())
 
+    sys_p = ('你是电商选品分析助手。请根据给定的抖音电商相关热搜词（按品类分组），'
+             '总结出其中电商会涉及的品类名或具体单品名。只输出结果，每行一个，'
+             '不要编号、不要解释、不要标点符号。')
+    user = (f'以下是筛选出的抖音电商相关热搜词（按品类分组）：\n{sample}\n\n'
+            f'请总结出电商会涉及的品类或单品名，每行输出一个。')
+    raw = call_deepseek_api(sys_p, user, temperature=0.3, max_tokens=2048)
+    if not raw:
+        return None
 
-@app.route('/api/product-selection/douyin-hot/cookie', methods=['POST'])
-def ps_douyin_hot_cookie_save():
-    try:
-        data = request.get_json(silent=True) or {}
-        cookie = (data.get('cookie') or '').strip()
-        with open(_DOUYIN_HOT_COOKIE_FILE, 'w', encoding='utf-8') as f:
-            f.write(cookie)
-        return success({'saved': True}, '抖音热点宝 Cookie 已保存')
-    except Exception as e:
-        return fail(str(e))
-
-
-# ======================== 抖音热点宝：抓取 + 自动筛选 ========================
-
-def _run_douyin_hot_filter():
-    """读取热点宝抓取结果，跑品类筛选，写入「抖音热搜品类表」（覆盖当天）"""
-    _ensure_douyin_category_columns()
-    hot = _read_json(_DOUYIN_HOT_FILE)
-    if not hot:
-        return {'total': 0, 'matched': 0, 'error': '暂无热点宝数据，请先抓取'}
-    words = hot.get('words') or []
-    date_str = (hot.get('date') or time.strftime('%Y-%m-%d')).strip()
-    kw_index = _dy_build_kw_index(_CATS)
-    matched = []
-    for w in words:
-        term = (w.get('word') or '').strip()
-        if not term:
-            continue
-        tl = term.lower()
-        if len(term) > MAX_HOT_WORD_LEN:
-            continue
-        if term in _BLACKLIST_EXACT:
-            continue
-        if any(b.lower() in tl for b in _BLACKLIST_SUBSTR):
-            continue
-        cats = _dy_match_categories(tl, kw_index)
-        if not cats:
-            continue
-        heat_raw = str(w.get('hot_value') or '')
-        matched.append({'term': term, 'heat_raw': heat_raw,
-                        'categories': '/'.join(cats), 'heat_num': _dy_parse_heat(heat_raw)})
-    db_execute("DELETE FROM `抖音热搜品类表` WHERE `日期` = %s", [date_str], fetch=False)
-    for m in matched:
-        db_execute(
-            "INSERT INTO `抖音热搜品类表` (`热搜名`, `热搜值`, `日期`, `品类`, `是否电商`, `热度数值`) "
-            "VALUES (%s, %s, %s, %s, 1, %s)",
-            [m['term'], m['heat_raw'], date_str, m['categories'], m['heat_num']], fetch=False)
-    return {'total': len(words), 'matched': len(matched), 'date': date_str}
-
-
-def _run_scrape_and_filter():
-    """抓取热点宝 → 品类筛选，写进度文件。手动触发与每日 8 点定时共用。"""
-    try:
-        _write_douyin_hot_progress('scraping', '正在抓取抖音热点宝热搜...')
-        ok = _run_py_script(_DOUYIN_HOT_SCRAPER, timeout=600)
-        if not ok:
-            _write_douyin_hot_progress('error', '热点宝抓取脚本运行失败')
-            return
-        _write_douyin_hot_progress('filtering', '正在筛选电商品类...')
-        result = _run_douyin_hot_filter()
-        _write_douyin_hot_progress('done', '抓取并筛选完成',
-                                   {'total': result.get('total'), 'matched': result.get('matched'),
-                                    'date': result.get('date')})
-    except Exception as e:
-        traceback.print_exc()
-        _write_douyin_hot_progress('error', '抓取筛选异常: ' + str(e))
-
-
-_selection_scrape_thread = None
-
-
-def _trigger_scrape_and_filter():
-    global _selection_scrape_thread
-    if _selection_scrape_thread and _selection_scrape_thread.is_alive():
-        return False
-    _selection_scrape_thread = threading.Thread(target=_run_scrape_and_filter, daemon=True,
-                                                name='douyin-hot-scrape')
-    _selection_scrape_thread.start()
-    return True
-
-
-@app.route('/api/product-selection/douyin-hot/scrape', methods=['POST'])
-def ps_douyin_hot_scrape():
-    """手动触发：抓取热点宝 + 自动筛选（后台执行）"""
-    try:
-        started = _trigger_scrape_and_filter()
-        if not started:
-            return fail('已有抓取任务在运行中')
-        return success({'triggered': True}, '已触发热点宝抓取，完成后自动筛选')
-    except Exception as e:
-        return fail(str(e))
-
-
-@app.route('/api/product-selection/douyin-hot/status', methods=['GET'])
-def ps_douyin_hot_status():
-    try:
-        return success(_read_json(_DOUYIN_HOT_PROGRESS, {'status': 'idle', 'message': ''}))
-    except Exception as e:
-        return fail(str(e))
-
-
-@app.route('/api/product-selection/douyin/filter', methods=['POST'])
-def ps_douyin_filter():
-    """对已抓取的热点宝数据重新跑一遍品类筛选（不重新抓取）"""
-    try:
-        result = _run_douyin_hot_filter()
-        return success(result, '筛选完成')
-    except Exception as e:
-        traceback.print_exc()
-        return fail(str(e))
-
-
-# ======================== 爱搜：Cookie ========================
-
-@app.route('/api/product-selection/aisou/cookie', methods=['GET'])
-def ps_aisou_cookie_get():
-    """读取爱搜登录态（localStorage JSON，核心 token）"""
-    try:
-        ls = _read_json(_AISOU_LOCALSTORAGE_FILE)
-        return success({'cookie': json.dumps(ls, ensure_ascii=False) if ls else '',
-                        'exists': bool(ls)})
-    except Exception as e:
-        return fail(str(e))
-
-
-@app.route('/api/product-selection/aisou/cookie', methods=['POST'])
-def ps_aisou_cookie_save():
-    """保存爱搜登录态：入参为 JSON.stringify(localStorage) 的输出字符串"""
-    try:
-        data = request.get_json(silent=True) or {}
-        cookie = (data.get('cookie') or '').strip()
-        try:
-            ls = json.loads(cookie)
-        except Exception:
-            return fail('请粘贴 JSON.stringify(localStorage) 的输出（登录态在 localStorage，不是 cookie）')
-        if not isinstance(ls, dict):
-            return fail('登录态格式错误，应为 JSON 对象')
-        _write_json(_AISOU_LOCALSTORAGE_FILE, ls)
-        return success({'saved': True}, '爱搜登录态已保存')
-    except Exception as e:
-        return fail(str(e))
-
-
-# ======================== 选品流程：当日热搜选品分析（第一轮 50 卡片） ========================
-
-def _ps_latest_douyin_categories():
-    """读取「抖音热搜品类表」最新一天筛选结果，返回 [{term, category, heat}]"""
-    rows = list(db_execute(
-        "SELECT 热搜名, 热搜值, 品类, 日期 FROM `抖音热搜品类表` ORDER BY `日期` DESC, `热度数值` DESC LIMIT 500"))
-    seen = set()
     items = []
-    for r in rows:
-        term = (r['热搜名'] or '').strip()
-        if not term or term in seen:
-            continue
-        seen.add(term)
-        items.append({'term': term, 'heat': r['热搜值'], 'category': r['品类'],
-                      'date': str(r['日期']) if r['日期'] else ''})
+    for line in raw.splitlines():
+        s = re.sub(r'^(?:\d+[.、)）]\s*|[-*•·]\s*)+', '', line).strip()
+        if s and s not in items:
+            items.append(s)
     return items
 
 
-def _ps_tmall_by_price_range(min_p, max_p):
-    """按价格区间读天猫榜单，返回去重产品 [{name, price, category}]"""
-    conds, params = [], []
-    if min_p is not None:
-        conds.append('价格 >= %s'); params.append(min_p)
-    if max_p is not None:
-        conds.append('价格 <= %s'); params.append(max_p)
-    where = ('WHERE ' + ' AND '.join(conds)) if conds else ''
-    rows = list(db_execute(
-        f"SELECT 类别名, 产品名, 价格 FROM `天猫榜单表` {where} LIMIT 2000", params))
-    best = {}
-    for r in rows:
-        name = r['产品名']
-        price = float(r['价格']) if r['价格'] is not None else None
-        if name not in best or (price is not None and (best[name]['price'] is None or price < best[name]['price'])):
-            best[name] = {'name': name, 'price': price, 'category': r['类别名']}
-    return list(best.values())
-
-
-def _ps_parse_json_array(raw):
-    """从 DeepSeek 返回文本提取 JSON 数组"""
-    if not raw:
-        return []
-    s = raw.strip()
-    s = re.sub(r'```(?:json)?', '', s).strip()
-    i, j = s.find('['), s.rfind(']')
-    if i == -1 or j <= i:
-        return []
+def _export_douyin_summary_excel(items, target_date, base_dir=r"Z:\抖音搜索榜"):
+    """把总结出的电商品类/单品名导出为一列 Excel。
+    成功返回文件完整路径，失败返回 None（不中断筛选主流程）。"""
     try:
-        data = json.loads(s[i:j + 1])
-        return [c for c in data if isinstance(c, dict)]
+        import openpyxl
+        from pathlib import Path
     except Exception:
-        return []
+        return None
 
-
-def _ps_agent_parse_cards(raw):
-    """从 DeepSeek 返回文本提取推荐卡片 JSON 数组（兼容 {'cards':[...]} 结构）；失败返回 []"""
-    if not raw:
-        return []
-    s = raw.strip()
-    s = re.sub(r'```(?:json)?', '', s).strip()
-    candidates = [s]
-    i, j = s.find('['), s.rfind(']')
-    if i != -1 and j > i:
-        candidates.append(s[i:j + 1])
-    for cand in candidates:
-        try:
-            data = json.loads(cand)
-            if isinstance(data, list):
-                return [c for c in data if isinstance(c, dict)]
-            if isinstance(data, dict) and isinstance(data.get('cards'), list):
-                return [c for c in data['cards'] if isinstance(c, dict)]
-        except Exception:
-            continue
-    return []
-
-
-@app.route('/api/product-selection/selection', methods=['POST'])
-def ps_selection_round1():
-    """第一轮：当日热搜选品分析，按价格区间返回约 50 个具体商品卡片"""
     try:
-        payload = request.get_json(silent=True) or {}
-        min_p = _ps_parse_float(payload.get('minPrice'))
-        max_p = _ps_parse_float(payload.get('maxPrice'))
+        date_label = (target_date or '全表').strip().replace('/', '-')
+        folder = Path(base_dir) / f"{date_label} 品类关联词"
+        folder.mkdir(parents=True, exist_ok=True)
 
-        dy_items = _ps_latest_douyin_categories()
-        tmall_items = _ps_tmall_by_price_range(min_p, max_p)
-        price_label = f"{min_p if min_p is not None else '不限'} ~ {max_p if max_p is not None else '不限'}"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "电商品类单品名"
+        ws.append(["电商品类/单品名"])
+        for it in items:
+            ws.append([it])
+        ws.column_dimensions['A'].width = 40
 
-        ctx = {
-            '日期': dy_items[0]['date'] if dy_items else '',
-            '抖音电商热搜品类': dy_items[:150],
-            '天猫榜单商品(已按价格区间过滤)': tmall_items[:300],
-            '价格区间': price_label,
-        }
-        sys_p = (
-            '你是电商选品智能体，服务同时经营抖音和天猫的商家。请基于给定数据，选出约 50 个有潜力的具体商品。\n'
-            '硬性要求：\n'
-            '1. 必须是具体单品，例如「拼豆智能板」「车载香薰」「宠物冻干」，绝不要返回「衣服」「汽车用品」这类大品类名；\n'
-            '2. 若某个抖音热搜品类过大（如「家居」），请自行裂变出具体小品（如「收纳盒」「懒人沙发」「香薰」）；\n'
-            '3. 每个商品价格区间要贴合用户给出的价格区间和市场客单价（大众能接受的价格段）；\n'
-            '4. 只基于给定数据推断，不编造具体销量数字。\n'
-            '输出一个 JSON 数组（不要任何解释文字），每项字段：\n'
-            '{"name":"商品名","category":"品类","price_range":"如 ¥39-89","reason":"一句话选品理由"}\n'
-            '数组长度 45~55，商品名不要重复。'
-        )
-        user_msg = f'知识库数据（JSON）：\n{json.dumps(ctx, ensure_ascii=False)}\n\n请按要求输出约 50 个商品的 JSON 数组。'
-        raw = call_deepseek_api(sys_p, user_msg, temperature=0.5, max_tokens=6000,
-                                api_key=DEEPSEEK_SELECTION_API_KEY)
-        cards = _ps_parse_json_array(raw)
-        for i, c in enumerate(cards):
-            c['id'] = i
-        return success({'cards': cards, 'priceRange': {'min': min_p, 'max': max_p},
-                        'meta': {'douyin_count': len(dy_items), 'tmall_count': len(tmall_items)}}, 'ok')
-    except Exception as e:
+        out = folder / "电商相关热搜词.xlsx"
+        wb.save(out)
+        return str(out)
+    except Exception:
         traceback.print_exc()
-        return fail(str(e))
+        return None
 
 
-# ======================== 选品流程：第二轮（勾选10品 → 爱搜+天猫 → 3+9 → 存档） ========================
-
-def _aisou_enrich(products):
-    """对给定商品名跑爱搜采集，结果写入「爱搜数据表」"""
-    _ensure_aisou_columns()
-    _write_json(_AISOU_INPUT_FILE, {'keywords': products})
-    if not _run_py_script(_AISOU_SCRAPER, timeout=1800):
-        return 0
-    out = _read_json(_AISOU_OUTPUT_FILE)
-    if not out:
-        return 0
-    today = time.strftime('%Y-%m-%d')
-    inserted = 0
-    for res in out.get('results') or []:
-        src = res.get('keyword') or ''
-        # 先删除当天该来源词的旧数据，再插入新数据（幂等，重复抓取不冲突）
-        db_execute("DELETE FROM `爱搜数据表` WHERE `日期` = %s AND `来源词` = %s", [today, src], fetch=False)
-        for w in res.get('words') or []:
-            name = (w.get('name') or '').strip()
-            if not name:
-                continue
-            wtype = w.get('type') or ''
-            # 电商词关键词 是复合主键的一部分（NOT NULL），填「类型_词名」保证唯一
-            ek = f"{wtype}_{name}"
-            db_execute(
-                "INSERT INTO `爱搜数据表` (`日期`, `电商词关键词`, `来源词`, `词类型`, `词名称`, `月覆盖人次`, `七日搜索人次`) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                [today, ek, src, wtype, name, w.get('month') or '', w.get('seven') or ''], fetch=False)
-            inserted += 1
-    return inserted
-
-
-def _select_3_plus_9(products):
-    """把爱搜数据交给 DeepSeek，按「3 可用品 + 9 裂变品」逻辑筛选"""
-    rows = list(db_execute(
-        "SELECT 来源词, 词类型, 词名称, 月覆盖人次, 七日搜索人次 FROM `爱搜数据表` "
-        "ORDER BY `日期` DESC LIMIT 2000"))
-    groups = {}
-    for r in rows:
-        groups.setdefault(r['词类型'], []).append({
-            'name': r['词名称'], 'month': r['月覆盖人次'], 'seven': r['七日搜索人次'],
-            'source': r['来源词']})
-    sys_p = (
-        '你是电商选品智能体。基于给定的爱搜搜索词数据（按 搜索词/相关词/下拉词/电商词 分组，'
-        '每个词含 name 词名、month 月覆盖人次、seven 七日搜索人次），完成两件事：\n'
-        '第一步：数据清洗与标准化\n'
-        '- 去掉热度全为 0 的词、重复词、明显非商品词\n'
-        '- 对四类热度分别做 min-max 归一化（缩放 0~1）\n'
-        '- 综合热度分 = 电商词热度×0.4 + 搜索词热度×0.3 + 下拉词热度×0.15 + 相关词热度×0.15\n'
-        '第二步：选出 3 个「可用品」\n'
-        '- 综合分排序取 Top 候选池，品类尽量分散（不同品类），同品类只留综合分最高的 1 个\n'
-        '- 优先「热度高但竞争中等」，避开红海词\n'
-        '第三步：每个可用品裂变出 3 个「裂变品」\n'
-        '- 只看该可用品的下拉词/相关词：裂变分 = 下拉词热度×0.5 + 相关词热度×0.5\n'
-        '- 裂变品不能与可用品重复、去掉品牌词、语义去重、必须仍指向可购买商品\n'
-        '输出 JSON 数组（不要解释文字）：\n'
-        '[{"可用品":"名称","品类":"xx","裂变品":["a","b","c"]}]  （3 个元素）'
-    )
-    user_msg = '爱搜词数据（JSON）：\n' + json.dumps(groups, ensure_ascii=False) + \
-        '\n\n待选商品：' + '、'.join(products) + '\n请输出 3 个可用品及其各 3 个裂变品的 JSON 数组。'
-    raw = call_deepseek_api(sys_p, user_msg, temperature=0.4, max_tokens=3000,
-                            api_key=DEEPSEEK_SELECTION_API_KEY)
-    parsed = _ps_parse_json_array(raw)
-    result = []
-    for p in parsed:
-        name = p.get('可用品') or p.get('name') or ''
-        variants = p.get('裂变品') or p.get('variants') or []
-        if name:
-            result.append({'name': name, 'category': p.get('品类') or '', 'variants': variants[:3]})
-    return result
-
-
-def _tmall_enrich(products):
-    """对 3 可用品 + 9 裂变品跑天猫销量前100，返回 {name: products}"""
-    _write_json(_TMALL_BATCH_INPUT, {'keywords': products})
-    if not _run_py_script(_TMALL_BATCH_SCRAPER, timeout=2400):
-        return {}
-    out = _read_json(_TMALL_BATCH_OUTPUT)
-    if not out:
-        return {}
-    return {r.get('keyword'): r.get('products') or [] for r in out.get('results') or []}
-
-
-def _final_analyze(selection, tmall_map, price_label):
-    """把天猫 top100 数据交给 DeepSeek，产出 3 大卡 + 9 小卡 + 300 字建议"""
-    for s in selection:
-        s['tmall_products'] = tmall_map.get(s['name'], [])
-        s['variants'] = [{'name': v, 'tmall_products': tmall_map.get(v, [])}
-                         for v in s.get('variants', [])]
-    sys_p = (
-        '你是电商选品智能体。基于给定的天猫销量前100数据（每个商品含 rank/title/price/sales/shop），'
-        '对每个可用品及其裂变品做分析：\n'
-        '- 把每个商品的天猫前100按价格归到 3 个价格段，统计每段销量，做利润与成本分析；\n'
-        '- 每个可用品和每个裂变品各写一句简短小结（一句话，点明机会点/价格带/竞争）；\n'
-        '- 最后综合所有商品给一段 300 字左右的当日选品分析建议。\n'
-        '输出 JSON 对象（不要解释文字）：\n'
-        '{"products":[{"name":"可用品","category":"xx","summary":"一句话小结",'
-        '"price_segments":[{"range":"如 0-50","sales":"如 12.3万"}],'
-        '"profit":"利润成本分析","variants":[{"name":"裂变品","summary":"一句话小结"}]}],'
-        '"advice":"300字当日选品建议"}'
-    )
-    user_msg = ('天猫销量前100数据（JSON）：\n' + json.dumps(selection, ensure_ascii=False) +
-                '\n价格区间：' + price_label + '\n请输出上述 JSON 对象。')
-    raw = call_deepseek_api(sys_p, user_msg, temperature=0.4, max_tokens=5000,
-                            api_key=DEEPSEEK_SELECTION_API_KEY)
-    s = (raw or '').strip()
-    s = re.sub(r'```(?:json)?', '', s).strip()
-    i, j = s.find('{'), s.rfind('}')
-    if i != -1 and j > i:
-        try:
-            return json.loads(s[i:j + 1])
-        except Exception:
-            return None
-    return None
-
-
-def _run_selection_analyze(products, min_p, max_p):
-    """后台任务：勾选10品 → 爱搜 → 3+9 → 天猫 → 分析 → 存档"""
-    price_label = f"{min_p if min_p is not None else '不限'} ~ {max_p if max_p is not None else '不限'}"
-
-    def _progress(status, msg, done=0, total=0):
-        _write_json(_SELECTION_JOB_FILE, {'status': status, 'message': msg, 'done': done, 'total': total})
-
+@app.route('/api/product-selection/douyin/filter', methods=['POST'])
+def product_selection_douyin_filter():
+    """触发筛选：读取「抖音热搜榜单表」原始热搜词运行品类筛选，
+    筛选结果写入「抖音热搜品类表」（榜单表保留原始数据不被覆盖）"""
     try:
-        _progress('aisou', '正在爱搜抓取 10 个商品搜索词...')
-        _aisou_enrich(products)
+        _ensure_douyin_category_columns()
 
-        _progress('select', '正在筛选 3 可用品 + 9 裂变品...')
-        selection = _select_3_plus_9(products)
-        if not selection:
-            _progress('error', '智能体未能筛选出可用品')
-            return
+        # 日期：优先从 JSON body 取，兼容 query 参数；为空则筛选全表
+        _payload = request.get_json(silent=True) or {}
+        target_date = (_payload.get('date') or request.args.get('date') or '').strip()
 
-        all_names = [s['name'] for s in selection]
-        for s in selection:
-            all_names += [v for v in s.get('variants', [])]
-        _progress('tmall', '正在天猫抓取销量前100（{} 个商品）...'.format(len(all_names)))
-        tmall_map = _tmall_enrich(all_names)
-
-        _progress('analyze', '正在生成最终选品分析...')
-        final = _final_analyze(selection, tmall_map, price_label)
-        if not final:
-            _progress('error', '最终分析生成失败')
-            return
-
-        today = time.strftime('%Y-%m-%d')
-        result = {'date': today, 'priceRange': {'min': min_p, 'max': max_p},
-                  'priceLabel': price_label, 'data': final}
-        _write_json(_SELECTION_RESULT_FILE, result)
-
-        _ensure_selection_record_table()
-        db_execute(
-            "INSERT INTO `选品记录表` (`日期`, `价格区间`, `结果`) VALUES (%s, %s, %s)",
-            [today, price_label, json.dumps(result, ensure_ascii=False)], fetch=False)
-
-        _progress('done', '选品分析完成', done=1, total=1)
-    except Exception as e:
-        traceback.print_exc()
-        _progress('error', '选品分析异常: ' + str(e))
-
-
-_selection_job_thread = None
-
-
-@app.route('/api/product-selection/selection/analyze', methods=['POST'])
-def ps_selection_analyze():
-    """第二轮：提交勾选的 10 个商品，后台执行完整选品流程"""
-    global _selection_job_thread
-    try:
-        payload = request.get_json(silent=True) or {}
-        products = payload.get('products') or []
-        if not products:
-            return fail('请先勾选商品')
-        products = [str(p).strip() for p in products if str(p).strip()][:10]
-        if _selection_job_thread and _selection_job_thread.is_alive():
-            return fail('已有选品任务在运行中')
-        min_p = _ps_parse_float(payload.get('minPrice'))
-        max_p = _ps_parse_float(payload.get('maxPrice'))
-        _selection_job_thread = threading.Thread(
-            target=_run_selection_analyze, args=(products, min_p, max_p),
-            daemon=True, name='selection-analyze')
-        _selection_job_thread.start()
-        return success({'started': True}, '已开始选品分析，请稍候')
-    except Exception as e:
-        return fail(str(e))
-
-
-@app.route('/api/product-selection/selection/status', methods=['GET'])
-def ps_selection_status():
-    try:
-        return success(_read_json(_SELECTION_JOB_FILE, {'status': 'idle', 'message': ''}))
-    except Exception as e:
-        return fail(str(e))
-
-
-@app.route('/api/product-selection/selection/result', methods=['GET'])
-def ps_selection_result():
-    try:
-        return success(_read_json(_SELECTION_RESULT_FILE))
-    except Exception as e:
-        return fail(str(e))
-
-
-# ======================== 爱搜上升词 ========================
-
-@app.route('/api/product-selection/rising', methods=['POST'])
-def ps_rising():
-    """爱搜上升词：基于爱搜数据表分析，返回 5 个热度上升的产品词"""
-    try:
-        rows = list(db_execute(
-            "SELECT 词名称, 词类型, 月覆盖人次, 七日搜索人次 FROM `爱搜数据表` ORDER BY `日期` DESC LIMIT 3000"))
-        # 按词名称聚合，取七日搜索人次最大代表热度
-        agg = {}
-        for r in rows:
-            name = (r['词名称'] or '').strip()
-            if not name:
-                continue
-            seven = _as_parse_num(r['七日搜索人次'])
-            month = _as_parse_num(r['月覆盖人次'])
-            if name not in agg or seven > agg[name]['seven']:
-                agg[name] = {'name': name, 'type': r['词类型'], 'month': r['月覆盖人次'],
-                             'seven': r['七日搜索人次'], 'seven_num': seven, 'month_num': month}
-        words = sorted(agg.values(), key=lambda x: -x['seven_num'])[:40]
-        sys_p = (
-            '你是电商选品智能体。基于给定的爱搜词数据（词名、类型、月覆盖人次、七日搜索人次），'
-            '找出近期热度上升最明显、最值得关注的 5 个产品词（不一定是电商词，相关词条都可以）。\n'
-            '输出 JSON 数组（不要解释文字）：[{"word":"词","type":"类型","reason":"一句话理由"}]（5 个）'
-        )
-        user_msg = '爱搜词数据（JSON）：\n' + json.dumps(words, ensure_ascii=False) + '\n请输出 5 个上升词。'
-        raw = call_deepseek_api(sys_p, user_msg, temperature=0.4, max_tokens=1500,
-                                api_key=DEEPSEEK_SELECTION_API_KEY)
-        cards = _ps_parse_json_array(raw)
-        return success({'cards': cards, 'total': len(agg)})
-    except Exception as e:
-        traceback.print_exc()
-        return fail(str(e))
-
-
-# ======================== 历史选品记录 ========================
-
-@app.route('/api/product-selection/history/dates', methods=['GET'])
-def ps_history_dates():
-    try:
-        _ensure_selection_record_table()
-        rows = db_execute("SELECT DISTINCT `日期` FROM `选品记录表` ORDER BY `日期` DESC")
-        return success({'dates': [str(r['日期']) for r in rows]})
-    except Exception as e:
-        return fail(str(e))
-
-
-@app.route('/api/product-selection/history', methods=['GET'])
-def ps_history():
-    try:
-        _ensure_selection_record_table()
-        d = request.args.get('date', '').strip()
-        if d:
-            rows = list(db_execute("SELECT `日期`, `价格区间`, `结果` FROM `选品记录表` WHERE `日期` = %s ORDER BY `创建时间` DESC LIMIT 1", [d]))
+        if target_date:
+            rows = db_execute(
+                "SELECT 热搜名, 热搜值, 日期 FROM `抖音热搜榜单表` WHERE `日期` = %s", [target_date])
         else:
-            rows = list(db_execute("SELECT `日期`, `价格区间`, `结果` FROM `选品记录表` ORDER BY `创建时间` DESC LIMIT 1"))
-        if not rows:
-            return success(None)
-        r = rows[0]
-        result = None
-        try:
-            result = json.loads(r['结果'])
-        except Exception:
-            result = {'date': str(r['日期']), 'priceLabel': r['价格区间'], 'data': r['结果']}
-        return success(result)
+            rows = db_execute("SELECT 热搜名, 热搜值, 日期 FROM `抖音热搜榜单表`")
+
+        # 按 (热搜名, 日期) 去重后逐条筛选
+        seen = set()
+        entries = []
+        for r in rows:
+            term = (r['热搜名'] or '').strip()
+            if not term:
+                continue
+            dt = str(r['日期']) if r['日期'] else ''
+            key = (term, dt)
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append({'term': term, 'heat_raw': (r['热搜值'] or '').strip(), 'date': dt})
+
+        kw_index = _dy_build_kw_index(_DY_CATS)
+        # 前一天去重：读取 target_date 之前最近一天已出现的品类，今天筛选时自动剔除
+        prev_date, prev_cats = _dy_prev_day_categories(target_date)
+        deduped = 0
+        matched = []
+        stats = {
+            "超长(>10字)": 0,
+            "黑名单精确匹配(删)": 0,
+            "黑名单子串匹配(删)": 0,
+            "网红非商品(删)": 0,
+            "网红商品(保留)": 0,
+            "前一天已出现(去重)": 0,
+        }
+        for e in entries:
+            term = e['term']
+            tl = term.lower()
+
+            if len(term) > 10:
+                stats["超长(>10字)"] += 1
+                continue
+            if term in _DY_BLACKLIST_EXACT:
+                stats["黑名单精确匹配(删)"] += 1
+                continue
+            if any(b.lower() in tl for b in _DY_BLACKLIST_SUBSTR):
+                stats["黑名单子串匹配(删)"] += 1
+                continue
+
+            hit_cats = _dy_match_categories(tl, kw_index)
+            is_wh = ("网红" in tl or "达人" in tl)
+            if is_wh and not hit_cats:
+                stats["网红非商品(删)"] += 1
+                continue
+
+            # 前一天去重：把前一天已出现的品类从该词命中品类里剔除，
+            # 全部被剔除则该词整体丢弃（前一天已出现，今天不再重复）。
+            if hit_cats and prev_cats:
+                kept = [c for c in hit_cats if c not in prev_cats]
+                if not kept:
+                    stats["前一天已出现(去重)"] += 1
+                    deduped += 1
+                    continue
+                hit_cats = kept
+
+            if hit_cats:
+                if is_wh:
+                    stats["网红商品(保留)"] += 1
+                matched.append({
+                    'term': term,
+                    'heat_raw': e['heat_raw'],
+                    'date': e['date'],
+                    'categories': '/'.join(hit_cats),
+                    'heat_num': _dy_parse_heat(e['heat_raw']),
+                })
+
+        # 覆盖写入「抖音热搜品类表」：先删除目标日期的旧筛选结果，再插入本次筛选出的电商热搜（幂等，可重复点击）
+        if target_date:
+            db_execute("DELETE FROM `抖音热搜品类表` WHERE `日期` = %s", [target_date], fetch=False)
+        else:
+            db_execute("DELETE FROM `抖音热搜品类表`", fetch=False)
+
+        for m in matched:
+            db_execute(
+                "INSERT INTO `抖音热搜品类表` (`热搜名`, `热搜值`, `日期`, `品类`, `是否电商`, `热度数值`) "
+                "VALUES (%s, %s, %s, %s, 1, %s)",
+                [m['term'], m['heat_raw'], m['date'], m['categories'], m['heat_num']], fetch=False)
+
+        summary = _summarize_douyin_categories(matched)
+        if not summary:
+            # 大模型不可用时，退回用代码筛选出的品类去重列表
+            cats = []
+            for m in matched:
+                for c in m['categories'].split('/'):
+                    if c and c not in cats:
+                        cats.append(c)
+            summary = cats
+        export_path = _export_douyin_summary_excel(summary, target_date)
+        return success({
+            'matched': len(matched), 'total': len(entries), 'stats': stats,
+            'deduped': deduped, 'prev_date': prev_date,
+            'date': target_date, 'export': export_path,
+        }, '筛选完成')
     except Exception as e:
+        traceback.print_exc()
         return fail(str(e))
-
-
-# ======================== 每日 8 点自动抓取 + 筛选 ========================
-
-def _douyin_hot_auto_loop():
-    """后台线程：每天 8 点自动抓取抖音热点宝并筛选"""
-    while True:
-        try:
-            now = datetime.now()
-            next_run = now.replace(hour=8, minute=0, second=0, microsecond=0)
-            if next_run <= now:
-                next_run += timedelta(days=1)
-            time.sleep((next_run - now).total_seconds())
-            print('[选品][定时] 开始每日热点宝抓取')
-            _run_scrape_and_filter()
-        except Exception as e:
-            print(f'[选品][定时] 异常: {e}')
-
-
-_douyin_hot_auto_thread = threading.Thread(target=_douyin_hot_auto_loop, daemon=True,
-                                           name='douyin-hot-auto')
-_douyin_hot_auto_thread.start()
-
 
 
 # ======================== 启动 ========================
-
-def _seeding_auto_update_loop():
-    """后台线程：每小时自动触发一次作品抓取（抖音 + 小红书），随进程存活"""
-    while True:
-        time.sleep(3600)
-        try:
-            for platform in ('douyin', 'xhs'):
-                err = _seeding_launch(platform)
-                if err:
-                    print(f'[种草][自动更新] {platform} 触发失败: {err}')
-                time.sleep(5)  # 两个平台错开，避免同时打满
-        except Exception as e:
-            print(f'[种草][自动更新] 触发异常: {e}')
-
-
-# daemon 线程，gunicorn 单 worker 下只启动一次；随进程退出自动结束
-_seeding_auto_thread = threading.Thread(target=_seeding_auto_update_loop, daemon=True, name='seeding-auto-update')
-_seeding_auto_thread.start()
-
 
 if __name__ == '__main__':
     print('=' * 55)

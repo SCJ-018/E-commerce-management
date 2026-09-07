@@ -21,6 +21,15 @@ sys.path.insert(0, BASE_DIR)
 ACCOUNTS_FILE = os.path.join(BASE_DIR, 'seeding_accounts.json')
 XHS_COOKIE_FILE = os.path.join(BASE_DIR, 'xhs_cookie.txt')
 OUTPUT_FILE = os.path.join(BASE_DIR, '_xhs_works.json')
+PROGRESS_FILE = os.path.join(BASE_DIR, '_seeding_progress_xhs.json')
+
+
+def write_progress(status, done, total):
+    try:
+        with open(PROGRESS_FILE, 'w', encoding='utf-8') as f:
+            json.dump({'status': status, 'done': done, 'total': total}, f, ensure_ascii=False)
+    except Exception:
+        pass
 
 
 def load_xhs_accounts():
@@ -74,7 +83,8 @@ def main():
     api.bootstrap()
 
     all_rows = []
-    for acc in accounts:
+    write_progress('running', 0, len(accounts))
+    for i, acc in enumerate(accounts):
         red_id = str(acc.get('redId') or '').strip()
         name = (acc.get('name') or '').strip() or red_id
         try:
@@ -82,6 +92,7 @@ def main():
             notes = crawler.crawl_user_notes(api, info['user_id'], info.get('xsec_token', ''), limit=0, fast=False)
         except Exception as e:
             print(f'[xhs_batch] 账号 {name}({red_id}) 抓取失败: {e}')
+            write_progress('running', i + 1, len(accounts))
             continue
         for n in notes:
             all_rows.append({
@@ -96,10 +107,12 @@ def main():
                 'shares': _to_int(n.get('分享数')),
                 'publishTime': n.get('发布时间', ''),
             })
-        time.sleep(random.uniform(1.0, 2.0))
+        write_progress('running', i + 1, len(accounts))
+        time.sleep(random.uniform(0.5, 1.0))
 
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         json.dump(all_rows, f, ensure_ascii=False, indent=2)
+    write_progress('done', len(accounts), len(accounts))
     print(f'[xhs_batch] 共采集 {len(all_rows)} 条作品 -> {OUTPUT_FILE}')
 
 

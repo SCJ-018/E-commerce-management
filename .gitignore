@@ -25,6 +25,7 @@ tools/import_tool/dist/
 
 # === 淘宝登录态（含 cookie，勿提交）===
 tools/taobao_profile/
+tools/taobao_cookie.txt
 tools/_taobao_*.png
 tools/_taobao_*.html
 tools/_taobao_*.json
@@ -33,14 +34,34 @@ tools/_taobao_*.txt
 # === 抖音采集（含 cookie，勿提交）===
 tools/douyin_cookie.txt
 tools/_douyin_*.csv
+tools/_douyin_*.json
+
+# === 1688 采集（含 cookie，勿提交）===
+tools/1688_cookie.txt
+tools/cookies.json
+tools/_1688_*.json
+tools/1688_profile/
 
 # === 小红书登录态（含 cookie，勿提交）===
 tools/xhs_cookie.txt
 tools/cookie.txt
 tools/_xhs_works.json
 
+# === 种草监测运行态（作品快照 + 被删作品记录，勿提交）===
+tools/_seeding_state.json
+
 # === 第三方开源项目（从上游克隆，不纳入本仓库）===
 tools/Spider_XHS/
+
+# === 选品助手抓取（cookie 登录态 + 运行态产物，勿提交）===
+tools/douyin_hot_cookie.txt
+tools/aisou_cookie.txt
+tools/aisou_localstorage.json
+tools/aisou_profile/
+tools/_aisou_*.json
+tools/_tmall_*.json
+tools/_hot_words_preview.txt
+tools/_tmall_preview.txt
 
 # === 恢复操作备份目录（临时，可删）===
 _restore_backup_*/

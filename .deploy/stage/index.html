@@ -655,7 +655,6 @@
       <div class="nav-group">
         <div class="nav-group-title"><i class="fa-solid fa-toolbox ng-icon"></i> 工具箱 <i class="fa-solid fa-chevron-right ng-chevron"></i></div>
         <div class="nav-group-items">
-          <a href="#data-import" class="nav-item" data-page="data-import"><i class="fa-solid fa-file-import ni-icon"></i> 数据导入</a>
           <a href="#toolbox-violation-check" class="nav-item" data-page="toolbox-violation-check"><i class="fa-solid fa-shield-halved ni-icon"></i> 违规词检测</a>
         </div>
       </div>
@@ -1145,51 +1144,6 @@
         .sa-loading{display:flex;align-items:center;gap:8px;color:#8b5cf6;font-size:13px;padding:12px}
         .sa-loading .fa-spinner{animation:fa-spin 1s linear infinite}
         .sa-meta{font-size:11px;color:#94a3b8;margin-top:10px;padding-top:10px;border-top:1px dashed #eef2f7}
-        .ps-history-btn{border:1px solid #e9d5ff;background:#fff;color:#7c3aed;border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer;font-family:inherit;white-space:nowrap}
-        .ps-history-btn:hover{background:#8b5cf6;color:#fff}
-        .ps-round-box{background:#fff;border:1px solid #eef2f7;border-radius:10px;padding:12px 14px}
-        .ps-round-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;font-weight:600;color:#1e293b;margin-bottom:8px}
-        .ps-expand-btn{border:none;background:linear-gradient(135deg,#8b5cf6,#6366f1);color:#fff;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:inherit}
-        .ps-expand-btn:hover{opacity:.9}
-        .ps-round-tip{font-size:12px;color:#94a3b8}
-        .ps-final-head{font-size:14px;font-weight:700;color:#1e293b;margin-bottom:12px}
-        .ps-big-card{background:#fff;border:1px solid #eef2f7;border-radius:12px;padding:14px 16px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
-        .ps-big-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
-        .ps-big-name{font-size:15px;font-weight:700;color:#1e293b}
-        .ps-big-cat{font-size:11px;padding:2px 8px;border-radius:999px;background:#f3e8ff;color:#8b5cf6}
-        .ps-big-sum{font-size:12px;color:#64748b;line-height:1.6;margin-bottom:8px}
-        .ps-segs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
-        .ps-seg{font-size:11px;padding:3px 9px;border-radius:8px;background:#e0f2fe;color:#0ea5e9}
-        .ps-profit{font-size:12px;color:#b45309;line-height:1.6;margin-bottom:8px;padding:8px 10px;background:#fffbeb;border:1px dashed #fde68a;border-radius:8px}
-        .ps-variants{display:flex;flex-direction:column;gap:6px;padding-left:10px;border-left:2px solid #e9d5ff}
-        .ps-variant{display:flex;flex-direction:column;gap:2px}
-        .ps-v-name{font-size:13px;font-weight:600;color:#7c3aed}
-        .ps-v-sum{font-size:12px;color:#64748b;line-height:1.5}
-        .ps-advice{margin-top:14px;background:linear-gradient(135deg,#faf5ff,#f5f3ff);border:1px solid #e9d5ff;border-radius:12px;padding:14px 16px;font-size:13px;color:#334155;line-height:1.8;white-space:pre-wrap}
-        .ps-advice-title{font-size:13px;font-weight:700;color:#7c3aed;margin-bottom:6px;display:flex;align-items:center;gap:6px}
-        /* 悬浮面板 & 弹窗 */
-        .ps-overlay{position:fixed;inset:0;z-index:200;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;padding:24px}
-        .ps-overlay.hidden{display:none}
-        .ps-modal{background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.25);width:640px;max-width:94vw;max-height:90vh;overflow:hidden;display:flex;flex-direction:column}
-        .ps-modal-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #f1f5f9}
-        .ps-modal-title{font-size:15px;font-weight:700;color:#1e293b;display:flex;align-items:center;gap:8px}
-        .ps-modal-close{border:none;background:transparent;color:#94a3b8;font-size:16px;cursor:pointer}
-        .ps-modal-close:hover{color:#475569}
-        .ps-modal-body{padding:18px 20px;overflow-y:auto}
-        .ps-cards-panel{width:920px;max-width:96vw;height:86vh}
-        .ps-cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
-        .ps-pick-card{display:flex;gap:10px;align-items:flex-start;border:1px solid #eef2f7;border-radius:12px;padding:12px;cursor:pointer;transition:all .15s;background:#fff}
-        .ps-pick-card:hover{border-color:#c4b5fd;box-shadow:0 4px 14px rgba(139,92,246,.1)}
-        .ps-pick-check{margin-top:2px;width:16px;height:16px;flex-shrink:0;accent-color:#8b5cf6}
-        .ps-pick-body{min-width:0}
-        .ps-pick-name{font-size:14px;font-weight:700;color:#1e293b;word-break:break-word}
-        .ps-pick-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
-        .ps-pick-tags span{font-size:11px;padding:2px 8px;border-radius:999px;background:#f1f5f9;color:#64748b}
-        .ps-pick-tags span.price{background:#e0f2fe;color:#0ea5e9}
-        .ps-pick-reason{font-size:12px;color:#94a3b8;line-height:1.5;margin-top:6px}
-        .ps-modal-foot{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-top:1px solid #f1f5f9}
-        .ps-price-inputs{display:flex;align-items:center;gap:10px;margin:6px 0 4px}
-        .ps-price-inputs input{flex:1;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;font-size:14px;color:#334155;font-family:inherit;outline:none}
       </style>
 
       <div class="sel-layout">
@@ -1239,7 +1193,6 @@
               <tbody id="tmallTbody"></tbody>
             </table>
           </div>
-          <div class="ps-table-footer" id="tmallPagination"></div>
         </div>
       </div>
 
@@ -1258,21 +1211,9 @@
                   <option value="" disabled selected>加载中...</option>
                 </select>
               </div>
-              <div style="display:flex;align-items:center;gap:8px">
-                <button class="ap-btn-primary" id="dyHotScrapeBtn" onclick="App.dyHotScrape()" style="height:34px">
-                  <i class="fa-solid fa-bolt"></i> 抓取并筛选
-                </button>
-                <div style="position:relative">
-                  <button class="ap-btn-sm" onclick="App.dyHotToggleCookiePanel()" style="height:34px;background:#fff"><i class="fa-solid fa-cookie-bite" style="color:#ef4444"></i> 抖音 Cookie</button>
-                  <div id="dyHotCookiePanel" class="hidden" style="position:absolute;top:calc(100% + 8px);right:0;z-index:90;width:460px;max-width:90vw;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:16px 18px">
-                    <div style="font-size:13px;font-weight:600;color:#1e293b;margin-bottom:8px;display:flex;align-items:center;gap:6px"><i class="fa-solid fa-cookie-bite" style="color:#ef4444"></i>抖音热点宝 Cookie</div>
-                    <textarea id="dyHotCookie" placeholder="粘贴抖音网页版登录态 Cookie（用于热点宝热搜抓取）..." style="width:100%;min-height:60px;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;outline:none;color:#334155;line-height:1.6;box-sizing:border-box"></textarea>
-                    <div style="display:flex;gap:10px;margin-top:12px">
-                      <button class="btn btn-primary btn-sm" onclick="App.dyHotSaveCookie()"><i class="fa-solid fa-floppy-disk"></i> 保存 Cookie</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <button class="ap-btn-primary" id="douyinFilterBtn" onclick="App.runDouyinFilter()" style="height:34px">
+                <i class="fa-solid fa-filter"></i> 筛选电商热搜
+              </button>
             </div>
           </div>
           <div class="ps-table-wrap">
@@ -1301,28 +1242,17 @@
                 <select id="aisouDate" class="ps-select-sm" onchange="App.filterAisou()" style="height:34px;min-width:150px">
                   <option value="" disabled selected>加载中...</option>
                 </select>
-                <div class="ps-search-wrap"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="aisouKeyword" placeholder="词名称 / 来源词..."></div>
+                <div class="ps-search-wrap"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="aisouKeyword" placeholder="搜索词关键词..."></div>
                 <button class="ap-btn-primary" onclick="App.filterAisou()" style="height:34px"><i class="fa-solid fa-filter"></i> 筛选</button>
                 <button class="ap-btn-sm" onclick="App.resetAisou()" style="height:34px;background:#fff">重置</button>
-              </div>
-              <div style="position:relative">
-                <button class="ap-btn-sm" onclick="App.aisouToggleCookiePanel()" style="height:34px;background:#fff"><i class="fa-solid fa-cookie-bite" style="color:#8b5cf6"></i> 爱搜 Cookie</button>
-                <div id="aisouCookiePanel" class="hidden" style="position:absolute;top:calc(100% + 8px);right:0;z-index:90;width:460px;max-width:90vw;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:16px 18px">
-                  <div style="font-size:13px;font-weight:600;color:#1e293b;margin-bottom:8px;display:flex;align-items:center;gap:6px"><i class="fa-solid fa-key" style="color:#8b5cf6"></i>爱搜登录态</div>
-                  <textarea id="aisouCookie" placeholder="登录 dso.aidso.com 后，在浏览器控制台执行 JSON.stringify(localStorage)，把输出整段粘贴到这里..." style="width:100%;min-height:60px;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;outline:none;color:#334155;line-height:1.6;box-sizing:border-box"></textarea>
-                  <div style="font-size:11px;color:#94a3b8;margin-top:6px">爱搜登录态存在 localStorage（token），非 cookie。粘贴 JSON.stringify(localStorage) 的整段输出即可。</div>
-                  <div style="display:flex;gap:10px;margin-top:12px">
-                    <button class="btn btn-primary btn-sm" onclick="App.aisouSaveCookie()"><i class="fa-solid fa-floppy-disk"></i> 保存登录态</button>
-                  </div>
-                </div>
               </div>
             </div>
           </div>
           <div class="ps-table-wrap">
             <table class="ps-store-table" id="aisouTable">
               <thead><tr>
-                <th>日期</th><th>来源词</th><th>词类型</th><th>词名称</th>
-                <th class="ps-col-num">月覆盖人次</th><th class="ps-col-num">七日搜索人次</th>
+                <th>日期</th><th>搜索词关键词</th><th class="ps-col-num">月覆盖人次</th><th class="ps-col-num">七日搜索人次</th>
+                <th>电商词关键词</th><th class="ps-col-num">电商词月覆盖人次</th><th class="ps-col-num">电商词七日搜索人次</th>
               </tr></thead>
               <tbody id="aisouTbody"></tbody>
             </table>
@@ -1462,27 +1392,31 @@
       <div class="sel-right">
         <div class="sel-agent">
           <div class="sel-agent-header">
-            <div style="flex:1;min-width:0">
-              <div class="sel-agent-title">
-                <i class="fa-solid fa-wand-magic-sparkles" style="color:#8b5cf6;margin-right:8px"></i>选品智能体
-              </div>
-              <span class="sel-agent-sub">抖音热搜 / 天猫榜单 / 爱搜数据</span>
+            <div class="sel-agent-title">
+              <i class="fa-solid fa-wand-magic-sparkles" style="color:#8b5cf6;margin-right:8px"></i>选品智能体
             </div>
-            <button class="ps-history-btn" onclick="App.psHistoryToggle()"><i class="fa-solid fa-clock-rotate-left"></i> 历史选品记录</button>
+            <span class="sel-agent-sub">基于 抖音热搜 / 天猫榜单 / 爱搜数据 知识库</span>
           </div>
 
           <!-- 快捷问题 -->
           <div class="sel-agent-suggest" id="selAgentSuggest">
-            <button class="sel-agent-chip" onclick="App.psOpenPriceModal()">📈 当日热搜选品分析</button>
-            <button class="sel-agent-chip" onclick="App.psRising()">🔍 爱搜上升词</button>
+            <button class="sel-agent-chip" onclick="App.psAgentAsk('分析当日热搜选品数据，推荐潜力品类和商品')">📈 当日热搜选品分析</button>
+            <button class="sel-agent-chip" onclick="App.psAgentAsk('哪个品类热度最高，对应天猫有哪些值得关注的产品')">🔥 热度品类 + 天猫商品</button>
+            <button class="sel-agent-chip" onclick="App.psAgentAsk('爱搜数据里搜索量上升最快的电商词有哪些')">🔍 爱搜上升电商词</button>
           </div>
 
           <!-- 结果区 -->
           <div class="sel-agent-result" id="selAgentResult">
             <div class="sel-agent-empty">
               <i class="fa-solid fa-robot" style="font-size:28px;color:#cbd5e1"></i>
-              <p>点击「当日热搜选品分析」输入价格区间，智能体对比抖音热搜 / 天猫榜单 / 市场客单价，输出约 50 个潜力商品，勾选 10 个后过爱搜与天猫数据，给出最终选品建议。</p>
+              <p>点击上方快捷问题，或输入你的选品分析需求，智能体会先检索三张知识库数据，再生成分析。</p>
             </div>
+          </div>
+
+          <!-- 输入区 -->
+          <div class="sel-agent-input">
+            <textarea id="selAgentInput" class="sel-agent-textarea" placeholder="例如：分析今天热搜里最值得做的品类..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();App.psAgentSend();}"></textarea>
+            <button class="sel-agent-send" id="selAgentSendBtn" onclick="App.psAgentSend()"><i class="fa-solid fa-paper-plane"></i></button>
           </div>
         </div>
       </div>
@@ -1533,7 +1467,7 @@
         <div class="dashboard-header">
           <div class="dh-left">
             <div class="dh-icon" style="background:linear-gradient(135deg,#16a34a,#22c55e);box-shadow:0 2px 8px rgba(22,163,74,0.25)"><i class="fa-solid fa-seedling" style="color:#fff;font-size:18px"></i></div>
-            <div class="dh-title-group"><h2 class="dh-title">种草监测中台</h2><span class="dh-subtitle">Seeding Monitoring Center</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>监测种草账号作品数据 · 数据更新时间 <span id="sdUpdateTime" style="color:#16a34a;font-weight:600">--</span></span></div>
+            <div class="dh-title-group"><h2 class="dh-title">种草监测中台</h2><span class="dh-subtitle">Seeding Monitoring Center</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>监测种草账号作品数据 · 数据库待接入</span></div>
           </div>
           <div style="display:flex;align-items:center;gap:16px">
             <div class="dh-chips">
@@ -1562,10 +1496,6 @@
                 <div class="sd-cookie-actions">
                   <button class="btn btn-sm" style="background:linear-gradient(135deg,#16a34a,#22c55e);color:#fff;border:none" onclick="App.sdTriggerScrape('douyin')"><i class="fa-solid fa-play"></i> 触发抖音抓取</button>
                   <button class="btn btn-sm" style="background:linear-gradient(135deg,#e11d48,#f43f5e);color:#fff;border:none" onclick="App.sdTriggerScrape('xhs')"><i class="fa-solid fa-play"></i> 触发小红书抓取</button>
-                </div>
-                <div class="vd-progress-wrap" id="sdProgressWrap" style="display:none;margin-top:14px">
-                  <div class="vd-progress-bar"><div class="vd-progress-fill" id="sdProgressFill"></div></div>
-                  <div class="vd-progress-text"><span id="sdProgressText">抓取中...</span><span id="sdProgressPercent">0%</span></div>
                 </div>
               </div>
             </div>
@@ -1693,47 +1623,6 @@
         </div>
       </div>
       </div><!-- /.sd-layout -->
-    </section>
-    <section id="page-data-import" class="page-section hidden">
-      <div class="dashboard-header">
-        <div class="dh-left">
-          <div class="dh-icon" style="background:linear-gradient(135deg,#0ea5e9,#38bdf8);box-shadow:0 2px 8px rgba(14,165,233,0.25)"><i class="fa-solid fa-file-import" style="color:#fff;font-size:18px"></i></div>
-          <div class="dh-title-group"><h2 class="dh-title">数据导入</h2><span class="dh-subtitle">Data Import</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>上传 Excel/CSV 更新经营数据</span></div>
-        </div>
-      </div>
-      <div class="ps-table-card">
-        <div class="ps-table-header">
-          <div class="ps-table-title-group"><h3>导入经营数据</h3><span class="ps-table-badge">同一天同一商品重复导入会自动更新</span></div>
-        </div>
-        <div style="padding:24px;display:flex;flex-direction:column;gap:20px;max-width:680px">
-          <div style="display:flex;flex-direction:column;gap:8px">
-            <label style="font-size:0.85rem;font-weight:600;color:#334155">1. 选择目标表</label>
-            <select id="impTable" style="padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;font-size:0.9rem;color:#334155;outline:none;background:#fff;max-width:420px">
-              <option value="">请选择目标表</option>
-              <option>抖店单链接数据表</option>
-              <option>京东单链接数据表</option>
-              <option>千牛单链接数据表</option>
-              <option>千牛单链接推广数据表</option>
-              <option>店铺营销数据</option>
-            </select>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:8px">
-            <label style="font-size:0.85rem;font-weight:600;color:#334155">2. 选择数据文件（.xlsx / .xls / .csv）</label>
-            <input type="file" id="impFile" accept=".xlsx,.xls,.csv" onchange="App.onImpFileChange()" style="padding:10px;border:1px dashed #cbd5e1;border-radius:10px;font-size:0.85rem;color:#475569;max-width:420px">
-          </div>
-          <div style="display:none;flex-direction:column;gap:8px" id="impSheetWrap">
-            <label style="font-size:0.85rem;font-weight:600;color:#334155">3. 选择工作表（Sheet）</label>
-            <select id="impSheet" style="padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;font-size:0.9rem;color:#334155;outline:none;background:#fff;max-width:420px"></select>
-          </div>
-          <div style="display:flex;align-items:center;gap:16px">
-            <button class="btn btn-primary btn-sm" style="width:auto;height:38px;padding:0 24px" onclick="App.importExcel()"><i class="fa-solid fa-cloud-arrow-up"></i> 开始导入</button>
-            <span id="impStatus" style="font-size:0.85rem;color:#64748b"></span>
-          </div>
-          <div style="font-size:0.8rem;color:#94a3b8;line-height:1.6;background:#f8fafc;border:1px solid #f1f5f9;border-radius:10px;padding:12px 16px">
-            提示：表头需与目标表字段一致（导入时按列名自动匹配）。文件中的日期、金额列会自动转换格式；同一天同一商品的记录会覆盖更新，不会重复累加。
-          </div>
-        </div>
-      </div>
     </section>
     <section id="page-finance" class="page-section hidden">
       <div class="dashboard-header">
@@ -2203,60 +2092,18 @@
 <div id="confirmModal" class="modal hidden">
   <div class="modal-content" style="max-width:420px"><div class="modal-body"><p id="confirmMsg" style="font-size:15px;color:#334155"></p></div><div class="modal-footer"><button class="btn btn-outline" onclick="App.closeConfirmModal()">取消</button><button class="btn btn-danger" id="confirmDeleteBtn">确认删除</button></div></div>
 </div>
-<!-- 价格区间弹窗（当日热搜选品分析） -->
-<div id="psPriceModal" class="ps-overlay hidden">
-  <div class="ps-modal" style="width:480px">
-    <div class="ps-modal-head">
-      <div class="ps-modal-title"><i class="fa-solid fa-tags" style="color:#8b5cf6"></i> 当日热搜选品分析</div>
-      <button class="ps-modal-close" onclick="App.psClosePriceModal()"><i class="fa-solid fa-xmark"></i></button>
+<div id="douyinFilterModal" class="modal hidden">
+  <div class="modal-content" style="max-width:420px">
+    <div class="modal-header" style="font-size:17px">筛选电商热搜</div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:#64748b;margin-bottom:12px">选择要筛选的抖音热搜榜单日期（与榜单表日期同步），筛选结果将同步到「抖音热搜品类表」。</p>
+      <select id="douyinFilterDate" style="width:100%;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;font-size:14px;color:#334155;font-family:inherit;outline:none">
+        <option value="" disabled selected>加载中...</option>
+      </select>
     </div>
-    <div class="ps-modal-body">
-      <p style="font-size:13px;color:#64748b;margin-bottom:14px;line-height:1.7">请输入目标客单价区间（大众能接受的价格区间）。智能体将对比抖音热搜品类与天猫榜单价格、市场客单价，返回约 50 个潜力商品。</p>
-      <div class="ps-price-inputs">
-        <input type="number" id="psPriceMin" min="0" placeholder="最低价（可留空）">
-        <span style="color:#94a3b8">~</span>
-        <input type="number" id="psPriceMax" min="0" placeholder="最高价（可留空）">
-      </div>
-    </div>
-    <div class="ps-modal-foot">
-      <button class="btn btn-outline" onclick="App.psClosePriceModal()">取消</button>
-      <button class="btn btn-primary" onclick="App.psConfirmPrice()"><i class="fa-solid fa-wand-magic-sparkles"></i> 开始分析</button>
-    </div>
-  </div>
-</div>
-
-<!-- 50 卡片勾选大面板 -->
-<div id="psCardsPanel" class="ps-overlay hidden">
-  <div class="ps-modal ps-cards-panel">
-    <div class="ps-modal-head">
-      <div class="ps-modal-title"><i class="fa-solid fa-list-check" style="color:#8b5cf6"></i> 潜力商品勾选</div>
-      <button class="ps-modal-close" onclick="App.psCloseCardsPanel()"><i class="fa-solid fa-xmark"></i></button>
-    </div>
-    <div class="ps-modal-body" style="flex:1">
-      <div class="ps-cards-grid" id="psCardsGrid"></div>
-    </div>
-    <div class="ps-modal-foot">
-      <span style="font-size:13px;color:#64748b">已勾选 <b id="psCardCount" style="color:#8b5cf6">0</b> / 10 个</span>
-      <button class="btn btn-primary" id="psSubmitCardsBtn" onclick="App.psSubmitCards()" disabled><i class="fa-solid fa-check"></i> 提交这 10 个品</button>
-    </div>
-  </div>
-</div>
-
-<!-- 历史选品记录面板 -->
-<div id="psHistoryPanel" class="ps-overlay hidden">
-  <div class="ps-modal" style="width:720px;height:86vh">
-    <div class="ps-modal-head">
-      <div class="ps-modal-title"><i class="fa-solid fa-clock-rotate-left" style="color:#8b5cf6"></i> 历史选品记录</div>
-      <button class="ps-modal-close" onclick="App.psCloseHistory()"><i class="fa-solid fa-xmark"></i></button>
-    </div>
-    <div class="ps-modal-body" style="padding-top:14px">
-      <div style="margin-bottom:14px;display:flex;align-items:center;gap:8px">
-        <span style="font-size:13px;color:#64748b">日期</span>
-        <select id="psHistoryDate" class="ps-select-sm" onchange="App.psLoadHistory(this.value)" style="height:34px;min-width:170px">
-          <option value="" disabled selected>加载中...</option>
-        </select>
-      </div>
-      <div id="psHistoryBody" style="padding-bottom:8px"></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="App.closeDouyinFilterModal()">取消</button>
+      <button class="btn btn-primary" id="douyinFilterConfirmBtn" onclick="App.confirmDouyinFilter()">开始筛选</button>
     </div>
   </div>
 </div>

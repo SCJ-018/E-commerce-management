@@ -1,0 +1,16 @@
+[Unit]
+Description=Ecommerce Admin Backend (gunicorn)
+After=network.target mysqld.service
+Wants=mysqld.service
+
+[Service]
+WorkingDirectory=/opt/ecom/backend
+ExecStart=/opt/ecom/venv/bin/gunicorn --workers 1 --threads 8 --bind 0.0.0.0:5000 --timeout 300 --access-logfile - --error-logfile - app:app
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONUTF8=1
+Environment=LANG=C.UTF-8
+
+[Install]
+WantedBy=multi-user.target

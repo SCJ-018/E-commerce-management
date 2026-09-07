@@ -35,10 +35,10 @@ except ImportError:
 
 # ─── 默认数据库配置 ─────────────────────────────────────────
 DEFAULT_DB = {
-    'host': '192.168.2.10',
-    'port': 3306,
+    'host': '127.0.0.1',   # 走 SSH 隧道连服务器库：先开隧道 python .deploy/ssx.py tunnel
+    'port': 3307,
     'user': 'root',
-    'password': os.environ.get('DB_PASSWORD', ''),  # 密码从环境变量读取，不再硬编码
+    'password': os.environ.get('DB_PASSWORD', ''),  # 服务器 root 密码，建议设环境变量 DB_PASSWORD
     'database': '数据',
     'charset': 'utf8mb4',
 }

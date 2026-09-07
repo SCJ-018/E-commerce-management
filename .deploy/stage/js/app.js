@@ -16,16 +16,6 @@ const ApiService = (() => {
         headers: { 'Content-Type': 'application/json' },
         ...options,
       });
-      if (res.status === 401) {
-        // 登录已过期：清掉本地登录态并回到登录页
-        sessionStorage.removeItem('admin_logged_in');
-        sessionStorage.removeItem('admin_current_user');
-        sessionStorage.removeItem('admin_current_role');
-        sessionStorage.removeItem('admin_current_account');
-        sessionStorage.removeItem('admin_permissions');
-        location.reload();
-        throw new Error('登录已过期，请重新登录');
-      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       if (json.code !== 0) throw new Error(json.msg);
@@ -114,13 +104,11 @@ const ApiService = (() => {
     },
 
     // ---- 选品助手 ----
-    async getTmallList(minPrice, maxPrice, page, pageSize) {
+    async getTmallList(minPrice, maxPrice) {
       let path = '/product-selection/tmall';
       const params = [];
       if (minPrice !== '' && minPrice !== null && minPrice !== undefined) params.push('minPrice=' + encodeURIComponent(minPrice));
       if (maxPrice !== '' && maxPrice !== null && maxPrice !== undefined) params.push('maxPrice=' + encodeURIComponent(maxPrice));
-      params.push('page=' + (page || 1));
-      params.push('pageSize=' + (pageSize || 50));
       if (params.length) path += '?' + params.join('&');
       return request(path);
     },
@@ -129,53 +117,8 @@ const ApiService = (() => {
       if (date) path += '?date=' + encodeURIComponent(date);
       return request(path);
     },
-    async getDouyinHotCookie() {
-      return request('/product-selection/douyin-hot/cookie');
-    },
-    async saveDouyinHotCookie(cookie) {
-      return request('/product-selection/douyin-hot/cookie', { method: 'POST', body: JSON.stringify({ cookie: cookie || '' }) });
-    },
-    async triggerDouyinHotScrape() {
-      return request('/product-selection/douyin-hot/scrape', { method: 'POST', body: '{}' });
-    },
-    async getDouyinHotStatus() {
-      return request('/product-selection/douyin-hot/status');
-    },
-    async getAisouCookie() {
-      return request('/product-selection/aisou/cookie');
-    },
-    async saveAisouCookie(cookie) {
-      return request('/product-selection/aisou/cookie', { method: 'POST', body: JSON.stringify({ cookie: cookie || '' }) });
-    },
-    async runSelection(priceRange) {
-      return request('/product-selection/selection', { method: 'POST', body: JSON.stringify(priceRange || {}) });
-    },
-    async runSelectionAnalyze(products, priceRange) {
-      return request('/product-selection/selection/analyze', {
-        method: 'POST',
-        body: JSON.stringify({
-          products: products || [],
-          minPrice: priceRange ? priceRange.min : undefined,
-          maxPrice: priceRange ? priceRange.max : undefined,
-        }),
-      });
-    },
-    async getSelectionStatus() {
-      return request('/product-selection/selection/status');
-    },
-    async getSelectionResult() {
-      return request('/product-selection/selection/result');
-    },
-    async runRising() {
-      return request('/product-selection/rising', { method: 'POST', body: '{}' });
-    },
-    async getHistoryDates() {
-      return request('/product-selection/history/dates');
-    },
-    async getHistory(date) {
-      let path = '/product-selection/history';
-      if (date) path += '?date=' + encodeURIComponent(date);
-      return request(path);
+    async getDouyinRawDates() {
+      return request('/product-selection/douyin/raw-dates');
     },
     async getAisouList(date, keyword) {
       let path = '/product-selection/aisou';
@@ -184,6 +127,12 @@ const ApiService = (() => {
       if (keyword) params.push('keyword=' + encodeURIComponent(keyword));
       if (params.length) path += '?' + params.join('&');
       return request(path);
+    },
+    async runSelectionAgent(question) {
+      return request('/product-selection/agent', {
+        method: 'POST',
+        body: JSON.stringify({ question: question || '' }),
+      });
     },
     async triggerTmallMarketScrape(keyword) {
       return request('/product-selection/tmall-market/scrape', {
@@ -239,6 +188,13 @@ const ApiService = (() => {
         body: JSON.stringify({ cookie: cookie || '' }),
       });
     },
+    async runDouyinFilter(date) {
+      return request('/product-selection/douyin/filter', {
+        method: 'POST',
+        body: JSON.stringify({ date: date || '' }),
+      });
+    },
+
     // ---- 每日数据分析 ----
     async generateDailyReport(date) {
       var body = date ? JSON.stringify({ date: date }) : undefined;
@@ -269,7 +225,6 @@ const ApiService = (() => {
     async getSeedingCookie(platform) { return request('/seeding/cookie' + (platform ? '?platform=' + encodeURIComponent(platform) : '')); },
     async saveSeedingCookie(platform, cookie) { return request('/seeding/cookie', { method: 'POST', body: JSON.stringify({ platform: platform || 'douyin', cookie: cookie }) }); },
     async triggerSeedingScrape(platform) { return request('/seeding/scrape', { method: 'POST', body: JSON.stringify({ platform: platform || 'douyin' }) }); },
-    async getSeedingScrapeStatus(platform) { return request('/seeding/scrape/status' + (platform ? '?platform=' + encodeURIComponent(platform) : '')); },
     async runSeedingAgent(question) { return request('/seeding/agent', { method: 'POST', body: JSON.stringify({ question: question || '' }) }); },
     async getSeedingDeleted() { return request('/seeding/deleted'); },
     async deleteSeedingDeleted(id) { return request('/seeding/deleted/' + id, { method: 'DELETE' }); },
@@ -512,8 +467,6 @@ const App = (() => {
   }
 
   function handleLogout() {
-    // 通知后端清除 token 会话（fire-and-forget）
-    fetch('/api/auth/logout', { method: 'POST' }).catch(function() {});
     localStorage.removeItem('admin_user');
     sessionStorage.removeItem('admin_logged_in');
     sessionStorage.removeItem('admin_permissions');
@@ -599,7 +552,6 @@ const App = (() => {
       'order-details': '订单详情',
       'category-marketing': '品类营销数据',
       'seeding-monitor': '种草监测中台',
-      'data-import': '数据导入',
     };
     document.getElementById('pageTitle').textContent = titles[page] || page;
     if (page === 'marketing-overview') renderMarketingOverview();
@@ -2338,7 +2290,6 @@ const App = (() => {
       { id: 'hr', name: '人事中心' },
     ]},
     { group: '工具箱', pages: [
-      { id: 'data-import', name: '数据导入' },
       { id: 'toolbox-violation-check', name: '违规词检测' },
     ]},
     { group: '系统管理', pages: [
@@ -2936,7 +2887,6 @@ const App = (() => {
       'store-account', 'operation-performance', 'product-selection', 'finance', 'hr',
       'admin-permissions', 'profile', 'daily-analysis', 'toolbox-violation-check', 'order-details', 'category-marketing',
       'seeding-monitor',
-      'data-import',
     ];
     const hash = window.location.hash.replace('#', '');
     if (validPages.includes(hash)) {
@@ -3333,10 +3283,7 @@ const App = (() => {
     var activeCount=employees.filter(function(e){return e.status==='在职';}).length;
     var probationCount=employees.filter(function(e){return e.status==='试用期';}).length;
     var resigned=employees.filter(function(e){return e.status==='离职';}).length;
-    var now=new Date();
-    var monthStart=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-01';
-    var newHires=employees.filter(function(e){return e.joinTime>=monthStart&&e.status!=='离职';}).length;
-    return {employees:employees,totalEmp:employees.length,activeCount:activeCount,probationCount:probationCount,newHires:newHires,resigned:resigned,deptDist:deptOrder.map(function(d){return{name:d,count:deptCount[d]};}),attendanceTrend:[]};
+    return {employees:employees,totalEmp:employees.length,activeCount:activeCount,probationCount:probationCount,newHires:0,resigned:resigned,deptDist:deptOrder.map(function(d){return{name:d,count:deptCount[d]};}),attendanceTrend:[]};
   }
 
   var _hrData=null; var _hrPage=1; var _hrSearch=''; var _hrDeptFilter='';
@@ -3631,7 +3578,6 @@ const App = (() => {
     _vdImages = [];
     _vdNextImgId = 1;
     _vdOcrRunning = false;
-    _vdHideProgress();
     // 缩略图区
     document.getElementById('vdThumbList').innerHTML = '';
     var emptyEl = document.getElementById('vdThumbEmpty');
@@ -3899,22 +3845,6 @@ const App = (() => {
     }
   }
 
-  function _vdShowProgress(pct, text) {
-    var wrap = document.getElementById('vdProgressWrap');
-    var fill = document.getElementById('vdProgressFill');
-    var txt = document.getElementById('vdProgressText');
-    var pctEl = document.getElementById('vdProgressPercent');
-    if (wrap) wrap.style.display = '';
-    if (fill) fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
-    if (txt && text) txt.textContent = text;
-    if (pctEl) pctEl.textContent = Math.max(0, Math.min(100, pct)) + '%';
-  }
-
-  function _vdHideProgress() {
-    var wrap = document.getElementById('vdProgressWrap');
-    if (wrap) wrap.style.display = 'none';
-  }
-
   async function vdStartOCR() {
     if (_vdOcrRunning) return;
     if (_vdImages.length === 0) {
@@ -3938,7 +3868,6 @@ const App = (() => {
     if (statProcessing) statProcessing.textContent = _vdImages.length;
 
     var failedCount = 0;
-    _vdShowProgress(0, '正在识别 0/' + _vdImages.length);
 
     // 分批处理，避免一次性发送超大请求体
     for (var start = 0; start < _vdImages.length; start += _VD_BATCH_SIZE) {
@@ -3955,11 +3884,9 @@ const App = (() => {
           img.suspectedWords = [];
         });
       }
-      // 每批完成后刷新剩余待处理数与进度条
-      var done = start + batch.length;
-      var remaining = Math.max(0, _vdImages.length - done);
+      // 每批完成后刷新剩余待处理数，提供进度反馈
+      var remaining = Math.max(0, _vdImages.length - (start + batch.length));
       if (statProcessing) statProcessing.textContent = remaining;
-      _vdShowProgress(Math.round(done / _vdImages.length * 100), '正在识别 ' + done + '/' + _vdImages.length);
       if (state.currentPage === 'toolbox-violation-check') _vdRenderThumbs();
     }
 
@@ -3972,7 +3899,6 @@ const App = (() => {
     });
 
     _vdOcrRunning = false;
-    _vdHideProgress();
 
     // 如果已切换到其他页面，只更新数据不操作 DOM
     if (state.currentPage !== 'toolbox-violation-check') return;
@@ -4719,70 +4645,41 @@ const App = (() => {
     });
   }
 
-  var _tmallPage = 1;
-  var _tmallPageSize = 50;
-
   async function loadTmallList() {
     const minPrice = document.getElementById('tmallMinPrice')?.value || '';
     const maxPrice = document.getElementById('tmallMaxPrice')?.value || '';
     let data = null;
-    if (state.apiAvailable) data = await ApiService.getTmallList(minPrice, maxPrice, _tmallPage, _tmallPageSize);
+    if (state.apiAvailable) data = await ApiService.getTmallList(minPrice, maxPrice);
 
     const tbody = document.getElementById('tmallTbody');
     if (!tbody) return;
     const items = (data && data.items) || [];
-    const total = data ? data.total : 0;
     const totalEl = document.getElementById('tmallTotal');
-    if (totalEl) totalEl.textContent = '共 ' + total + ' 条';
+    if (totalEl) totalEl.textContent = '共 ' + (data ? data.total : 0) + ' 条';
 
     if (!items.length) {
       tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:32px">暂无数据</td></tr>';
-    } else {
-      tbody.innerHTML = items.map(function (r) {
-        const price = (r['价格'] === null || r['价格'] === undefined) ? '--' : '¥' + Number(r['价格']).toFixed(2);
-        return '<tr>' +
-          '<td>' + esc(r['类别名']) + '</td>' +
-          '<td>' + esc(r['排行榜名']) + '</td>' +
-          '<td style="font-weight:600">' + esc(r['产品名']) + '</td>' +
-          '<td class="ps-col-num" style="font-weight:600;color:#0ea5e9">' + price + '</td>' +
-          '<td>' + esc(r['日期']) + '</td>' +
-          '</tr>';
-      }).join('');
+      return;
     }
-    _renderTmallPagination(total);
+    tbody.innerHTML = items.map(function (r) {
+      const price = (r['价格'] === null || r['价格'] === undefined) ? '--' : '¥' + Number(r['价格']).toFixed(2);
+      return '<tr>' +
+        '<td>' + esc(r['类别名']) + '</td>' +
+        '<td>' + esc(r['排行榜名']) + '</td>' +
+        '<td style="font-weight:600">' + esc(r['产品名']) + '</td>' +
+        '<td class="ps-col-num" style="font-weight:600;color:#0ea5e9">' + price + '</td>' +
+        '<td>' + esc(r['日期']) + '</td>' +
+        '</tr>';
+    }).join('');
   }
 
-  function _renderTmallPagination(total) {
-    const footer = document.getElementById('tmallPagination');
-    if (!footer) return;
-    const totalPages = Math.max(1, Math.ceil(total / _tmallPageSize));
-    if (_tmallPage > totalPages) _tmallPage = totalPages;
-    let btns = '';
-    btns += '<button ' + (_tmallPage <= 1 ? 'disabled' : '') + ' onclick="App.tmallGoPage(' + (_tmallPage - 1) + ')"><i class="fa-solid fa-chevron-left"></i></button>';
-    for (let i = 1; i <= totalPages; i++) {
-      if (totalPages <= 7 || i === 1 || i === totalPages || (i >= _tmallPage - 1 && i <= _tmallPage + 1)) {
-        btns += '<button class="' + (i === _tmallPage ? 'active' : '') + '" onclick="App.tmallGoPage(' + i + ')">' + i + '</button>';
-      } else if (i === _tmallPage - 2 || i === _tmallPage + 2) {
-        btns += '<button disabled>...</button>';
-      }
-    }
-    btns += '<button ' + (_tmallPage >= totalPages ? 'disabled' : '') + ' onclick="App.tmallGoPage(' + (_tmallPage + 1) + ')"><i class="fa-solid fa-chevron-right"></i></button>';
-    footer.innerHTML = '<span>第 ' + _tmallPage + ' / ' + totalPages + ' 页，共 ' + total + ' 条</span><div class="ps-pagination-btns">' + btns + '</div>';
-  }
-
-  function tmallGoPage(page) {
-    _tmallPage = page;
-    loadTmallList();
-  }
-
-  function filterTmall() { _tmallPage = 1; loadTmallList(); }
+  function filterTmall() { loadTmallList(); }
 
   function resetTmall() {
     const minEl = document.getElementById('tmallMinPrice');
     const maxEl = document.getElementById('tmallMaxPrice');
     if (minEl) minEl.value = '';
     if (maxEl) maxEl.value = '';
-    _tmallPage = 1;
     loadTmallList();
   }
 
@@ -4829,59 +4726,54 @@ const App = (() => {
 
   function filterDouyin() { loadDouyinList(); }
 
-  function dyHotToggleCookiePanel() {
-    const panel = document.getElementById('dyHotCookiePanel');
-    if (!panel) return;
-    if (panel.classList.contains('hidden')) {
-      dyHotLoadCookie();
-      panel.classList.remove('hidden');
-    } else {
-      panel.classList.add('hidden');
-    }
-  }
-
-  function dyHotLoadCookie() {
-    const el = document.getElementById('dyHotCookie');
-    if (!state.apiAvailable) {
-      if (el) { el.value = ''; el.placeholder = '后端不可用，无法读取 Cookie'; }
-      return;
-    }
-    ApiService.getDouyinHotCookie().then(function (data) {
-      if (el && data && data.cookie) { el.value = data.cookie; el.title = data.cookie; }
+  function runDouyinFilter() {
+    if (!state.apiAvailable) { showToast('后端服务不可用', 'error'); return; }
+    const modal = document.getElementById('douyinFilterModal');
+    const sel = document.getElementById('douyinFilterDate');
+    if (sel) sel.innerHTML = '<option value="" disabled selected>加载中...</option>';
+    if (modal) modal.classList.remove('hidden');
+    // 拉取「抖音热搜榜单表」（原始数据）的日期列表，供筛选时选择
+    ApiService.getDouyinRawDates().then(function (data) {
+      const dates = (data && data.dates) || [];
+      if (!sel) return;
+      if (dates.length) {
+        sel.innerHTML = dates.map(function (d) {
+          return '<option value="' + d + '">' + d + '</option>';
+        }).join('');
+        sel.value = dates[0];
+      } else {
+        sel.innerHTML = '<option value="" disabled selected>榜单表暂无日期</option>';
+      }
+    }).catch(function () {
+      if (sel) sel.innerHTML = '<option value="" disabled selected>获取日期失败</option>';
     });
   }
 
-  async function dyHotSaveCookie() {
-    const el = document.getElementById('dyHotCookie');
-    const cookie = (el && el.value || '').trim();
-    if (!cookie) { showToast('请输入 Cookie', 'error'); return; }
-    if (!state.apiAvailable) { showToast('后端不可用，无法保存 Cookie', 'error'); return; }
-    const res = await ApiService.saveDouyinHotCookie(cookie);
-    showToast(res !== null ? '抖音热点宝 Cookie 已保存' : 'Cookie 保存失败', res !== null ? 'success' : 'error');
-    dyHotToggleCookiePanel();
+  function closeDouyinFilterModal() {
+    const modal = document.getElementById('douyinFilterModal');
+    if (modal) modal.classList.add('hidden');
   }
 
-  async function dyHotScrape() {
-    if (!state.apiAvailable) { showToast('后端服务不可用', 'error'); return; }
-    const res = await ApiService.triggerDouyinHotScrape();
-    if (!res) { showToast('触发失败，请查看后端日志', 'error'); return; }
-    showToast('已触发热点宝抓取，完成后自动筛选', 'success');
-    const btn = document.getElementById('dyHotScrapeBtn');
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 抓取中...'; }
-    for (let i = 0; i < 300; i++) {
-      await new Promise(function (r) { setTimeout(r, 3000); });
-      const st = await ApiService.getDouyinHotStatus();
-      if (st && st.status === 'done') {
-        showToast('抓取并筛选完成：同步 ' + (st.matched || 0) + ' 条电商热搜', 'success');
+  async function confirmDouyinFilter() {
+    const sel = document.getElementById('douyinFilterDate');
+    const date = sel ? sel.value : '';
+    if (!date) { showToast('请选择日期', 'error'); return; }
+    closeDouyinFilterModal();
+    const pageBtn = document.getElementById('douyinFilterBtn');
+    if (pageBtn) { pageBtn.disabled = true; pageBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 筛选中...'; }
+    try {
+      const res = await ApiService.runDouyinFilter(date);
+      if (res) {
+        const exportMsg = res.export ? '，Excel 已同步' : '（Excel 同步失败）';
+        const dedupMsg = res.deduped ? '，去重 ' + res.deduped + ' 条（品类前一天已出现）' : '';
+        showToast('筛选完成：' + date + ' 已同步 ' + res.matched + ' 条电商热搜到品类表' + dedupMsg + exportMsg, 'success');
         await loadDouyinList();
-        break;
+      } else {
+        showToast('筛选失败，请查看后端日志', 'error');
       }
-      if (st && st.status === 'error') {
-        showToast('抓取失败：' + (st.message || ''), 'error');
-        break;
-      }
+    } finally {
+      if (pageBtn) { pageBtn.disabled = false; pageBtn.innerHTML = '<i class="fa-solid fa-filter"></i> 筛选电商热搜'; }
     }
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-bolt"></i> 抓取并筛选'; }
   }
 
   async function loadAisouList() {
@@ -4914,19 +4806,18 @@ const App = (() => {
     if (totalEl) totalEl.textContent = '共 ' + (data ? data.total : 0) + ' 条';
 
     if (!items.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:32px">暂无数据（点击上方 Cookie 保存后由智能体自动抓取）</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:32px">暂无数据</td></tr>';
       return;
     }
     tbody.innerHTML = items.map(function (r) {
-      const type = r['词类型'] || '';
-      const typeColor = type === '电商词' ? '#0ea5e9' : type === '搜索词' ? '#8b5cf6' : type === '相关词' ? '#16a34a' : '#f97316';
       return '<tr>' +
         '<td>' + esc(r['日期']) + '</td>' +
-        '<td style="font-weight:600">' + esc(r['来源词']) + '</td>' +
-        '<td><span style="font-size:11px;padding:2px 8px;border-radius:999px;background:#f1f5f9;color:' + typeColor + '">' + esc(type) + '</span></td>' +
-        '<td style="font-weight:600">' + esc(r['词名称']) + '</td>' +
-        '<td class="ps-col-num" style="font-weight:600;color:#8b5cf6">' + esc(r['月覆盖人次']) + '</td>' +
-        '<td class="ps-col-num">' + esc(r['七日搜索人次']) + '</td>' +
+        '<td style="font-weight:600">' + esc(r['搜索词关键词']) + '</td>' +
+        '<td class="ps-col-num" style="font-weight:600;color:#8b5cf6">' + esc(r['搜索词月覆盖人次']) + '</td>' +
+        '<td class="ps-col-num">' + esc(r['搜索词七日搜索人次']) + '</td>' +
+        '<td>' + esc(r['电商词关键词']) + '</td>' +
+        '<td class="ps-col-num" style="font-weight:600;color:#0ea5e9">' + esc(r['电商词月覆盖人次']) + '</td>' +
+        '<td class="ps-col-num">' + esc(r['电商词七日搜索人次']) + '</td>' +
         '</tr>';
     }).join('');
   }
@@ -5063,11 +4954,6 @@ const App = (() => {
         await new Promise(function (r) { setTimeout(r, 3000); });
         const st = await c.getStatus();
         if (st) {
-          if (st.status === 'error') {
-            _marketHideProgress(platform);
-            showToast(c.label + '抓取失败：' + (st.error || '未知错误'), 'error');
-            return;
-          }
           _marketSetProgress(platform, st.progress || 0, '抓取中 ' + (st.done || 0) + '/' + (st.total || 50));
           if (st.finished) {
             const data = await c.getData();
@@ -5163,283 +5049,91 @@ const App = (() => {
   }
 
   // ==================== 选品助手智能体 ====================
-  var _psCards = [];            // 第一轮 50 个商品卡片
-  var _psPriceRange = null;     // {min, max}
-  var _psBusy = false;
+  var _psAgentBusy = false;
 
-  // ---- 爱搜 Cookie ----
-  function aisouToggleCookiePanel() {
-    const panel = document.getElementById('aisouCookiePanel');
-    if (!panel) return;
-    if (panel.classList.contains('hidden')) {
-      aisouLoadCookie();
-      panel.classList.remove('hidden');
-    } else {
-      panel.classList.add('hidden');
-    }
+  function psAgentAsk(question) {
+    const input = document.getElementById('selAgentInput');
+    if (input) input.value = question;
+    psAgentSend();
   }
 
-  function aisouLoadCookie() {
-    const el = document.getElementById('aisouCookie');
-    if (!state.apiAvailable) {
-      if (el) { el.value = ''; el.placeholder = '后端不可用，无法读取 Cookie'; }
-      return;
-    }
-    ApiService.getAisouCookie().then(function (data) {
-      if (el && data && data.cookie) { el.value = data.cookie; el.title = data.cookie; }
-    });
-  }
-
-  async function aisouSaveCookie() {
-    const el = document.getElementById('aisouCookie');
-    const cookie = (el && el.value || '').trim();
-    if (!cookie) { showToast('请输入 Cookie', 'error'); return; }
-    if (!state.apiAvailable) { showToast('后端不可用，无法保存 Cookie', 'error'); return; }
-    const res = await ApiService.saveAisouCookie(cookie);
-    showToast(res !== null ? '爱搜 Cookie 已保存' : 'Cookie 保存失败', res !== null ? 'success' : 'error');
-    aisouToggleCookiePanel();
-  }
-
-  // ---- 价格区间弹窗（当日热搜选品分析） ----
-  function psOpenPriceModal() {
-    const modal = document.getElementById('psPriceModal');
-    if (modal) modal.classList.remove('hidden');
-  }
-
-  function psClosePriceModal() {
-    const modal = document.getElementById('psPriceModal');
-    if (modal) modal.classList.add('hidden');
-  }
-
-  async function psConfirmPrice() {
-    const minEl = document.getElementById('psPriceMin');
-    const maxEl = document.getElementById('psPriceMax');
-    let min = minEl ? minEl.value.trim() : '';
-    let max = maxEl ? maxEl.value.trim() : '';
-    if (!min && !max) { showToast('请至少填写一个价格边界', 'error'); return; }
-    min = min === '' ? undefined : Number(min);
-    max = max === '' ? undefined : Number(max);
-    _psPriceRange = { min: min, max: max };
-    psClosePriceModal();
-    if (_psBusy) return;
-    _psBusy = true;
+  async function psAgentSend() {
+    if (_psAgentBusy) return;
+    const input = document.getElementById('selAgentInput');
+    const btn = document.getElementById('selAgentSendBtn');
     const result = document.getElementById('selAgentResult');
-    if (result) result.innerHTML = '<div class="sa-loading"><i class="fa-solid fa-spinner"></i> 正在分析当日热搜选品，请稍候...</div>';
+    if (!input || !result) return;
+    const question = input.value.trim();
+    if (!question) { showToast('请输入分析需求', 'error'); return; }
+
+    _psAgentBusy = true;
+    if (btn) btn.disabled = true;
+    input.value = '';
+    result.innerHTML = '<div class="sa-loading"><i class="fa-solid fa-spinner"></i> 正在检索知识库并分析，请稍候...</div>';
+
     try {
       let data = null;
-      if (state.apiAvailable) data = await ApiService.runSelection({ minPrice: min, maxPrice: max });
-      _psRenderCards(data);
+      if (state.apiAvailable) data = await ApiService.runSelectionAgent(question);
+      renderPsAgentResult(data);
     } catch (e) {
-      if (result) result.innerHTML = '<div class="sa-analysis" style="color:#dc2626">分析失败：网络异常，请稍后再试。</div>';
+      result.innerHTML = '<div class="sa-analysis" style="color:#dc2626">分析失败：网络异常，请稍后再试。</div>';
     } finally {
-      _psBusy = false;
+      _psAgentBusy = false;
+      if (btn) btn.disabled = false;
     }
   }
 
-  function _psRenderCards(data) {
+  function renderPsAgentResult(data) {
     const result = document.getElementById('selAgentResult');
     if (!result) return;
-    if (!data || !(data.cards && data.cards.length)) {
-      result.innerHTML = '<div class="sa-analysis">智能体未返回有效商品，请稍后重试。</div>';
+
+    if (!data) {
+      result.innerHTML = '<div class="sa-analysis" style="color:#dc2626">后端服务不可用，无法完成分析。</div>';
       return;
     }
-    _psCards = data.cards;
-    const n = _psCards.length;
-    result.innerHTML =
-      '<div class="ps-round-box">' +
-        '<div class="ps-round-head">' +
-          '<span><i class="fa-solid fa-lightbulb" style="color:#f59e0b"></i> 共筛选出 ' + n + ' 个潜力商品（价格区间 ' + esc(data.priceRange && data.priceRange.min !== null ? '¥' + data.priceRange.min : '不限') + ' ~ ' + esc(data.priceRange && data.priceRange.max !== null ? '¥' + data.priceRange.max : '不限') + '）</span>' +
-          '<button class="ps-expand-btn" onclick="App.psExpandCards()"><i class="fa-solid fa-up-right-and-down-left-from-center"></i> 展开勾选</button>' +
-        '</div>' +
-        '<div class="ps-round-tip">点击「展开勾选」进入大面板，勾选 10 个看好的品后提交分析。</div>' +
-      '</div>';
-  }
 
-  // ---- 50 卡片大面板 ----
-  function psExpandCards() {
-    const panel = document.getElementById('psCardsPanel');
-    const grid = document.getElementById('psCardsGrid');
-    if (!panel || !grid) return;
-    grid.innerHTML = _psCards.map(function (c, i) {
-      return '<label class="ps-pick-card">' +
-        '<input type="checkbox" class="ps-pick-check" value="' + i + '" onchange="App.psUpdateCardCount()">' +
-        '<div class="ps-pick-body">' +
-          '<div class="ps-pick-name">' + esc(c.name || c.title || '') + '</div>' +
-          '<div class="ps-pick-tags"><span>' + esc(c.category || '') + '</span><span class="price">' + esc(c.price_range || '') + '</span></div>' +
-          (c.reason ? '<div class="ps-pick-reason">' + esc(c.reason) + '</div>' : '') +
-        '</div>' +
-      '</label>';
-    }).join('');
-    panel.classList.remove('hidden');
-    psUpdateCardCount();
-  }
+    const analysis = (data.analysis && data.analysis.trim()) || '';
+    const cards = data.cards || [];
+    const meta = data.meta || {};
 
-  function psCloseCardsPanel() {
-    const panel = document.getElementById('psCardsPanel');
-    if (panel) panel.classList.add('hidden');
-  }
-
-  function psUpdateCardCount() {
-    const checks = document.querySelectorAll('#psCardsGrid .ps-pick-check:checked');
-    const el = document.getElementById('psCardCount');
-    if (el) el.textContent = checks.length;
-    const btn = document.getElementById('psSubmitCardsBtn');
-    if (btn) btn.disabled = checks.length === 0;
-  }
-
-  async function psSubmitCards() {
-    const checks = document.querySelectorAll('#psCardsGrid .ps-pick-check:checked');
-    const selected = Array.from(checks).map(function (c) {
-      const card = _psCards[Number(c.value)];
-      return card ? (card.name || card.title || '') : '';
-    }).filter(Boolean);
-    if (!selected.length) { showToast('请先勾选商品', 'error'); return; }
-    if (selected.length > 10) { showToast('最多勾选 10 个', 'error'); return; }
-    psCloseCardsPanel();
-    const result = document.getElementById('selAgentResult');
-    if (result) result.innerHTML = '<div class="sa-loading"><i class="fa-solid fa-spinner"></i> 已提交 ' + selected.length + ' 个商品，正在爱搜/天猫过数据...</div>';
-    try {
-      let res = null;
-      if (state.apiAvailable) res = await ApiService.runSelectionAnalyze(selected, _psPriceRange);
-      if (!res) { if (result) result.innerHTML = '<div class="sa-analysis" style="color:#dc2626">提交失败，请查看后端日志。</div>'; return; }
-      // 轮询任务状态
-      for (let i = 0; i < 600; i++) {
-        await new Promise(function (r) { setTimeout(r, 3000); });
-        const st = await ApiService.getSelectionStatus();
-        if (st && st.status === 'done') {
-          const final = await ApiService.getSelectionResult();
-          _psRenderFinal(final);
-          return;
-        }
-        if (st && st.status === 'error') {
-          if (result) result.innerHTML = '<div class="sa-analysis" style="color:#dc2626">选品分析失败：' + esc(st.message || '') + '</div>';
-          return;
-        }
-        if (result) {
-          const msg = st && st.message ? st.message : '处理中';
-          result.innerHTML = '<div class="sa-loading"><i class="fa-solid fa-spinner"></i> ' + esc(msg) + '...</div>';
-        }
-      }
-      if (result) result.innerHTML = '<div class="sa-analysis" style="color:#dc2626">选品分析超时，请稍后查看历史记录。</div>';
-    } catch (e) {
-      if (result) result.innerHTML = '<div class="sa-analysis" style="color:#dc2626">提交异常：网络错误。</div>';
+    let html = '';
+    if (analysis) {
+      html += '<div class="sa-analysis">' + analysis.replace(/\n/g, '<br>') + '</div>';
     }
-  }
-
-  function _psFinalHtml(result) {
-    if (!result || !result.data) return '<div class="sa-analysis">未获取到选品结果。</div>';
-    const d = result.data;
-    const products = d.products || [];
-    let html = '<div class="ps-final-head">' +
-      '<i class="fa-solid fa-clipboard-check" style="color:#16a34a"></i> 当日选品结果 · ' + esc(result.priceLabel || result.date || '') +
-      '</div>';
-    html += products.map(function (p) {
-      const segs = (p.price_segments || []).map(function (s) {
-        return '<span class="ps-seg">' + esc(s.range || '') + ' · 销量 ' + esc(s.sales || '--') + '</span>';
-      }).join('');
-      const variants = (p.variants || []).map(function (v) {
-        return '<div class="ps-variant"><span class="ps-v-name">' + esc(v.name || '') + '</span>' +
-          (v.summary ? '<span class="ps-v-sum">' + esc(v.summary) + '</span>' : '') + '</div>';
-      }).join('');
-      return '<div class="ps-big-card">' +
-        '<div class="ps-big-head"><span class="ps-big-name">' + esc(p.name || '') + '</span><span class="ps-big-cat">' + esc(p.category || '') + '</span></div>' +
-        (p.summary ? '<div class="ps-big-sum">' + esc(p.summary) + '</div>' : '') +
-        (segs ? '<div class="ps-segs">' + segs + '</div>' : '') +
-        (p.profit ? '<div class="ps-profit"><i class="fa-solid fa-coins" style="color:#f59e0b"></i> ' + esc(p.profit) + '</div>' : '') +
-        (variants ? '<div class="ps-variants">' + variants + '</div>' : '') +
-      '</div>';
-    }).join('');
-    if (d.advice) {
-      html += '<div class="ps-advice"><div class="ps-advice-title"><i class="fa-solid fa-file-lines"></i> 当日选品建议</div>' + esc(d.advice) + '</div>';
-    }
-    return html;
-  }
-
-  function _psRenderFinal(result) {
-    const el = document.getElementById('selAgentResult');
-    if (!el) return;
-    el.innerHTML = _psFinalHtml(result);
-    el.scrollTop = 0;
-  }
-
-  // ---- 爱搜上升词 ----
-  async function psRising() {
-    if (_psBusy) return;
-    _psBusy = true;
-    const result = document.getElementById('selAgentResult');
-    if (result) result.innerHTML = '<div class="sa-loading"><i class="fa-solid fa-spinner"></i> 正在分析爱搜上升词，请稍候...</div>';
-    try {
-      let data = null;
-      if (state.apiAvailable) data = await ApiService.runRising();
-      if (!result) return;
-      if (!data || !(data.cards && data.cards.length)) {
-        result.innerHTML = '<div class="sa-analysis">未分析出上升词，请先由智能体抓取爱搜数据。</div>';
-        return;
-      }
-      let html = '<div class="ps-round-head"><span><i class="fa-solid fa-chart-line" style="color:#8b5cf6"></i> 近期热度上升的产品词（5 个）</span></div>';
-      html += data.cards.map(function (c) {
-        return '<div class="sa-card"><div class="sa-card-top">' +
-          '<div class="sa-card-title">' + esc(c.word || c.name || '') + '</div>' +
-          '<div class="sa-card-metric">' + esc(c.type || '') + '</div>' +
+    if (cards.length) {
+      html += '<div class="sa-cards-title"><i class="fa-solid fa-lightbulb" style="color:#f59e0b"></i> 推荐卡片（基于知识库命中数据）</div>';
+      html += cards.map(function (c) {
+        const type = (c.type === 'aisou' || c.type === 'tbmarket' || c.type === 'dymarket' || c.type === 'b2b') ? c.type : 'tmall';
+        const tags = String(c.tags || '').split(/[,，]/).filter(Boolean).map(function (t) {
+          return '<span class="sa-tag ' + type + '">' + esc(t.trim()) + '</span>';
+        }).join('');
+        const derived = String(c.derived || '').split(/[,，、]/).filter(Boolean).map(function (d) {
+          return '<span class="sa-tag derived">' + esc(d.trim()) + '</span>';
+        }).join('');
+        return '<div class="sa-card">' +
+          '<div class="sa-card-top">' +
+            '<div class="sa-card-title">' + esc(c.title || '') + '</div>' +
+            '<div class="sa-card-metric">' + esc(c.metric || '') + '</div>' +
           '</div>' +
+          (c.subtitle ? '<div class="sa-card-sub">' + esc(c.subtitle) + '</div>' : '') +
+          (tags ? '<div class="sa-card-tags">' + tags + '</div>' : '') +
+          (derived ? '<div class="sa-card-derived"><i class="fa-solid fa-shapes" style="color:#f59e0b;margin-right:4px"></i>裂变：' + derived + '</div>' : '') +
           (c.reason ? '<div class="sa-card-reason">' + esc(c.reason) + '</div>' : '') +
           '</div>';
       }).join('');
-      result.innerHTML = html;
-    } catch (e) {
-      if (result) result.innerHTML = '<div class="sa-analysis" style="color:#dc2626">分析失败：网络异常。</div>';
-    } finally {
-      _psBusy = false;
+    } else if (!analysis) {
+      html += '<div class="sa-analysis">智能体未返回有效结果，请稍后重试。</div>';
     }
-  }
-
-  // ---- 历史选品记录 ----
-  function psHistoryToggle() {
-    const panel = document.getElementById('psHistoryPanel');
-    if (!panel) return;
-    if (panel.classList.contains('hidden')) {
-      psLoadHistoryDates();
-      panel.classList.remove('hidden');
-    } else {
-      panel.classList.add('hidden');
+    if (meta && (meta.date || meta.douyin_count !== undefined)) {
+      html += '<div class="sa-meta">数据日期：' + esc(meta.date || '--') +
+        ' · 抖音热搜 ' + (meta.douyin_count || 0) +
+        ' · 天猫匹配 ' + (meta.tmall_count || 0) +
+        ' · 爱搜匹配 ' + (meta.aisou_count || 0) +
+        ' · 天猫市场 ' + (meta.tbmarket_count || 0) +
+        ' · 抖音市场 ' + (meta.dymarket_count || 0) +
+        ' · 1688市场 ' + (meta.b2b_count || 0) + '</div>';
     }
-  }
-
-  function psCloseHistory() {
-    const panel = document.getElementById('psHistoryPanel');
-    if (panel) panel.classList.add('hidden');
-  }
-
-  async function psLoadHistoryDates() {
-    const sel = document.getElementById('psHistoryDate');
-    if (!sel) return;
-    let data = null;
-    if (state.apiAvailable) data = await ApiService.getHistoryDates();
-    const dates = (data && data.dates) || [];
-    if (dates.length) {
-      sel.innerHTML = dates.map(function (d) {
-        return '<option value="' + d + '">' + d + '</option>';
-      }).join('');
-      sel.value = dates[0];
-      psLoadHistory(dates[0]);
-    } else {
-      sel.innerHTML = '<option value="" disabled selected>暂无记录</option>';
-      const body = document.getElementById('psHistoryBody');
-      if (body) body.innerHTML = '<div style="color:#94a3b8;padding:24px;text-align:center">暂无选品记录</div>';
-    }
-  }
-
-  async function psLoadHistory(date) {
-    const body = document.getElementById('psHistoryBody');
-    if (!body) return;
-    if (!date) return;
-    let data = null;
-    if (state.apiAvailable) data = await ApiService.getHistory(date);
-    if (!data || !data.data) {
-      body.innerHTML = '<div style="color:#94a3b8;padding:24px;text-align:center">该日期无选品记录</div>';
-      return;
-    }
-    body.innerHTML = _psFinalHtml(data);
+    result.innerHTML = html;
   }
 
   // ==================== 种草监测中台 ====================
@@ -5555,7 +5249,6 @@ const App = (() => {
     _sdLoadCookie();
     _sdLoadAccounts();
     _sdLoadWorks();
-    _sdLoadMeta();
     sdSwitchTab(_sdTab);
   }
 
@@ -5602,22 +5295,6 @@ const App = (() => {
     var wc = document.getElementById('sdWorksCount');
     if (ac) ac.textContent = _sdAccounts.length;
     if (wc) wc.textContent = _sdWorks.length;
-  }
-
-  function _sdLoadMeta(platform) {
-    var p = platform || _sdPlatform;
-    if (!state.apiAvailable) { _sdRenderUpdateTime(null); return Promise.resolve(); }
-    return ApiService.getSeedingWorksMeta(p).then(function(meta) {
-      if (meta && p === _sdPlatform) _sdRenderUpdateTime(meta.mtime);
-    });
-  }
-
-  function _sdRenderUpdateTime(mtime) {
-    var el = document.getElementById('sdUpdateTime');
-    if (!el) return;
-    if (!mtime) { el.textContent = '--'; return; }
-    var d = new Date(mtime * 1000);
-    el.textContent = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
   }
 
   function sdSwitchTab(tab) {
@@ -5674,7 +5351,6 @@ const App = (() => {
     } else {
       _sdLoadCookie();
       _sdLoadWorks();
-      _sdLoadMeta();
     }
   }
 
@@ -5995,125 +5671,26 @@ const App = (() => {
     _sdPollScrape(platform, beforeMtime);
   }
 
-  function _sdShowProgress(pct, text) {
-    var wrap = document.getElementById('sdProgressWrap');
-    var fill = document.getElementById('sdProgressFill');
-    var txt = document.getElementById('sdProgressText');
-    var pctEl = document.getElementById('sdProgressPercent');
-    if (wrap) wrap.style.display = '';
-    if (fill) fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
-    if (txt && text) txt.textContent = text;
-    if (pctEl) pctEl.textContent = Math.max(0, Math.min(100, pct)) + '%';
-  }
-
-  function _sdHideProgress() {
-    var wrap = document.getElementById('sdProgressWrap');
-    if (wrap) wrap.style.display = 'none';
-  }
-
   function _sdPollScrape(platform, beforeMtime) {
-    _sdShowProgress(2, '抓取中...');
     var tries = 0;
-    var maxTries = 160; // 160 * 3s = 8min，覆盖多账号慢抓
+    var maxTries = 40; // 40 * 3s = 120s
     var timer = setInterval(async function() {
       tries++;
-      var st = await ApiService.getSeedingScrapeStatus(platform);
-      if (st && st.status === 'running') {
-        var done = st.done || 0, total = st.total || 0;
-        _sdShowProgress(st.progress || 0, total ? ('抓取中 ' + done + '/' + total + ' 个账号') : '抓取中...');
-      }
       var meta = await ApiService.getSeedingWorksMeta(platform);
       if (meta && meta.mtime && (!beforeMtime || meta.mtime > beforeMtime)) {
         clearInterval(timer);
         await _sdLoadWorks(platform);
         _sdLoadDeleted();
-        _sdLoadMeta(platform);
-        _sdShowProgress(100, '抓取完成');
         showToast('抓取完成，作品数据已更新');
-        setTimeout(_sdHideProgress, 3000);
         return;
       }
       if (tries >= maxTries) {
         clearInterval(timer);
-        _sdHideProgress();
         await _sdLoadWorks(platform);
         _sdLoadDeleted();
         showToast('抓取可能仍在进行或未完成，请稍后手动点击「数据更新」查看', 'error');
       }
     }, 3000);
-  }
-
-  // ==================== 数据导入（Excel/CSV 上传到业务表） ====================
-  // 选择文件后加载其工作表列表，供用户选择要导入的 sheet
-  async function onImpFileChange() {
-    const fileInput = document.getElementById('impFile');
-    const wrap = document.getElementById('impSheetWrap');
-    const sel = document.getElementById('impSheet');
-    const file = fileInput && fileInput.files.length ? fileInput.files[0] : null;
-    if (!file || !/\.(xlsx|xls)$/i.test(file.name)) {
-      if (wrap) wrap.style.display = 'none';
-      if (sel) sel.value = '';
-      return;
-    }
-    const fd = new FormData();
-    fd.append('file', file);
-    try {
-      const res = await fetch('/api/import/sheets', { method: 'POST', body: fd });
-      if (res.status === 401) { sessionStorage.clear(); location.reload(); return; }
-      const json = await res.json();
-      if (json.code === 0 && json.data && Array.isArray(json.data.sheets) && json.data.sheets.length) {
-        sel.innerHTML = '';
-        json.data.sheets.forEach(s => {
-          const o = document.createElement('option');
-          o.value = s; o.textContent = s;
-          sel.appendChild(o);
-        });
-        sel.value = json.data.sheets[0];
-        wrap.style.display = 'flex';
-      } else {
-        wrap.style.display = 'none';
-      }
-    } catch (e) {
-      wrap.style.display = 'none';
-    }
-  }
-
-  async function importExcel() {
-    const tableSel = document.getElementById('impTable');
-    const fileInput = document.getElementById('impFile');
-    const status = document.getElementById('impStatus');
-    const table = tableSel ? tableSel.value : '';
-    const file = fileInput && fileInput.files.length ? fileInput.files[0] : null;
-    if (!table) { showToast('请选择目标表', 'error'); return; }
-    if (!file) { showToast('请选择数据文件', 'error'); return; }
-    const sheetSel = document.getElementById('impSheet');
-    const fd = new FormData();
-    fd.append('table', table);
-    fd.append('file', file);
-    if (sheetSel && sheetSel.value) fd.append('sheet', sheetSel.value);
-    const btn = document.querySelector('#page-data-import .btn');
-    if (btn) btn.disabled = true;
-    if (status) status.textContent = '正在导入，请稍候...';
-    try {
-      const res = await fetch('/api/import/excel', { method: 'POST', body: fd });
-      if (res.status === 401) { sessionStorage.clear(); location.reload(); return; }
-      const json = await res.json();
-      if (json.code !== 0) {
-        if (status) status.textContent = json.msg || '导入失败';
-        showToast(json.msg || '导入失败', 'error');
-      } else {
-        const d = json.data || {};
-        let text = '成功 ' + d.inserted + ' 行' + (d.failed ? '，失败 ' + d.failed + ' 行' : '');
-        if (d.failed && d.error) text += ' ｜ 失败原因示例：' + d.error;
-        if (status) status.textContent = text;
-        showToast(text, d.failed ? 'error' : 'success');
-      }
-    } catch (e) {
-      if (status) status.textContent = '导入失败: ' + e.message;
-      showToast('导入失败', 'error');
-    } finally {
-      if (btn) btn.disabled = false;
-    }
   }
 
   return {
@@ -6143,13 +5720,15 @@ const App = (() => {
     // Operation Performance
     renderOperationPerformance, opGoPage,
     // Product Selection
-    renderProductSelection, switchSelectionTab, filterTmall, resetTmall, tmallGoPage, filterDouyin,
+    renderProductSelection, switchSelectionTab, filterTmall, resetTmall, filterDouyin, runDouyinFilter,
+    closeDouyinFilterModal, confirmDouyinFilter,
     filterAisou, resetAisou,
     loadTmallMarket, triggerTmallMarketScrape,
     loadDouyinMarket, triggerDouyinMarketScrape,
     load1688Market, trigger1688MarketScrape,
     m1688ToggleCookiePanel, m1688SaveCookie,
     tmToggleCookiePanel, tmSaveCookie,
+    psAgentAsk, psAgentSend,
     // Finance
     renderFinance, finGoPage,
     // HR
@@ -6163,8 +5742,6 @@ const App = (() => {
     aiToggleChat, aiSendMessage,
     // Order Details
     renderOrderDetails, _odGoPage, _odSetDateRange, toggleOdColPanel, toggleOdCol, toggleOdDatePicker, odCalPick, odCalNav, odCalClear, odCalToday,
-    // Data Import
-    importExcel, onImpFileChange,
   };
 })();
 
