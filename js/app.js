@@ -29,7 +29,11 @@ const ApiService = (() => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       if (json.code !== 0) throw new Error(json.msg);
-      return json.data;
+      // 注意：后端「成功但无返回数据」的响应是 {code:0, data:null}，与「请求失败」(返回 null) 无法区分。
+      // 直接 return json.data 会让调用方的 `res === null` / `res !== null` 把保存成功误判为失败
+      // （管理员与权限页的角色/管理员保存、各页 Cookie 保存都踩过这个坑）。
+      // 故成功一律返回非 null：无数据时返回 true。
+      return (json.data === null || json.data === undefined) ? true : json.data;
     } catch (e) {
       console.warn('[API] 请求失败:', path, e.message);
       return null;
