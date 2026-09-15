@@ -324,8 +324,9 @@ def _extract_keywords(category, titles):
     return [t[:10] for t in titles[:3]]
 
 
-def _gather_link_data(target_date):
-    """收集抖店/京东/千牛单链接数据（按日期聚合）"""
+def _gather_link_data(start_date, end_date=None):
+    """收集抖店/京东/千牛单链接数据（按日期或日期范围聚合）"""
+    end_date = end_date or start_date
     links = {}
 
     # 抖店：含投放消耗/佣金/补贴等成本字段
@@ -348,8 +349,8 @@ def _gather_link_data(target_date):
                 COALESCE(SUM(商品曝光次数), 0)    AS exposure_times,
                 COALESCE(SUM(商品点击次数), 0)    AS click_times
             FROM 抖店单链接数据表
-            WHERE 统计周期 = %s
-        """, [target_date])[0]
+            WHERE 统计周期 >= %s AND 统计周期 <= %s
+        """, [start_date, end_date])[0]
         links['抖店'] = {
             'payment': float(r['payment'] or 0),
             'netPayment': float(r['net_payment'] or 0),
@@ -387,8 +388,8 @@ def _gather_link_data(target_date):
                 COALESCE(SUM(商品曝光次数), 0)        AS exposure_times,
                 COALESCE(SUM(商品曝光人数), 0)        AS exposure_people
             FROM 京东单链接数据表
-            WHERE 时间 = %s
-        """, [target_date])[0]
+            WHERE 时间 >= %s AND 时间 <= %s
+        """, [start_date, end_date])[0]
         links['京东'] = {
             'payment': float(r['payment'] or 0),
             'orders': int(r['orders'] or 0),
@@ -422,8 +423,8 @@ def _gather_link_data(target_date):
                 COALESCE(SUM(商品浏览量), 0)      AS views,
                 COALESCE(AVG(访客平均价值), 0)    AS visitor_value
             FROM 千牛单链接数据表
-            WHERE 统计日期 = %s
-        """, [target_date])[0]
+            WHERE 统计日期 >= %s AND 统计日期 <= %s
+        """, [start_date, end_date])[0]
         links['千牛'] = {
             'payment': float(r['payment'] or 0),
             'orders': int(r['orders'] or 0),
@@ -498,8 +499,9 @@ def _analyze_links(links):
     return link_issues
 
 
-def _gather_qianniu_promo(target_date):
-    """收集千牛单链接推广数据（推广消耗 vs 产出）"""
+def _gather_qianniu_promo(start_date, end_date=None):
+    """收集千牛单链接推广数据（推广消耗 vs 产出，支持日期范围）"""
+    end_date = end_date or start_date
     try:
         r = db_execute("""
             SELECT
@@ -514,8 +516,8 @@ def _gather_qianniu_promo(target_date):
                 COUNT(DISTINCT 商品ID)             AS products,
                 COUNT(DISTINCT 店铺名)             AS stores
             FROM 千牛单链接推广数据表
-            WHERE 统计日期 = %s
-        """, [target_date])[0]
+            WHERE 统计日期 >= %s AND 统计日期 <= %s
+        """, [start_date, end_date])[0]
         spend = float(r['spend'] or 0)
         direct_gmv = float(r['direct_gmv'] or 0)
         total_gmv = float(r['total_gmv'] or 0)
@@ -561,8 +563,9 @@ def _analyze_qianniu_promo(promo):
     return issues
 
 
-def gather_daily_data(target_date):
-    """收集指定日期的全维度数据：店铺营销数据 + 抖店/京东/千牛单链接数据"""
+def gather_daily_data(start_date, end_date=None):
+    """收集指定日期（或日期范围）的全维度数据：店铺营销数据 + 抖店/京东/千牛单链接数据"""
+    end_date = end_date or start_date
     row = db_execute("""
         SELECT
             COALESCE(SUM(净支付金额), 0) AS net_payment,
@@ -577,8 +580,8 @@ def gather_daily_data(target_date):
             COALESCE(AVG(订单退款率), 0)       AS order_refund_rate,
             COALESCE(AVG(客单价), 0)       AS aov
         FROM 店铺营销数据
-        WHERE 日期 = %s
-    """, [target_date])[0]
+        WHERE 日期 >= %s AND 日期 <= %s
+    """, [start_date, end_date])[0]
 
     # 分平台数据
     platform_rows = db_execute("""
@@ -591,10 +594,10 @@ def gather_daily_data(target_date):
             COALESCE(SUM(访客数), 0)      AS visitors,
             COALESCE(SUM(支付买家数), 0)   AS payers
         FROM 店铺营销数据
-        WHERE 日期 = %s
+        WHERE 日期 >= %s AND 日期 <= %s
         GROUP BY 平台
         ORDER BY net_payment DESC
-    """, [target_date])
+    """, [start_date, end_date])
 
     # 分品牌数据 (TOP10)
     brand_rows = db_execute("""
@@ -603,11 +606,11 @@ def gather_daily_data(target_date):
             COALESCE(SUM(净支付金额), 0) AS net_payment,
             COALESCE(SUM(访客数), 0)      AS visitors
         FROM 店铺营销数据
-        WHERE 日期 = %s
+        WHERE 日期 >= %s AND 日期 <= %s
         GROUP BY 品牌
         ORDER BY net_payment DESC
         LIMIT 10
-    """, [target_date])
+    """, [start_date, end_date])
 
     # 分店铺数据 (TOP15，包含退款/推广/转化核心指标)
     store_rows = db_execute("""
@@ -624,28 +627,29 @@ def gather_daily_data(target_date):
             COALESCE(AVG(订单退款率), 0)       AS refund_rate,
             COALESCE(AVG(客单价), 0)       AS aov
         FROM 店铺营销数据
-        WHERE 日期 = %s
+        WHERE 日期 >= %s AND 日期 <= %s
         GROUP BY 平台, 店铺名
         ORDER BY net_payment DESC
         LIMIT 15
-    """, [target_date])
+    """, [start_date, end_date])
 
     # 单链接数据（抖店/京东/千牛）+ 消耗产出比分析
-    links = _gather_link_data(target_date)
+    links = _gather_link_data(start_date, end_date)
     link_issues = _analyze_links(links)
 
     # 千牛单链接推广数据（推广消耗 vs 产出）
-    qianniu_promo = _gather_qianniu_promo(target_date)
+    qianniu_promo = _gather_qianniu_promo(start_date, end_date)
     promo_issues = _analyze_qianniu_promo(qianniu_promo)
 
     # 品类维度汇总（复用品类营销聚合逻辑）
     try:
-        category = _gather_category_data(str(target_date), str(target_date))
+        category = _gather_category_data(str(start_date), str(end_date))
     except Exception as e:
         category = {'totals': {}, 'categories': [], 'error': str(e)}
 
+    date_label = str(start_date) if str(start_date) == str(end_date) else f'{start_date} ~ {end_date}'
     return {
-        'date': str(target_date),
+        'date': date_label,
         'summary': {
             'netPayment': float(row['net_payment']),
             'payment': float(row['payment']),
@@ -694,12 +698,14 @@ def gather_daily_data(target_date):
     }
 
 
-def _build_analysis_context(target_date):
+def _build_analysis_context(start_date, end_date=None):
     """把 gather_daily_data 结果转成中文 key 的知识库上下文，供每日数据分析智能体使用"""
-    data = gather_daily_data(target_date)
+    end_date = end_date or start_date
+    data = gather_daily_data(start_date, end_date)
     sm = data['summary']
+    date_label = str(start_date) if str(start_date) == str(end_date) else f'{start_date} ~ {end_date}'
     return {
-        '日期': str(target_date),
+        '日期': date_label,
         '营销综合': {
             '净支付金额': sm['netPayment'],
             '支付金额': sm['payment'],
@@ -890,6 +896,17 @@ def success(data=None, msg='ok'):
 
 def fail(msg='error', code=1):
     return jsonify({'code': code, 'msg': msg, 'data': None})
+
+
+# ======================== 人事数据中心（5 张人事表通用 CRUD） ========================
+# 独立模块 backend/hr_api.py，技术框架与本文件完全一致（Flask Blueprint + 同一连接池）
+try:
+    from hr_api import hr_bp, init_hr_api
+    init_hr_api(db_execute, db_execute_insert, success, fail)
+    app.register_blueprint(hr_bp)
+    print('[HR] 人事数据中心接口已注册: /api/hr/meta, /api/hr/<key>/rows')
+except Exception as _hr_err:
+    print('[HR] 人事接口注册失败:', _hr_err)
 
 
 # ======================== 健康检查 ========================
@@ -2525,13 +2542,23 @@ def analysis_agent():
         if not question:
             return fail('请输入分析需求')
 
-        target_str = (payload.get('date') or '').strip()
+        start_str = (payload.get('start') or '').strip()
+        end_str = (payload.get('end') or '').strip()
+        date_str = (payload.get('date') or '').strip()
         try:
-            target_date = datetime.strptime(target_str, '%Y-%m-%d').date() if target_str else (date.today() - timedelta(days=1))
+            if start_str and end_str:
+                start_date = datetime.strptime(start_str, '%Y-%m-%d').date()
+                end_date = datetime.strptime(end_str, '%Y-%m-%d').date()
+                if end_date < start_date:
+                    start_date, end_date = end_date, start_date
+            elif date_str:
+                start_date = end_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+            else:
+                start_date = end_date = date.today() - timedelta(days=1)
         except ValueError:
-            target_date = date.today() - timedelta(days=1)
+            start_date = end_date = date.today() - timedelta(days=1)
 
-        context = _build_analysis_context(target_date)
+        context = _build_analysis_context(start_date, end_date)
         ctx_json = json.dumps(context, ensure_ascii=False, default=str)
 
         sys_p = (
@@ -2539,7 +2566,7 @@ def analysis_agent():
             '你是"数据分析智能体"，一名资深电商经营数据分析师，服务于同时经营多平台（淘宝/京东/拼多多/抖音/快手等）的商家。'
             '你只基于给定的知识库数据做分析，绝不编造。\n\n'
             '# 数据来源与结构\n'
-            '你会收到一份结构化的知识库检索结果（JSON），包含该商家的四类经营数据，均为同一天（指定日期）：\n\n'
+            '你会收到一份结构化的知识库检索结果（JSON），包含该商家的四类经营数据，均为指定日期（或日期范围）内的汇总：\n\n'
             '1. 营销综合（营销综合）\n'
             '   字段：净支付金额、支付金额、退款金额、推广花费、推广总成交、访客数、支付买家数、支付转化率(%)、订单退款率(%)、客单价\n'
             '   含义：整体经营健康度\n\n'
@@ -2612,11 +2639,12 @@ def analysis_agent():
             analysis = analysis.strip()
 
         sm = context['营销综合']
+        date_label = str(start_date) if start_date == end_date else f'{start_date} ~ {end_date}'
         return success({
             'analysis': analysis,
             'cards': cards,
             'meta': {
-                'date': str(target_date),
+                'date': date_label,
                 '净支付金额': sm['净支付金额'],
                 '退款率': sm['订单退款率(%)'],
                 'ROI': round(sm['推广总成交'] / sm['推广花费'], 2) if sm['推广花费'] > 0 else 0,

@@ -34,14 +34,40 @@ except ImportError:
     HAS_XLRD = False
 
 # ─── 默认数据库配置 ─────────────────────────────────────────
-DEFAULT_DB = {
-    'host': '127.0.0.1',   # 走 SSH 隧道连服务器库：先开隧道 python .deploy/ssx.py tunnel
-    'port': 3307,
+# 【唯一数据源】所有数据入口统一指向「内网自建 MySQL」：192.168.2.10:3306
+# 真源是 backend/config.py 的 DB_CONFIG，这里优先复用它，保证导入工具与后端读同一个库。
+# ⚠️ 禁止改回 127.0.0.1:3307（那是 SSH 隧道到腾讯云服务器的库），会造成
+#    「导入成功但网页看不到」的两库分裂问题。
+# ⚠️ 禁止指向腾讯云 119.45.187.154。
+_FALLBACK_DB = {
+    'host': '192.168.2.10',   # 内网自建 MySQL
+    'port': 3306,
     'user': 'root',
-    'password': os.environ.get('DB_PASSWORD', ''),  # 服务器 root 密码，建议设环境变量 DB_PASSWORD
+    'password': os.environ.get('DB_PASSWORD', '123456'),
     'database': '数据',
     'charset': 'utf8mb4',
 }
+
+
+def _load_default_db():
+    """优先复用 backend/config.py 的 DB_CONFIG；取不到时用内置的自建库默认值。"""
+    try:
+        _backend_dir = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'backend')
+        )
+        if _backend_dir not in sys.path:
+            sys.path.insert(0, _backend_dir)
+        from config import DB_CONFIG  # noqa: E402
+        cfg = dict(_FALLBACK_DB)
+        for k in ('host', 'port', 'user', 'password', 'database', 'charset'):
+            if k in DB_CONFIG:
+                cfg[k] = DB_CONFIG[k]
+        return cfg, 'backend/config.py'
+    except Exception:
+        return dict(_FALLBACK_DB), '内置默认值'
+
+
+DEFAULT_DB, DB_SOURCE = _load_default_db()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -81,6 +107,8 @@ class ImportToolApp:
 
         self._build_ui()
         self._log('数据导入工具已启动')
+        self._log('默认数据源：%s:%s/%s（来源：%s）'
+                  % (DEFAULT_DB['host'], DEFAULT_DB['port'], DEFAULT_DB['database'], DB_SOURCE))
         self._auto_connect()
 
     # ── GUI 构建 ──────────────────────────────────────────
@@ -138,6 +166,16 @@ class ImportToolApp:
 
         self.lbl_conn_status = ttk.Label(r2, text='未连接', foreground='red')
         self.lbl_conn_status.pack(side=tk.LEFT, padx=12)
+
+        # 数据源提示：始终提醒当前指向的是自建 MySQL，避免误连线上库
+        r3 = ttk.Frame(f)
+        r3.pack(fill=tk.X, pady=(2, 0))
+        ttk.Label(
+            r3,
+            text='数据源：%s:%s/%s（内网自建 MySQL · 配置来源 %s）'
+                 % (DEFAULT_DB['host'], DEFAULT_DB['port'], DEFAULT_DB['database'], DB_SOURCE),
+            foreground='#0d9488',
+        ).pack(side=tk.LEFT)
 
     def _build_file_frame(self, parent):
         """文件选择"""

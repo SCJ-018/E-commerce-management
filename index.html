@@ -7,8 +7,10 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config={theme:{extend:{colors:{brand:'#1677ff','brand-dark':'#0958d9','brand-light':'#e6f4ff','bg-gray':'#f5f7fa'},borderRadius:{'8':'8px'},boxShadow:{card:'0 2px 8px rgba(0,0,0,0.06),0 1px 4px rgba(0,0,0,0.04)','card-hover':'0 4px 16px rgba(0,0,0,0.08),0 2px 8px rgba(0,0,0,0.06)',login:'0 4px 24px rgba(0,0,0,0.08)'}}}}</script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="css/hr.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script async src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" onerror="console.warn('ECharts加载失败')"></script>
+  <script src="js/vendor/vue.global.js"></script>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Helvetica Neue",Arial,sans-serif}
@@ -648,7 +650,7 @@
       <div class="nav-group">
         <div class="nav-group-title"><i class="fa-solid fa-building ng-icon"></i> 人事中心 <i class="fa-solid fa-chevron-right ng-chevron"></i></div>
         <div class="nav-group-items">
-          <a href="#hr" class="nav-item" data-page="hr"><i class="fa-solid fa-user-group ni-icon"></i> 人事中心</a>
+          <a href="#hr" class="nav-item" data-page="hr"><i class="fa-solid fa-user-group ni-icon"></i> 人事数据中心</a>
         </div>
       </div>
       <div class="nav-group-divider"></div>
@@ -729,6 +731,7 @@
         </div>
       </div>
     </section>
+    <div id="page-marketing-overview-vue" class="hidden" style="padding:8px 24px 40px;width:100%"></div>
 
     <section id="page-category-marketing" class="page-section hidden">
       <style>
@@ -805,6 +808,7 @@
       </div>
       <div id="catTooltip" class="cat-tooltip"></div>
     </section>
+    <div id="page-category-marketing-vue" class="hidden" style="padding:8px 24px 40px;width:100%"></div>
 
     <section id="page-platform-store" class="page-section hidden">
 	      <!-- ====== 页头 ====== -->
@@ -938,6 +942,7 @@
 	        </div>
 	      </div>
 	    </section>
+    <div id="page-platform-store-vue" class="hidden" style="padding:8px 24px 40px;width:100%"></div>
     <section id="page-daily-analysis" class="page-section hidden">
       <style>
         .da-layout{display:flex;gap:18px;align-items:flex-start}
@@ -1010,89 +1015,9 @@
       </div>
       </div><!-- /.da-layout -->
     </section>
-    <section id="page-store-account" class="page-section hidden">
-      <div class="dashboard-header">
-        <div class="dh-left">
-          <div class="dh-icon" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);box-shadow:0 2px 8px rgba(99,102,241,0.25)"><i class="fa-solid fa-id-card" style="color:#fff;font-size:18px"></i></div>
-          <div class="dh-title-group"><h2 class="dh-title">店铺账号管理</h2><span class="dh-subtitle">Store Account Management</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>共 <span id="saTotalStores">0</span> 个店铺账号</span></div>
-        </div>
-        <div class="dh-chips">
-          <div class="dh-chip"><span class="dh-chip-label">启用中</span><span class="dh-chip-value" id="saEnabled" style="color:#16a34a">--</span></div>
-          <div class="dh-chip"><span class="dh-chip-label">已过期</span><span class="dh-chip-value" id="saExpired" style="color:#dc2626">--</span></div>
-          <div class="dh-chip"><span class="dh-chip-label">待授权</span><span class="dh-chip-value" id="saPending" style="color:#f59e0b">--</span></div>
-        </div>
-      </div>
-      <div class="ap-toolbar">
-        <div class="ap-search-wrap"><i class="fa-solid fa-search"></i><input class="ap-search-input" id="saSearch" placeholder="搜索店铺名称/账号/平台..." oninput="App.filterSATable()"></div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <select id="saPlatformFilter" class="dh-select" onchange="App.filterSATable()"><option value="">全部平台</option><option>淘宝</option><option>京东</option><option>拼多多</option><option>抖音</option><option>快手</option><option>小红书</option><option>微信小程序</option></select>
-          <select id="saStatusFilter" class="dh-select" onchange="App.filterSATable()"><option value="">全部状态</option><option value="enabled">启用中</option><option value="expired">已过期</option><option value="pending">待授权</option></select>
-          <button class="ap-btn-primary" onclick="App.openSAModal()"><i class="fa-solid fa-plus"></i> 新增店铺账号</button>
-        </div>
-      </div>
-      <div class="ap-table-wrap">
-        <table class="ap-table" id="saTable">
-          <thead><tr>
-            <th style="width:50px">ID</th><th style="width:160px">店铺名称</th><th style="width:70px">平台</th>
-            <th style="width:110px">账号</th><th style="width:90px">授权方式</th>
-            <th style="width:100px">授权到期</th><th style="width:80px">状态</th>
-            <th style="width:130px">最后同步</th><th style="width:160px">操作</th>
-          </tr></thead>
-          <tbody id="saTableBody"></tbody>
-        </table>
-      </div>
-      <div class="ap-table-info" id="saTableInfo"></div>
-    </section>
-    <section id="page-operation-performance" class="page-section hidden">
-      <div class="dashboard-header">
-        <div class="dh-left">
-          <div class="dh-icon" style="background:linear-gradient(135deg,#f59e0b,#fbbf24);box-shadow:0 2px 8px rgba(245,158,11,0.25)"><i class="fa-solid fa-chart-line" style="color:#fff;font-size:18px"></i></div>
-          <div class="dh-title-group"><h2 class="dh-title">运营业绩面板</h2><span class="dh-subtitle">Operations Performance Dashboard</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>实时考核 · 本月数据</span></div>
-        </div>
-        <div class="dh-filters">
-          <div class="dh-date-shortcuts" id="opDateShortcuts">
-            <button class="dh-ds-btn" data-range="1">本月</button>
-            <button class="dh-ds-btn active" data-range="3">本季度</button>
-            <button class="dh-ds-btn" data-range="12">本年度</button>
-          </div>
-          <select id="opDepartment" class="dh-select"><option value="">全部部门</option><option>淘宝运营部</option><option>京东运营部</option><option>抖音运营部</option><option>拼多多运营部</option></select>
-        </div>
-      </div>
-      <!-- ====== KPI 总览卡片 ====== -->
-      <div class="mkt-cards-grid" id="opCards">
-        <div class="mkt-card mkt-card--emerald"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-bullseye"></i></div><span class="mkt-card-label">部门总GMV</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="opGMV">--</div><div class="mkt-card-trend" id="opGMVTrend"></div></div></div>
-        <div class="mkt-card mkt-card--indigo"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-user-check"></i></div><span class="mkt-card-label">目标完成率</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="opTargetRate">--</div><div class="mkt-card-trend" id="opTargetRateTrend"></div></div></div>
-        <div class="mkt-card mkt-card--cyan"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-people-group"></i></div><span class="mkt-card-label">运营团队人数</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="opTeamSize">--</div><div class="mkt-card-trend" id="opTeamSizeTrend"></div></div></div>
-        <div class="mkt-card mkt-card--amber"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-ranking-star"></i></div><span class="mkt-card-label">人均GMV</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="opAvgGMV">--</div><div class="mkt-card-trend" id="opAvgGMVTrend"></div></div></div>
-      </div>
-      <!-- ====== 图表区 ====== -->
-      <div class="charts-row" style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">
-        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">各部门GMV对比</span><span style="font-size:0.75rem;color:#94a3b8">按月展示各部门业绩达成情况</span></div><div class="chart-module-body" id="chartOPDept" style="min-height:300px"></div></div>
-        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">GMV月度趋势</span><span style="font-size:0.75rem;color:#94a3b8">各月GMV与环比增长情况</span></div><div class="chart-module-body" id="chartOPTrend" style="min-height:300px"></div></div>
-      </div>
-      <!-- ====== 个人业绩排行榜 ====== -->
-      <div class="ps-table-card">
-        <div class="ps-table-header">
-          <div class="ps-table-title-group"><h3>运营人员业绩排名</h3><span class="ps-table-badge" id="opRankTotal" style="background:#fef3c7;color:#d97706">共 0 人</span></div>
-          <div class="ps-table-tools">
-            <div class="ps-search-wrap"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="opSearch" placeholder="搜索姓名/部门..."></div>
-            <select id="opSortBy" class="ps-select-sm"><option value="gmv">按GMV排序</option><option value="targetRate">按目标完成率排序</option><option value="roi">按ROI排序</option></select>
-          </div>
-        </div>
-        <div class="ps-table-wrap">
-          <table class="ps-store-table" id="opRankTable">
-            <thead><tr>
-              <th style="width:50px">排名</th><th style="width:80px">姓名</th><th style="width:110px">部门</th>
-              <th class="ps-col-num" style="width:130px">GMV</th><th class="ps-col-num" style="width:100px">目标完成率</th>
-              <th class="ps-col-num" style="width:90px">ROI</th><th class="ps-col-num" style="width:90px">转化率</th>
-              <th class="ps-col-num" style="width:100px">客单价</th><th style="width:80px">绩效评级</th>
-            </tr></thead>
-            <tbody id="opRankTbody"></tbody>
-          </table>
-        </div>
-        <div class="ps-table-footer" id="opRankPagination"></div>
-      </div>
-    </section>
+    <div id="page-daily-analysis-vue" class="hidden" style="padding:8px 24px 40px;width:100%"></div>
+    <div id="page-store-account" class="page-section hidden" style="padding:8px 24px 40px;width:100%"></div>
+    <div id="page-operation-performance" class="page-section hidden" style="padding:8px 24px 40px;width:100%"></div>
     <section id="page-product-selection" class="page-section hidden">
       <!-- 榜单切换标签 -->
       <style>
@@ -1488,6 +1413,7 @@
       </div>
       </div><!-- /.sel-layout -->
     </section>
+    <div id="page-product-selection-vue" class="hidden" style="padding:8px 24px 40px;width:100%"></div>
     <section id="page-seeding-monitor" class="page-section hidden">
       <style>
         .sd-layout{display:flex;gap:18px;align-items:flex-start}
@@ -1694,6 +1620,7 @@
       </div>
       </div><!-- /.sd-layout -->
     </section>
+    <div id="page-seeding-monitor-vue" class="hidden" style="padding:8px 24px 40px;width:100%"></div>
     <section id="page-data-import" class="page-section hidden">
       <div class="dashboard-header">
         <div class="dh-left">
@@ -1735,105 +1662,8 @@
         </div>
       </div>
     </section>
-    <section id="page-finance" class="page-section hidden">
-      <div class="dashboard-header">
-        <div class="dh-left">
-          <div class="dh-icon" style="background:linear-gradient(135deg,#0891b2,#22d3ee);box-shadow:0 2px 8px rgba(8,145,178,0.25)"><i class="fa-solid fa-coins" style="color:#fff;font-size:18px"></i></div>
-          <div class="dh-title-group"><h2 class="dh-title">财务中心</h2><span class="dh-subtitle">Finance Center</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>实时核算 · 更新于 <span id="finUpdateTime">--</span></span></div>
-        </div>
-        <div class="dh-filters">
-          <div class="dh-date-shortcuts" id="finDateShortcuts">
-            <button class="dh-ds-btn" data-range="1">本月</button>
-            <button class="dh-ds-btn active" data-range="3">本季度</button>
-            <button class="dh-ds-btn" data-range="12">本年度</button>
-          </div>
-          <select id="finPlatform" class="dh-select"><option value="">全部平台</option><option>淘宝</option><option>京东</option><option>拼多多</option><option>抖音</option><option>快手</option></select>
-        </div>
-      </div>
-      <!-- ====== 财务概览卡片 ====== -->
-      <div class="mkt-cards-grid" id="finCards">
-        <div class="mkt-card mkt-card--emerald"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-sack-dollar"></i></div><span class="mkt-card-label">总营收</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finRevenue">--</div><div class="mkt-card-trend" id="finRevenueTrend"></div></div></div>
-        <div class="mkt-card mkt-card--coral"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-arrow-trend-down"></i></div><span class="mkt-card-label">总成本</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finCost">--</div><div class="mkt-card-trend" id="finCostTrend"></div></div></div>
-        <div class="mkt-card mkt-card--indigo"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-chart-pie"></i></div><span class="mkt-card-label">净利润</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finProfit">--</div><div class="mkt-card-trend" id="finProfitTrend"></div></div></div>
-        <div class="mkt-card mkt-card--cyan"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-percent"></i></div><span class="mkt-card-label">利润率</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finMargin">--</div><div class="mkt-card-trend" id="finMarginTrend"></div></div></div>
-        <div class="mkt-card mkt-card--rose"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-rotate-left"></i></div><span class="mkt-card-label">退款金额</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finRefund">--</div><div class="mkt-card-trend" id="finRefundTrend"></div></div></div>
-        <div class="mkt-card mkt-card--amber"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-receipt"></i></div><span class="mkt-card-label">推广花费</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finAdSpend">--</div><div class="mkt-card-trend" id="finAdSpendTrend"></div></div></div>
-        <div class="mkt-card mkt-card--violet"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-truck"></i></div><span class="mkt-card-label">物流成本</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finLogistics">--</div><div class="mkt-card-trend" id="finLogisticsTrend"></div></div></div>
-        <div class="mkt-card mkt-card--green"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-hand-holding-dollar"></i></div><span class="mkt-card-label">应收账款</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="finReceivable">--</div><div class="mkt-card-trend" id="finReceivableTrend"></div></div></div>
-      </div>
-      <!-- ====== 图表区 ====== -->
-      <div class="charts-row" style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">
-        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">月度营收与利润趋势</span><span style="font-size:0.75rem;color:#94a3b8">近12个月收入、成本、利润走势</span></div><div class="chart-module-body" id="chartFinTrend" style="min-height:300px"></div></div>
-        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">成本结构分析</span><span style="font-size:0.75rem;color:#94a3b8">按类别拆分的成本构成占比</span></div><div class="chart-module-body" id="chartFinCost" style="min-height:300px"></div></div>
-      </div>
-      <!-- ====== 收支明细表 ====== -->
-      <div class="ps-table-card">
-        <div class="ps-table-header">
-          <div class="ps-table-title-group"><h3>收支明细</h3><span class="ps-table-badge" id="finTxTotal" style="background:#ecfeff;color:#0891b2">共 0 条</span></div>
-          <div class="ps-table-tools">
-            <div class="ps-search-wrap"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="finSearch" placeholder="搜索摘要/订单号..."></div>
-            <select id="finTxType" class="ps-select-sm"><option value="">全部类型</option><option value="income">收入</option><option value="expense">支出</option><option value="refund">退款</option></select>
-          </div>
-        </div>
-        <div class="ps-table-wrap">
-          <table class="ps-store-table" id="finTable">
-            <thead><tr>
-              <th style="width:100px">日期</th><th style="width:110px">类型</th><th style="width:130px">订单号</th>
-              <th style="width:160px">摘要</th><th style="width:80px">平台</th>
-              <th class="ps-col-num" style="width:110px">金额</th><th style="width:90px">支付方式</th><th style="width:80px">状态</th>
-            </tr></thead>
-            <tbody id="finTbody"></tbody>
-          </table>
-        </div>
-        <div class="ps-table-footer" id="finPagination"></div>
-      </div>
-    </section>
-    <section id="page-hr" class="page-section hidden">
-      <div class="dashboard-header">
-        <div class="dh-left">
-          <div class="dh-icon" style="background:linear-gradient(135deg,#7c3aed,#a78bfa);box-shadow:0 2px 8px rgba(124,58,237,0.25)"><i class="fa-solid fa-building" style="color:#fff;font-size:18px"></i></div>
-          <div class="dh-title-group"><h2 class="dh-title">人事中心</h2><span class="dh-subtitle">Human Resources Center</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>实时更新 · 共 <span id="hrTotalEmp">0</span> 名员工</span></div>
-        </div>
-        <div class="dh-chips">
-          <div class="dh-chip"><span class="dh-chip-label">在职</span><span class="dh-chip-value" id="hrActive" style="color:#16a34a">--</span></div>
-          <div class="dh-chip"><span class="dh-chip-label">试用期</span><span class="dh-chip-value" id="hrProbation" style="color:#f59e0b">--</span></div>
-          <div class="dh-chip"><span class="dh-chip-label">本月入职</span><span class="dh-chip-value" id="hrNewHires" style="color:#6366f1">--</span></div>
-          <div class="dh-chip"><span class="dh-chip-label">离职</span><span class="dh-chip-value" id="hrResigned" style="color:#dc2626">--</span></div>
-        </div>
-      </div>
-      <!-- ====== 统计卡片 ====== -->
-      <div class="mkt-cards-grid" id="hrCards">
-        <div class="mkt-card mkt-card--emerald"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-user-check"></i></div><span class="mkt-card-label">出勤率</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="hrAttendance">--</div><div class="mkt-card-trend" id="hrAttendanceTrend"></div></div></div>
-        <div class="mkt-card mkt-card--indigo"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-clock"></i></div><span class="mkt-card-label">平均工时</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="hrAvgHours">--</div><div class="mkt-card-trend" id="hrAvgHoursTrend"></div></div></div>
-        <div class="mkt-card mkt-card--cyan"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-cake-candles"></i></div><span class="mkt-card-label">本月生日</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="hrBirthdays">--</div><div class="mkt-card-trend neutral"><span>人</span></div></div></div>
-        <div class="mkt-card mkt-card--amber"><div class="mkt-card-header"><div class="mkt-card-icon"><i class="fa-solid fa-graduation-cap"></i></div><span class="mkt-card-label">培训完成率</span></div><div class="mkt-card-body"><div class="mkt-card-value" id="hrTraining">--</div><div class="mkt-card-trend" id="hrTrainingTrend"></div></div></div>
-      </div>
-      <!-- ====== 图表区 ====== -->
-      <div class="charts-row" style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">
-        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">部门人员分布</span><span style="font-size:0.75rem;color:#94a3b8">各部门在职人数及占比</span></div><div class="chart-module-body" id="chartHRDept" style="min-height:300px"></div></div>
-        <div class="chart-module" style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;box-shadow:0 1px 4px rgba(0,0,0,0.03);padding:18px 20px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:1rem;font-weight:600;color:#1e293b">月度出勤趋势</span><span style="font-size:0.75rem;color:#94a3b8">近6个月各部门出勤率变化</span></div><div class="chart-module-body" id="chartHRAttendance" style="min-height:300px"></div></div>
-      </div>
-      <!-- ====== 员工花名册 ====== -->
-      <div class="ps-table-card">
-        <div class="ps-table-header">
-          <div class="ps-table-title-group"><h3>员工花名册</h3><span class="ps-table-badge" id="hrEmpTotal" style="background:#f5f3ff;color:#7c3aed">共 0 人</span></div>
-          <div class="ps-table-tools">
-            <div class="ps-search-wrap"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="hrSearch" placeholder="搜索工号/姓名/部门..."></div>
-            <select id="hrDeptFilter" class="ps-select-sm"><option value="">全部部门</option></select>
-            <button class="ap-btn-primary" onclick="App.hrOpenAdd()" style="height:38px"><i class="fa-solid fa-plus"></i> 添加员工</button>
-          </div>
-        </div>
-        <div class="ps-table-wrap">
-          <table class="ps-store-table" id="hrTable">
-            <thead><tr>
-              <th>工号</th><th>姓名</th><th>入职时间</th><th>一级部门</th><th>二级部门</th><th>直带人</th><th>岗级</th><th>手机号</th><th>身份证号</th><th>紧急联系人电话</th><th>状态</th><th>薪资待遇</th><th>转正日期</th><th>银行卡号</th><th>开户行</th><th>主人事</th>
-            </tr></thead>
-            <tbody id="hrTbody"></tbody>
-          </table>
-        </div>
-        <div class="ps-table-footer" id="hrPagination"></div>
-      </div>
-    </section>
+    <div id="page-finance" class="page-section hidden" style="padding:8px 24px 40px;width:100%"></div>
+    <div id="page-hr" class="page-section hidden" style="padding:8px 24px 40px;width:100%"></div>
     <!-- ====== 工具箱 - 违规词检测 (v3 仪表盘风格) ====== -->
     <section id="page-toolbox-violation-check" class="page-section hidden">
       <!-- 顶部统计卡片 -->
@@ -1951,6 +1781,7 @@
         </div>
       </div>
     </section>
+    <div id="page-toolbox-violation-check-vue" class="hidden" style="padding:8px 24px 40px;width:100%"></div>
     <style>
       .od-cal-wrap{display:flex;gap:16px}
       .od-cal{width:245px}
@@ -2058,6 +1889,7 @@
         </div>
       </div>
     </section>
+    <div id="page-order-details-vue" class="hidden" style="padding:8px 24px 40px;width:100%"></div>
 
     <section id="page-admin-permissions" class="page-section hidden">
       <div class="ap-tabs"><button class="ap-tab active" data-tab="admins">管理员列表</button><button class="ap-tab" data-tab="roles">角色与权限</button></div>
@@ -2093,6 +1925,7 @@
         <div class="data-table-wrap"><table class="data-table"><thead><tr><th>角色名称</th><th>权限</th><th>成员数</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="roleTableBody"></tbody></table></div>
       </div>
     </section>
+    <div id="page-admin-permissions-vue" class="hidden" style="padding:8px 24px 40px;width:100%"></div>
     <section id="page-profile" class="page-section hidden">
       <div class="dashboard-header">
         <div class="dh-left">
@@ -2194,6 +2027,7 @@
         </div>
       </div>
     </section>
+    <div id="page-profile-vue" class="hidden" style="padding:8px 24px 40px;width:100%"></div>
   </main>
 </div>
 
@@ -2342,5 +2176,22 @@
 </div>
 
 <script src="js/app.js"></script>
+<script src="js/vue/components.js"></script>
+<script src="js/vue/page-profile.js"></script>
+<script src="js/vue/page-hr-common.js"></script>
+<script src="js/vue/page-hr-tables.js"></script>
+<script src="js/vue/page-hr.js"></script>
+<script src="js/vue/page-violation.js"></script>
+<script src="js/vue/page-admin.js"></script>
+<script src="js/vue/page-selection.js"></script>
+<script src="js/vue/page-seeding.js"></script>
+<script src="js/vue/page-order-details.js"></script>
+<script src="js/vue/page-platform-store.js"></script>
+<script src="js/vue/page-category-marketing.js"></script>
+<script src="js/vue/page-marketing-overview.js"></script>
+<script src="js/vue/page-daily-analysis.js"></script>
+<script src="js/vue/page-store-account.js"></script>
+<script src="js/vue/page-operation-performance.js"></script>
+<script src="js/vue/page-finance.js"></script>
 </body>
 </html>

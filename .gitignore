@@ -76,3 +76,9 @@ _restore_backup_*/
 Thumbs.db
 .DS_Store
 desktop.ini
+
+# === WorkBuddy 项目数据（本地笔记 / 记忆，不入库）===
+.workbuddy/
+
+# === 选品助手运行态任务文件 ===
+tools/_selection_job.json

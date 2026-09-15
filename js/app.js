@@ -98,9 +98,23 @@ const ApiService = (() => {
     async updateAdmin(id, data) { return request('/admin/accounts/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
     async deleteAdmin(id) { return request('/admin/accounts/' + id, { method: 'DELETE' }); },
 
-    /** 员工花名册 */
+    /** 角色与权限 CRUD */
+    async getRoles() { return request('/admin/roles'); },
+    async createRole(data) { return request('/admin/roles', { method: 'POST', body: JSON.stringify(data) }); },
+    async updateRole(id, data) { return request('/admin/roles/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
+    async deleteRole(id) { return request('/admin/roles/' + id, { method: 'DELETE' }); },
+
+    /** 员工花名册（旧接口，保留兼容） */
     async getHrEmployees() { return request('/hr/employees'); },
     async createEmployee(data) { return request('/hr/employees', { method: 'POST', body: JSON.stringify(data) }); },
+
+    /** 人事数据中心：5 张人事表通用 CRUD */
+    async getHrMeta() { return request('/hr/meta'); },
+    async getHrCounts() { return request('/hr/counts'); },
+    async getHrRows(key) { return request('/hr/' + encodeURIComponent(key) + '/rows'); },
+    async createHrRow(key, data) { return request('/hr/' + encodeURIComponent(key) + '/rows', { method: 'POST', body: JSON.stringify(data) }); },
+    async updateHrRow(key, data) { return request('/hr/' + encodeURIComponent(key) + '/rows', { method: 'PUT', body: JSON.stringify(data) }); },
+    async deleteHrRow(key, data) { return request('/hr/' + encodeURIComponent(key) + '/rows', { method: 'DELETE', body: JSON.stringify(data) }); },
 
     /** 分平台/店铺详细数据 */
     async getPlatformStoreData(start, end, platform) {
@@ -252,10 +266,10 @@ const ApiService = (() => {
     async getAnalysisDates() {
       return request('/analysis/dates');
     },
-    async runAnalysisAgent(question, date) {
+    async runAnalysisAgent(question, start, end) {
       return request('/analysis/agent', {
         method: 'POST',
-        body: JSON.stringify({ question: question || '', date: date || '' }),
+        body: JSON.stringify({ question: question || '', start: start || '', end: end || '' }),
       });
     },
 
@@ -287,6 +301,45 @@ const ApiService = (() => {
     del(type, id) {
       const paths = { product: '/products', order: '/orders', customer: '/customers' };
       return request(`${paths[type]}/${id}`, { method: 'DELETE' });
+    },
+
+    // ---- 订单详情（单链接销售数据） ----
+    async getOrderDetailsData(params) { return request('/order-details/data?' + (params || '')); },
+    async getOrderDetailsStores(platform, linkType) {
+      var q = '';
+      if (platform) q += 'platform=' + encodeURIComponent(platform);
+      if (linkType) q += (q ? '&' : '') + 'linkType=' + encodeURIComponent(linkType);
+      return request('/order-details/stores' + (q ? '?' + q : ''));
+    },
+
+    // ---- 工具箱 - 违规词检测（图片 OCR） ----
+    // 说明：这两个接口返回结构特殊（顶层无 code 字段），不能复用 request()，
+    // 因此在此用裸 fetch 直连，仍统一收口在 ApiService 层，不新增第二个请求层。
+    async ocrDetect(images) {
+      try {
+        const res = await fetch(BASE_URL + '/ocr/detect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ images: images || [] }),
+        });
+        return await res.json();
+      } catch (e) {
+        console.warn('[API] OCR 识别失败:', e.message);
+        return null;
+      }
+    },
+    async violationDetect(text) {
+      try {
+        const res = await fetch(BASE_URL + '/violation/detect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: text || '' }),
+        });
+        return await res.json();
+      } catch (e) {
+        console.warn('[API] 违规词检测失败:', e.message);
+        return null;
+      }
     },
   };
 })();
@@ -546,7 +599,11 @@ const App = (() => {
 
   function navigateTo(page) {
     // 权限检查
-    if (_ALLOWED_PAGES !== null && !_ALLOWED_PAGES.includes(page) && page !== 'profile') {
+    // 人事中心是单页面 + 页内卡片切换，权限点按数据表拆分（hr-roster / hr-interview / ...）。
+    // 只要拥有任意一个人事数据表权限，即允许进入人事数据中心页面；具体可见哪张表由页面内部再判定。
+    var _hrPermHit = page === 'hr' && _ALLOWED_PAGES !== null &&
+      _ALLOWED_PAGES.some(function (p) { return String(p).indexOf('hr-') === 0; });
+    if (_ALLOWED_PAGES !== null && !_ALLOWED_PAGES.includes(page) && page !== 'profile' && !_hrPermHit) {
       _showPermissionDenied();
       // 高亮当前点击的菜单项
       document.querySelectorAll('.nav-item').forEach(function(el) {
@@ -592,7 +649,7 @@ const App = (() => {
       'operation-performance': '运营业绩面板',
       'product-selection': '选品助手',
       finance: '财务中心',
-      hr: '人事中心',
+      hr: '人事数据中心',
       'admin-permissions': '管理员与权限',
       profile: '个人中心设置',
       'toolbox-violation-check': '违规词检测',
@@ -605,11 +662,7 @@ const App = (() => {
     if (page === 'marketing-overview') renderMarketingOverview();
     if (page === 'platform-store') renderPlatformStore();
     if (page === 'daily-analysis') renderDailyAnalysis();
-    if (page === 'store-account') renderStoreAccount();
-    if (page === 'operation-performance') renderOperationPerformance();
     if (page === 'product-selection') renderProductSelection();
-    if (page === 'finance') renderFinance();
-    if (page === 'hr') renderHR();
     if (page === 'admin-permissions') renderAdminPermissions();
     if (page === 'profile') renderProfile();
     if (page === 'toolbox-violation-check') renderToolboxViolationCheck();
@@ -2335,7 +2388,11 @@ const App = (() => {
       { id: 'finance', name: '财务中心' },
     ]},
     { group: '人事中心', pages: [
-      { id: 'hr', name: '人事中心' },
+      { id: 'hr-roster', name: '员工花名册' },
+      { id: 'hr-interview', name: '面试信息登记表' },
+      { id: 'hr-onboarding', name: '入职人员信息统计表' },
+      { id: 'hr-salary-a', name: '人员薪资标准（表 a）' },
+      { id: 'hr-salary-b', name: '人员薪资标准（表 b）' },
     ]},
     { group: '工具箱', pages: [
       { id: 'data-import', name: '数据导入' },
@@ -2945,6 +3002,8 @@ const App = (() => {
       var defaultPage = (_ALLOWED_PAGES !== null && _ALLOWED_PAGES.length > 0)
         ? _ALLOWED_PAGES[0]
         : 'marketing-overview';
+      // 人事数据表权限（hr-*）统一落到「人事数据中心」页面，由页内卡片选择器再细分
+      if (String(defaultPage).indexOf('hr-') === 0) defaultPage = 'hr';
       navigateTo(defaultPage);
     }
 
@@ -3069,401 +3128,6 @@ const App = (() => {
       initApp();
       return;
     }
-  }
-
-  // ==================== 店铺账号管理 ====================
-  function getMockStoreAccounts() {
-    var platforms = ['淘宝','京东','拼多多','抖音','快手','小红书','微信小程序'];
-    var authTypes = ['OAuth2.0','API Key','账号密码','扫码授权'];
-    var stores = [
-      {name:'聚浪旗舰店', plat:'淘宝'},{name:'聚浪户外专营店', plat:'淘宝'},{name:'聚浪运动旗舰店', plat:'京东'},
-      {name:'聚浪自营店', plat:'京东'},{name:'聚浪优选', plat:'拼多多'},{name:'聚浪官方旗舰店', plat:'抖音'},
-      {name:'聚浪好物店', plat:'抖音'},{name:'聚浪快品牌', plat:'快手'},{name:'聚浪精选', plat:'小红书'},
-      {name:'聚浪小程序商城', plat:'微信小程序'},{name:'聚浪奥莱折扣店', plat:'拼多多'},{name:'聚浪潮品店', plat:'淘宝'}
-    ];
-    var now = new Date();
-    return stores.map(function(s,i){
-      var statuses = ['enabled','enabled','enabled','enabled','enabled','expired','pending'];
-      var status = statuses[Math.floor(Math.random()*statuses.length)];
-      var expDate = new Date(now); expDate.setDate(expDate.getDate() + Math.floor(Math.random()*180 - 30));
-      var syncDate = new Date(now); syncDate.setHours(syncDate.getHours() - Math.floor(Math.random()*48));
-      return {
-        id: i+1, name: s.name, platform: s.plat,
-        account: 'acct_'+s.plat.toLowerCase()+'_'+(1000+i),
-        authType: authTypes[Math.floor(Math.random()*authTypes.length)],
-        expireDate: expDate.toISOString().slice(0,10),
-        status: status,
-        lastSync: syncDate.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})
-      };
-    });
-  }
-
-  var _saData = [];
-  function renderStoreAccount() {
-    _saData = getMockStoreAccounts();
-    document.getElementById('saTotalStores').textContent = _saData.length;
-    document.getElementById('saEnabled').textContent = _saData.filter(function(a){return a.status==='enabled';}).length;
-    document.getElementById('saExpired').textContent = _saData.filter(function(a){return a.status==='expired';}).length;
-    document.getElementById('saPending').textContent = _saData.filter(function(a){return a.status==='pending';}).length;
-    _saRenderTable();
-  }
-
-  function filterSATable() {
-    _saRenderTable();
-  }
-
-  function _saRenderTable(filter) {
-    var accounts = _saData.slice();
-    var searchKw = (document.getElementById('saSearch')?.value || '').toLowerCase();
-    var platFilter = document.getElementById('saPlatformFilter')?.value || '';
-    var statusFilter = document.getElementById('saStatusFilter')?.value || '';
-    if (searchKw) accounts = accounts.filter(function(a){return a.name.toLowerCase().indexOf(searchKw)>=0||a.account.toLowerCase().indexOf(searchKw)>=0||a.platform.toLowerCase().indexOf(searchKw)>=0;});
-    if (platFilter) accounts = accounts.filter(function(a){return a.platform===platFilter;});
-    if (statusFilter) accounts = accounts.filter(function(a){return a.status===statusFilter;});
-    document.getElementById('saTableInfo').textContent = '共 '+accounts.length+' 个店铺账号';
-    var tbody = document.getElementById('saTableBody');
-    tbody.innerHTML = accounts.map(function(a){
-      var statusCls = a.status==='enabled'?'status-badge enabled':(a.status==='expired'?'status-badge disabled':'badge badge-warning');
-      var statusText = a.status==='enabled'?'启用中':(a.status==='expired'?'已过期':'待授权');
-      return '<tr><td>'+a.id+'</td><td><strong>'+a.name+'</strong></td><td><span class="ps-store-platform ps-platform-'+a.platform+'">'+a.platform+'</span></td><td style="font-family:monospace;font-size:12px">'+a.account+'</td><td>'+a.authType+'</td><td>'+(a.status==='expired'?'<span style="color:#dc2626">'+a.expireDate+'</span>':a.expireDate)+'</td><td><span class="'+statusCls+'">'+statusText+'</span></td><td>'+a.lastSync+'</td><td><div class="ap-actions"><button class="ap-btn-sm edit" onclick="App.showToast(\'编辑功能开发中\',\'error\')"><i class="fa-solid fa-pen"></i></button><button class="ap-btn-sm toggle" onclick="App.showToast(\'重新授权功能开发中\',\'error\')"><i class="fa-solid fa-rotate"></i></button><button class="ap-btn-sm delete" onclick="App.showToast(\'删除功能开发中\',\'error\')"><i class="fa-solid fa-trash"></i></button></div></td></tr>';
-    }).join('');
-  }
-
-  function openSAModal() { App.showToast('新增店铺账号功能开发中', 'error'); }
-
-  // ==================== 运营业绩面板 ====================
-  function getMockOpData() {
-    var depts = ['淘宝运营部','京东运营部','抖音运营部','拼多多运营部','快手运营部'];
-    var names = ['张伟','李娜','王磊','赵敏','陈强','刘洋','周静','吴鹏','郑丽','钱浩','孙悦','马超','黄蕾','林峰','何琳','罗刚'];
-    var persons = [];
-    for (var i = 0; i < 16; i++) {
-      var dept = depts[Math.floor(Math.random()*depts.length)];
-      var gmv = Math.floor(Math.random()*800000 + 150000);
-      var target = gmv * (0.85 + Math.random()*0.3);
-      var rate = (gmv/target*100);
-      var grade = rate >= 110 ? 'S' : (rate >= 100 ? 'A' : (rate >= 85 ? 'B' : 'C'));
-      persons.push({ name: names[i], dept: dept, gmv: gmv, target: target, targetRate: rate, roi: (Math.random()*5+1.5).toFixed(2), convRate: (Math.random()*4+2), aov: (Math.random()*200+100).toFixed(2), grade: grade });
-    }
-    persons.sort(function(a,b){return b.gmv - a.gmv;});
-    var totalGMV = persons.reduce(function(s,p){return s+p.gmv;},0);
-    var deptData = depts.map(function(d){ var dp=persons.filter(function(p){return p.dept===d;}); return {name:d,gmv:dp.reduce(function(s,p){return s+p.gmv;},0),count:dp.length,targetRate:(dp.reduce(function(s,p){return s+p.targetRate;},0)/dp.length)}; });
-    var months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
-    var trends = months.map(function(m,i){ return {month:m,gmv:Math.floor(Math.random()*3000000+2000000+ i*100000),growth:(Math.random()*15-3)}; });
-    return { persons:persons, totalGMV:totalGMV, targetRate:(persons.reduce(function(s,p){return s+p.targetRate;},0)/persons.length), teamSize:persons.length, avgGMV:totalGMV/persons.length, deptData:deptData, trends:trends };
-  }
-
-  var _opData = null; var _opPage = 1; var _opSearch = ''; var _opSortBy = 'gmv'; var _opDeptFilter = '';
-  var _opCharts = {};
-  function _opDisposeCharts() { Object.values(_opCharts).forEach(function(c){try{c.dispose();}catch(e){}}); for(var k in _opCharts) delete _opCharts[k]; }
-  function _opGetChart(domId){ if(typeof echarts==='undefined'||!echarts.init)return null; var dom=document.getElementById(domId); if(!dom)return null; if(_opCharts[domId])_opCharts[domId].dispose(); var c=echarts.init(dom); _opCharts[domId]=c; return c; }
-
-  function renderOperationPerformance() {
-    _opData = getMockOpData(); _opPage = 1;
-    var d = _opData;
-    document.getElementById('opGMV').textContent = '¥'+(d.totalGMV/10000).toFixed(0)+'万';
-    document.getElementById('opTargetRate').textContent = d.targetRate.toFixed(1)+'%';
-    document.getElementById('opTeamSize').textContent = d.teamSize+' 人';
-    document.getElementById('opAvgGMV').textContent = '¥'+(d.avgGMV/10000).toFixed(1)+'万';
-    _opRenderCharts();
-    _opRenderTable();
-    _opBindEvents();
-  }
-
-  function _opBindEvents() {
-    var searchEl = document.getElementById('opSearch'); if(searchEl) searchEl.oninput=function(){_opSearch=this.value;_opPage=1;_opRenderTable();};
-    var sortEl = document.getElementById('opSortBy'); if(sortEl) sortEl.onchange=function(){_opSortBy=this.value;_opPage=1;_opRenderTable();};
-    var deptEl = document.getElementById('opDepartment'); if(deptEl) deptEl.onchange=function(){_opDeptFilter=this.value;_opPage=1;_opRenderTable();};
-  }
-
-  function _opRenderCharts() {
-    if(typeof echarts==='undefined'||!echarts.init)return;
-    _opDisposeCharts();
-    var d=_opData;
-    // Dept bar
-    var c1=_opGetChart('chartOPDept');
-    if(c1){c1.setOption({tooltip:{trigger:'axis',axisPointer:{type:'shadow'}},grid:{left:100,right:60,top:10,bottom:20},xAxis:{type:'value',axisLabel:{fontSize:10,formatter:function(v){return(v/10000).toFixed(0)+'w'}}},yAxis:{type:'category',data:d.deptData.map(function(x){return x.name;}),axisLabel:{fontSize:10},inverse:true},series:[{type:'bar',data:d.deptData.map(function(x,i){return{value:x.gmv,itemStyle:{color:['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6'][i]||'#6366f1',borderRadius:[0,4,4,0]}};}),barWidth:'55%',label:{show:true,position:'right',fontSize:10,formatter:function(p){return'¥'+(p.value/10000).toFixed(0)+'w'}}}]});}
-
-    // Trend
-    var c2=_opGetChart('chartOPTrend');
-    if(c2){c2.setOption({tooltip:{trigger:'axis'},legend:{top:0,right:0,textStyle:{fontSize:10}},grid:{left:50,right:60,top:35,bottom:25},xAxis:{type:'category',data:d.trends.map(function(t){return t.month;}),axisLabel:{fontSize:10}},yAxis:[{type:'value',name:'GMV',axisLabel:{fontSize:9,formatter:function(v){return(v/10000).toFixed(0)+'w'}}},{type:'value',name:'增长率%',axisLabel:{fontSize:9,formatter:function(v){return v+'%'}}}],series:[{name:'GMV',type:'bar',data:d.trends.map(function(t){return t.gmv;}),itemStyle:{color:'#3b82f6',borderRadius:[4,4,0,0]},barWidth:'50%'},{name:'环比增长',type:'line',yAxisIndex:1,data:d.trends.map(function(t){return t.growth;}),lineStyle:{color:'#10b981'},itemStyle:{color:'#10b981'},symbol:'circle',symbolSize:5}]});}
-  }
-
-  function _opRenderTable() {
-    var persons = (_opData.persons||[]).slice();
-    if (_opSearch) { var kw=_opSearch.toLowerCase(); persons=persons.filter(function(p){return p.name.toLowerCase().indexOf(kw)>=0||p.dept.toLowerCase().indexOf(kw)>=0;}); }
-    if (_opDeptFilter) { persons=persons.filter(function(p){return p.dept===_opDeptFilter;}); }
-    if (_opSortBy==='targetRate') persons.sort(function(a,b){return b.targetRate-a.targetRate;});
-    else if (_opSortBy==='roi') persons.sort(function(a,b){return b.roi-a.roi;});
-    else persons.sort(function(a,b){return b.gmv-a.gmv;});
-    persons.forEach(function(p,i){p.rank=i+1;});
-
-    var pageSize=10, totalPages=Math.ceil(persons.length/pageSize)||1;
-    if (_opPage>totalPages)_opPage=totalPages;
-    var pageItems=persons.slice((_opPage-1)*pageSize,_opPage*pageSize);
-    document.getElementById('opRankTotal').textContent='共 '+persons.length+' 人';
-    document.getElementById('opRankTbody').innerHTML=pageItems.map(function(p){
-      var rankCls=p.rank===1?'top1':(p.rank===2?'top2':(p.rank===3?'top3':''));
-      return '<tr><td><span class="ps-rank '+rankCls+'">'+p.rank+'</span></td><td><strong>'+p.name+'</strong></td><td>'+p.dept+'</td><td class="ps-col-num">¥'+p.gmv.toLocaleString()+'</td><td class="ps-col-num"><div style="display:flex;align-items:center;gap:6px"><div style="flex:1;height:6px;background:#f1f5f9;border-radius:3px;overflow:hidden"><div style="height:100%;border-radius:3px;background:'+(p.targetRate>=100?'#16a34a':(p.targetRate>=85?'#f59e0b':'#dc2626'))+';width:'+Math.min(100,p.targetRate)+'%"></div></div><span style="font-size:12px;font-weight:600">'+p.targetRate.toFixed(1)+'%</span></div></td><td class="ps-col-num">'+p.roi+'</td><td class="ps-col-num">'+p.convRate.toFixed(2)+'%</td><td class="ps-col-num">¥'+p.aov+'</td><td><span class="op-grade op-grade-'+p.grade.toLowerCase()+'">'+p.grade+'</span></td></tr>';
-    }).join('');
-    var footer=document.getElementById('opRankPagination');
-    var btns='';btns+='<button '+(_opPage<=1?'disabled':'')+' onclick="App.opGoPage('+(_opPage-1)+')"><i class="fa-solid fa-chevron-left"></i></button>';
-    for(var i=1;i<=totalPages;i++){if(totalPages<=7||i===1||i===totalPages||(i>=_opPage-1&&i<=_opPage+1)){btns+='<button class="'+(i===_opPage?'active':'')+'" onclick="App.opGoPage('+i+')">'+i+'</button>';}else if(i===_opPage-2||i===_opPage+2){btns+='<button disabled>...</button>';}}
-    btns+='<button '+(_opPage>=totalPages?'disabled':'')+' onclick="App.opGoPage('+(_opPage+1)+')"><i class="fa-solid fa-chevron-right"></i></button>';
-    footer.innerHTML='<span>第 '+_opPage+' / '+totalPages+' 页，共 '+persons.length+' 条</span><div class="ps-pagination-btns">'+btns+'</div>';
-  }
-
-  function opGoPage(page){_opPage=page;_opRenderTable();}
-
-  // ==================== 财务中心 ====================
-  function getMockFinanceData() {
-    var months=['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
-    var revenue=0,cost=0,profit=0,refund=0,adSpend=0,logistics=0,receivable=0;
-    var monthlyData=months.map(function(m,i){
-      var r=Math.floor(Math.random()*2000000+1500000+i*80000);
-      var c=r*(0.55+Math.random()*0.2);
-      var p=r-c;
-      revenue+=r;cost+=c;profit+=p;
-      refund+=r*(0.03+Math.random()*0.05);
-      adSpend+=r*(0.08+Math.random()*0.12);
-      logistics+=r*(0.04+Math.random()*0.04);
-      receivable+=r*(0.05+Math.random()*0.08);
-      return {month:m,revenue:r,cost:c,profit:p};
-    });
-    var margin=revenue>0?(profit/revenue*100):0;
-
-    // Transactions
-    var txTypes=['income','income','income','expense','expense','refund'];
-    var txPlatforms=['淘宝','京东','拼多多','抖音','快手'];
-    var payMethods=['支付宝','微信支付','银行卡','花呗','京东支付'];
-    var txStatuses=['已完成','已完成','已完成','处理中','待审核'];
-    var summaries=['商品销售收入','平台推广费','物流运费','退款-质量问题','退款-物流','包装耗材','仓储费','技术服务费','营销活动费','佣金支出'];
-    var transactions=[];
-    for(var i=0;i<40;i++){
-      var type=txTypes[Math.floor(Math.random()*txTypes.length)];
-      var amt=type==='refund'?Math.floor(Math.random()*500+30):(type==='expense'?Math.floor(Math.random()*8000+500):Math.floor(Math.random()*30000+1000));
-      var date=new Date();date.setDate(date.getDate()-Math.floor(Math.random()*90));
-      transactions.push({date:date.toISOString().slice(0,10),type:type,orderId:type==='income'?'ORD'+Math.floor(Math.random()*90000+10000):(type==='refund'?'RF'+Math.floor(Math.random()*90000+10000):'—'),summary:summaries[Math.floor(Math.random()*summaries.length)],platform:txPlatforms[Math.floor(Math.random()*txPlatforms.length)],amount:amt,payMethod:payMethods[Math.floor(Math.random()*payMethods.length)],status:txStatuses[Math.floor(Math.random()*txStatuses.length)]});
-    }
-    transactions.sort(function(a,b){return b.date.localeCompare(a.date);});
-    return {revenue:revenue,cost:cost,profit:profit,margin:margin,refund:refund,adSpend:adSpend,logistics:logistics,receivable:receivable,monthlyData:monthlyData,transactions:transactions};
-  }
-
-  var _finData=null; var _finPage=1; var _finSearch=''; var _finTxType='';
-  var _finCharts={};
-  function _finDisposeCharts(){Object.values(_finCharts).forEach(function(c){try{c.dispose();}catch(e){}});for(var k in _finCharts)delete _finCharts[k];}
-  function _finGetChart(domId){if(typeof echarts==='undefined'||!echarts.init)return null;var dom=document.getElementById(domId);if(!dom)return null;if(_finCharts[domId])_finCharts[domId].dispose();var c=echarts.init(dom);_finCharts[domId]=c;return c;}
-
-  function renderFinance(){
-    _finData=getMockFinanceData();_finPage=1;
-    var d=_finData;
-    document.getElementById('finUpdateTime').textContent=new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    document.getElementById('finRevenue').textContent='¥'+(d.revenue/10000).toFixed(1)+'万';
-    document.getElementById('finCost').textContent='¥'+(d.cost/10000).toFixed(1)+'万';
-    document.getElementById('finProfit').textContent='¥'+(d.profit/10000).toFixed(1)+'万';
-    document.getElementById('finMargin').textContent=d.margin.toFixed(2)+'%';
-    document.getElementById('finRefund').textContent='¥'+(d.refund/10000).toFixed(1)+'万';
-    document.getElementById('finAdSpend').textContent='¥'+(d.adSpend/10000).toFixed(1)+'万';
-    document.getElementById('finLogistics').textContent='¥'+(d.logistics/10000).toFixed(1)+'万';
-    document.getElementById('finReceivable').textContent='¥'+(d.receivable/10000).toFixed(1)+'万';
-    _finRenderCharts();
-    _finRenderTable();
-    var searchEl=document.getElementById('finSearch');if(searchEl)searchEl.oninput=function(){_finSearch=this.value;_finPage=1;_finRenderTable();};
-    var typeEl=document.getElementById('finTxType');if(typeEl)typeEl.onchange=function(){_finTxType=this.value;_finPage=1;_finRenderTable();};
-  }
-
-  function _finRenderCharts(){
-    if(typeof echarts==='undefined'||!echarts.init)return;
-    _finDisposeCharts();
-    var d=_finData;
-    var c1=_finGetChart('chartFinTrend');
-    if(c1){c1.setOption({tooltip:{trigger:'axis'},legend:{top:0,right:0,textStyle:{fontSize:10}},grid:{left:55,right:60,top:35,bottom:25},xAxis:{type:'category',data:d.monthlyData.map(function(m){return m.month;}),axisLabel:{fontSize:10}},yAxis:{type:'value',axisLabel:{fontSize:9,formatter:function(v){return(v/10000).toFixed(0)+'w'}}},series:[{name:'营收',type:'bar',data:d.monthlyData.map(function(m){return m.revenue;}),itemStyle:{color:'#3b82f6',borderRadius:[4,4,0,0]},barWidth:'35%'},{name:'成本',type:'bar',data:d.monthlyData.map(function(m){return m.cost;}),itemStyle:{color:'#f87171',borderRadius:[4,4,0,0]},barWidth:'35%'},{name:'利润',type:'line',data:d.monthlyData.map(function(m){return m.profit;}),lineStyle:{color:'#10b981',width:2},itemStyle:{color:'#10b981'},symbol:'circle',symbolSize:5}]});}
-
-    var c2=_finGetChart('chartFinCost');
-    if(c2){
-      var costBreakdown=[{name:'推广费用',value:d.adSpend},{name:'物流成本',value:d.logistics},{name:'退款损失',value:d.refund},{name:'商品成本',value:d.cost*0.55},{name:'平台佣金',value:d.cost*0.2},{name:'人员成本',value:d.cost*0.15},{name:'其他费用',value:d.cost*0.1}];
-      c2.setOption({tooltip:{trigger:'item',formatter:'{b}: ¥{c} ({d}%)'},series:[{type:'pie',radius:['45%','75%'],center:['50%','50%'],data:costBreakdown,label:{fontSize:10,formatter:'{b}\n{d}%'},emphasis:{label:{fontSize:14,fontWeight:'bold'}},itemStyle:{borderColor:'#fff',borderWidth:2}}],color:['#ef4444','#f59e0b','#f97316','#6366f1','#8b5cf6','#ec4899','#06b6d4']});
-    }
-  }
-
-  function _finRenderTable(){
-    var txs=(_finData.transactions||[]).slice();
-    if(_finSearch){var kw=_finSearch.toLowerCase();txs=txs.filter(function(t){return t.summary.toLowerCase().indexOf(kw)>=0||t.orderId.toLowerCase().indexOf(kw)>=0;});}
-    if(_finTxType){txs=txs.filter(function(t){return t.type===_finTxType;});}
-    var pageSize=10,totalPages=Math.ceil(txs.length/pageSize)||1;
-    if(_finPage>totalPages)_finPage=totalPages;
-    var pageItems=txs.slice((_finPage-1)*pageSize,_finPage*pageSize);
-    document.getElementById('finTxTotal').textContent='共 '+txs.length+' 条';
-    document.getElementById('finTbody').innerHTML=pageItems.map(function(t){
-      var typeCls=t.type==='income'?'fin-income':(t.type==='expense'?'fin-expense':'fin-refund');
-      var typeText=t.type==='income'?'收入':(t.type==='expense'?'支出':'退款');
-      var statusCls=t.status==='已完成'?'badge-success':(t.status==='处理中'?'badge-info':'badge-warning');
-      var amtPrefix=t.type==='income'?'+':(t.type==='expense'?'-':'-');
-      return '<tr><td>'+t.date+'</td><td><span class="'+typeCls+'">'+typeText+'</span></td><td style="font-family:monospace;font-size:12px">'+t.orderId+'</td><td>'+t.summary+'</td><td>'+t.platform+'</td><td class="ps-col-num '+typeCls+'">'+amtPrefix+'¥'+t.amount.toLocaleString()+'</td><td>'+t.payMethod+'</td><td><span class="badge '+statusCls+'">'+t.status+'</span></td></tr>';
-    }).join('');
-    var footer=document.getElementById('finPagination');
-    var btns='';btns+='<button '+(_finPage<=1?'disabled':'')+' onclick="App.finGoPage('+(_finPage-1)+')"><i class="fa-solid fa-chevron-left"></i></button>';
-    for(var i=1;i<=totalPages;i++){if(totalPages<=7||i===1||i===totalPages||(i>=_finPage-1&&i<=_finPage+1)){btns+='<button class="'+(i===_finPage?'active':'')+'" onclick="App.finGoPage('+i+')">'+i+'</button>';}else if(i===_finPage-2||i===_finPage+2){btns+='<button disabled>...</button>';}}
-    btns+='<button '+(_finPage>=totalPages?'disabled':'')+' onclick="App.finGoPage('+(_finPage+1)+')"><i class="fa-solid fa-chevron-right"></i></button>';
-    footer.innerHTML='<span>第 '+_finPage+' / '+totalPages+' 页，共 '+txs.length+' 条</span><div class="ps-pagination-btns">'+btns+'</div>';
-  }
-  function finGoPage(page){_finPage=page;_finRenderTable();}
-
-  // ==================== 人事中心 ====================
-  function _hrStr(v){ return v === null || v === undefined ? '' : String(v); }
-
-  function _hrMapRow(r){
-    return {
-      empNo:_hrStr(r['工号']), name:_hrStr(r['姓名']), joinTime:_hrStr(r['入职时间']),
-      dept1:_hrStr(r['一级部门']), dept2:_hrStr(r['二级部门']), leader:_hrStr(r['直带人']),
-      grade:_hrStr(r['岗级']), phone:_hrStr(r['手机号']), idCard:_hrStr(r['身份证号']),
-      emergency:_hrStr(r['紧急联系人电话']), status:_hrStr(r['状态']), salary:_hrStr(r['薪资待遇']),
-      regularDate:_hrStr(r['转正日期']), bankCard:_hrStr(r['银行卡号']), bank:_hrStr(r['开户行']),
-      hrOwner:_hrStr(r['主人事']),
-    };
-  }
-
-  function _hrBuildData(rows){
-    var employees=(rows||[]).map(_hrMapRow);
-    var deptCount={};var deptOrder=[];
-    employees.forEach(function(e){
-      var d=e.dept1||'未分配';
-      if(!deptCount[d]){deptCount[d]=0;deptOrder.push(d);}
-      deptCount[d]++;
-    });
-    var activeCount=employees.filter(function(e){return e.status==='在职';}).length;
-    var probationCount=employees.filter(function(e){return e.status==='试用期';}).length;
-    var resigned=employees.filter(function(e){return e.status==='离职';}).length;
-    var now=new Date();
-    var monthStart=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-01';
-    var newHires=employees.filter(function(e){return e.joinTime>=monthStart&&e.status!=='离职';}).length;
-    return {employees:employees,totalEmp:employees.length,activeCount:activeCount,probationCount:probationCount,newHires:newHires,resigned:resigned,deptDist:deptOrder.map(function(d){return{name:d,count:deptCount[d]};}),attendanceTrend:[]};
-  }
-
-  var _hrData=null; var _hrPage=1; var _hrSearch=''; var _hrDeptFilter='';
-  var _hrCharts={};
-  function _hrDisposeCharts(){Object.values(_hrCharts).forEach(function(c){try{c.dispose();}catch(e){}});for(var k in _hrCharts)delete _hrCharts[k];}
-  function _hrGetChart(domId){if(typeof echarts==='undefined'||!echarts.init)return null;var dom=document.getElementById(domId);if(!dom)return null;if(_hrCharts[domId])_hrCharts[domId].dispose();var c=echarts.init(dom);_hrCharts[domId]=c;return c;}
-
-  async function renderHR(){
-    _hrData=_hrBuildData(await ApiService.getHrEmployees());_hrPage=1;
-    var d=_hrData;
-    document.getElementById('hrTotalEmp').textContent=d.totalEmp;
-    document.getElementById('hrActive').textContent=d.activeCount;
-    document.getElementById('hrProbation').textContent=d.probationCount;
-    document.getElementById('hrNewHires').textContent=d.newHires;
-    document.getElementById('hrResigned').textContent=d.resigned;
-    document.getElementById('hrAttendance').textContent='--';
-    document.getElementById('hrAvgHours').textContent='--';
-    document.getElementById('hrBirthdays').textContent='--';
-    document.getElementById('hrTraining').textContent='--';
-    // 部门筛选下拉按一级部门动态填充
-    var deptSel=document.getElementById('hrDeptFilter');
-    if(deptSel){
-      var cur=deptSel.value;
-      deptSel.innerHTML='<option value="">全部部门</option>'+d.deptDist.map(function(x){return '<option>'+esc(x.name)+'</option>';}).join('');
-      deptSel.value=cur;
-    }
-    _hrRenderCharts();
-    _hrRenderTable();
-    var searchEl=document.getElementById('hrSearch');if(searchEl)searchEl.oninput=function(){_hrSearch=this.value;_hrPage=1;_hrRenderTable();};
-    if(deptSel)deptSel.onchange=function(){_hrDeptFilter=this.value;_hrPage=1;_hrRenderTable();};
-  }
-
-  function _hrRenderCharts(){
-    if(typeof echarts==='undefined'||!echarts.init)return;
-    _hrDisposeCharts();
-    var d=_hrData;
-    var c1=_hrGetChart('chartHRDept');
-    if(c1){c1.setOption({tooltip:{trigger:'item',formatter:'{b}: {c} 人 ({d}%)'},series:[{type:'pie',radius:['50%','78%'],center:['50%','48%'],data:d.deptDist.map(function(x){return{name:x.name,value:x.count};}),label:{formatter:'{b}\n{d}%',fontSize:10},emphasis:{label:{fontSize:14,fontWeight:'bold'}},itemStyle:{borderColor:'#fff',borderWidth:2}}],color:['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#f97316']});}
-
-    var c2=_hrGetChart('chartHRAttendance');
-    if(c2){c2.setOption({tooltip:{trigger:'axis'},grid:{left:45,right:20,top:10,bottom:25},xAxis:{type:'category',data:d.attendanceTrend.map(function(a){return a.month;}),axisLabel:{fontSize:10}},yAxis:{type:'value',name:'出勤率%',min:85,max:100,axisLabel:{fontSize:9,formatter:function(v){return v+'%'}}},series:[{type:'line',data:d.attendanceTrend.map(function(a){return a.rate;}),smooth:true,lineStyle:{color:'#7c3aed',width:2.5},itemStyle:{color:'#7c3aed'},symbol:'circle',symbolSize:7,areaStyle:{color:'rgba(124,58,237,0.08)'}}]});}
-  }
-
-  function _hrRenderTable(){
-    var employees=(_hrData.employees||[]).slice();
-    if(_hrSearch){var kw=_hrSearch.toLowerCase();employees=employees.filter(function(e){return (e.empNo+' '+e.name+' '+e.dept1+' '+e.dept2+' '+e.leader+' '+e.grade+' '+e.phone+' '+e.status).toLowerCase().indexOf(kw)>=0;});}
-    if(_hrDeptFilter){employees=employees.filter(function(e){return e.dept1===_hrDeptFilter;});}
-    var pageSize=10,totalPages=Math.ceil(employees.length/pageSize)||1;
-    if(_hrPage>totalPages)_hrPage=totalPages;
-    var pageItems=employees.slice((_hrPage-1)*pageSize,_hrPage*pageSize);
-    document.getElementById('hrEmpTotal').textContent='共 '+employees.length+' 人';
-    document.getElementById('hrTbody').innerHTML=pageItems.map(function(e){
-      var statusCls=e.status==='在职'?'badge-success':(e.status==='试用期'?'badge-warning':(e.status==='离职'?'badge-danger':'badge-gray'));
-      return '<tr>'+
-        '<td style="font-family:monospace;font-size:12px">'+esc(e.empNo)+'</td>'+
-        '<td><strong>'+esc(e.name)+'</strong></td>'+
-        '<td>'+esc(e.joinTime)+'</td>'+
-        '<td>'+esc(e.dept1)+'</td>'+
-        '<td>'+esc(e.dept2)+'</td>'+
-        '<td>'+esc(e.leader)+'</td>'+
-        '<td>'+esc(e.grade)+'</td>'+
-        '<td>'+esc(e.phone)+'</td>'+
-        '<td>'+esc(e.idCard)+'</td>'+
-        '<td>'+esc(e.emergency)+'</td>'+
-        '<td><span class="badge '+statusCls+'">'+esc(e.status)+'</span></td>'+
-        '<td>'+esc(e.salary)+'</td>'+
-        '<td>'+esc(e.regularDate)+'</td>'+
-        '<td>'+esc(e.bankCard)+'</td>'+
-        '<td>'+esc(e.bank)+'</td>'+
-        '<td>'+esc(e.hrOwner)+'</td>'+
-      '</tr>';
-    }).join('');
-    var footer=document.getElementById('hrPagination');
-    var btns='';btns+='<button '+(_hrPage<=1?'disabled':'')+' onclick="App.hrGoPage('+(_hrPage-1)+')"><i class="fa-solid fa-chevron-left"></i></button>';
-    for(var i=1;i<=totalPages;i++){if(totalPages<=7||i===1||i===totalPages||(i>=_hrPage-1&&i<=_hrPage+1)){btns+='<button class="'+(i===_hrPage?'active':'')+'" onclick="App.hrGoPage('+i+')">'+i+'</button>';}else if(i===_hrPage-2||i===_hrPage+2){btns+='<button disabled>...</button>';}}
-    btns+='<button '+(_hrPage>=totalPages?'disabled':'')+' onclick="App.hrGoPage('+(_hrPage+1)+')"><i class="fa-solid fa-chevron-right"></i></button>';
-    footer.innerHTML='<span>第 '+_hrPage+' / '+totalPages+' 页，共 '+employees.length+' 条</span><div class="ps-pagination-btns">'+btns+'</div>';
-  }
-  function hrGoPage(page){_hrPage=page;_hrRenderTable();}
-
-  function hrOpenAdd(){
-    var fields=[
-      ['f_empNo','工号 *','工号（必填）'],
-      ['f_name','姓名 *','姓名（必填）'],
-      ['f_joinTime','入职时间','如 2026-08-28'],
-      ['f_dept1','一级部门','如 淘宝运营部'],
-      ['f_dept2','二级部门','如 运营一组'],
-      ['f_leader','直带人','直带人姓名'],
-      ['f_grade','岗级','如 P5'],
-      ['f_phone','手机号 *','手机号（必填）'],
-      ['f_idCard','身份证号','身份证号'],
-      ['f_emergency','紧急联系人电话','紧急联系人电话'],
-      ['f_status','状态','如 在职 / 离职'],
-      ['f_salary','薪资待遇','如 8000/月'],
-      ['f_regularDate','转正日期','如 2026-08-28'],
-      ['f_bankCard','银行卡号','银行卡号'],
-      ['f_bank','开户行','如 工商银行'],
-      ['f_hrOwner','主人事','主人事姓名'],
-    ];
-    var html='';
-    for(var i=0;i<fields.length;i+=2){
-      html+='<div class="form-row">';
-      html+='<div class="form-group"><label>'+fields[i][1]+'</label><input type="text" class="form-input" id="'+fields[i][0]+'" placeholder="'+fields[i][2]+'"></div>';
-      if(fields[i+1])html+='<div class="form-group"><label>'+fields[i+1][1]+'</label><input type="text" class="form-input" id="'+fields[i+1][0]+'" placeholder="'+fields[i+1][2]+'"></div>';
-      html+='</div>';
-    }
-    document.getElementById('modalTitle').textContent='添加员工';
-    document.getElementById('modalBody').innerHTML=html;
-    document.getElementById('modalSaveBtn').onclick=hrSaveAdd;
-    document.getElementById('formModal').classList.remove('hidden');
-  }
-
-  async function hrSaveAdd(){
-    function v(id){return (document.getElementById(id).value||'').trim();}
-    var empNo=v('f_empNo'),name=v('f_name'),phone=v('f_phone');
-    if(!empNo||!name||!phone){showToast('工号、姓名、手机号为必填项','error');return;}
-    var payload={
-      '工号':empNo,'姓名':name,'入职时间':v('f_joinTime'),'一级部门':v('f_dept1'),'二级部门':v('f_dept2'),
-      '直带人':v('f_leader'),'岗级':v('f_grade'),'手机号':phone,'身份证号':v('f_idCard'),
-      '紧急联系人电话':v('f_emergency'),'状态':v('f_status'),'薪资待遇':v('f_salary'),
-      '转正日期':v('f_regularDate'),'银行卡号':v('f_bankCard'),'开户行':v('f_bank'),'主人事':v('f_hrOwner'),
-    };
-    var saved=await ApiService.createEmployee(payload);
-    if(!saved){showToast('添加失败，请检查后端服务或字段格式','error');return;}
-    document.getElementById('formModal').classList.add('hidden');
-    showToast('员工已添加','success');
-    renderHR();
   }
 
   // ==================== 个人中心设置 ====================
@@ -6134,14 +5798,10 @@ const App = (() => {
     renderPlatformStore, toggleStoreDetail, closePsDetail, psGoPage, filterByPlatform, togglePsDatePicker, psCalPick, psCalNav, psCalClear, psCalToday,
     generateDailyReport, renderDailyAnalysis, downloadReport,
     daAgentAsk, daAgentSend,
-    // Store Account
-    renderStoreAccount, filterSATable, openSAModal,
     // Seeding Monitor
     renderSeedingMonitor, sdSwitchTab, sdToggleUpdatePanel, sdSortWorks, sdFilterDept, sdSwitchPlatform, sdFilterAccountPlatform, sdAccPlatformChange, toggleSdDatePicker, sdCalPick, sdCalNav, sdCalClear, sdCalToday, sdRenderAccounts, sdRenderWorks, openSdAccountModal, saveSdAccount, deleteSdAccount, sdSaveCookie, sdTriggerScrape,
     sdDeleteDeleted, sdClearDeleted,
     sdAgentAsk, sdAgentSend, closeSdInfoModal, sdInfoSubmit,
-    // Operation Performance
-    renderOperationPerformance, opGoPage,
     // Product Selection
     renderProductSelection, switchSelectionTab, filterTmall, resetTmall, tmallGoPage, filterDouyin,
     filterAisou, resetAisou,
@@ -6150,10 +5810,6 @@ const App = (() => {
     load1688Market, trigger1688MarketScrape,
     m1688ToggleCookiePanel, m1688SaveCookie,
     tmToggleCookiePanel, tmSaveCookie,
-    // Finance
-    renderFinance, finGoPage,
-    // HR
-    renderHR, hrGoPage, hrOpenAdd,
     // Profile
     renderProfile, saveProfile, resetProfile, changePassword,
     // Toolbox - Violation Word Detection (OCR)
