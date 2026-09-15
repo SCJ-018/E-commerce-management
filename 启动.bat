@@ -2,6 +2,12 @@
 echo Stopping old backend processes...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5000.*LISTENING"') do taskkill /F /PID %%a 2>nul
 timeout /t 1 /nobreak >nul
+echo.
+echo  ==========================================
+echo   当前代码分支：
+for /f "tokens=3 delims=/" %%a in ('type "%~dp0.git\HEAD"') do echo     %%a
+echo  ==========================================
+echo.
 cd /d "%~dp0backend"
 start "OCR-Backend-Paddle" py -3.12 app.py
 timeout /t 3 /nobreak >nul
