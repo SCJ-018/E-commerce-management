@@ -16,6 +16,12 @@ backend/config.py
 .env.*
 !.env.example
 
+# === 部署配置（含服务器 DB 密码 / API 密钥，勿提交）===
+# ⚠️ 这两个文件已存在于既有提交中，仅靠本规则无法从历史里抹掉，
+#    彻底清理需要改写历史（filter-repo / BFG）；密钥请另行轮换。
+.deploy/stage/backend/config.py
+.deploy/server_config.py
+
 # === Claude 本地设置（机器相关）===
 .claude/settings.local.json
 
