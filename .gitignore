@@ -82,3 +82,7 @@ desktop.ini
 
 # === 选品助手运行态任务文件 ===
 tools/_selection_job.json
+
+# === 部署时的数据库导出（体积大，勿提交）===
+.deploy/db_dump.sql
+.deploy/db_dump.sql.gz
