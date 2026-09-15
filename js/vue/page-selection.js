@@ -89,6 +89,21 @@
     return (r.price === null || r.price === undefined) ? '--' : r.price;
   }
 
+  // ---- 市场抓取结果的安全访问 ----
+  // 接口无数据时 data 为 null，但也可能返回结构不完整的对象（如旧版本抓取文件只剩 {keyword}）。
+  // 模板里直接写 data.products.length 会抛 TypeError，而 Vue 渲染函数一旦抛错，
+  // 整个组件都会渲染失败 → 页面完全空白。故统一走这两个函数兜底。
+  function marketRows(data) {
+    return (data && Array.isArray(data.products)) ? data.products : [];
+  }
+  function marketBadge(data) {
+    if (!data) return '尚未抓取';
+    var n = (data.count !== undefined && data.count !== null)
+      ? data.count
+      : marketRows(data).length;
+    return '共 ' + n + ' 条';
+  }
+
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
   // ---- 最终选品结果子组件（实时结果区 + 历史记录面板共用） ----
@@ -410,6 +425,7 @@
         state: _st,
         switchTab,
         tmallPrice, aisouTypeColor, marketPrice,
+        marketRows, marketBadge,
         loadTmall, filterTmall, resetTmall, tmallGoPage,
         loadDouyin, filterDouyin, dyHotScrape,
         loadAisou, filterAisou, resetAisou,
@@ -594,7 +610,7 @@
         <div class="ps-table-header">
           <div class="ps-table-title-group">
             <h3><i class="fa-solid fa-store" style="color:#f97316;margin-right:6px"></i>天猫市场 · 淘宝销量前50</h3>
-            <span class="ps-table-badge" style="background:#fff7ed;color:#ea580c">{{ state.markets.tmall.data ? '共 ' + (state.markets.tmall.data.count !== undefined ? state.markets.tmall.data.count : state.markets.tmall.data.products.length) + ' 条' : '尚未抓取' }}</span>
+            <span class="ps-table-badge" style="background:#fff7ed;color:#ea580c">{{ marketBadge(state.markets.tmall.data) }}</span>
           </div>
           <div class="ps-table-tools">
             <div style="display:flex;align-items:center;gap:6px">
@@ -626,8 +642,8 @@
               <th style="width:50px">排名</th><th style="width:76px">封面图</th><th>标题</th>
               <th class="ps-col-num">价格</th><th class="ps-col-num">销量</th><th>店铺名</th>
             </tr></thead>
-            <tbody v-if="state.markets.tmall.data && state.markets.tmall.data.products.length">
-              <tr v-for="(r, i) in state.markets.tmall.data.products" :key="i">
+            <tbody v-if="marketRows(state.markets.tmall.data).length">
+              <tr v-for="(r, i) in marketRows(state.markets.tmall.data)" :key="i">
                 <td style="color:#94a3b8">{{ r.rank }}</td>
                 <td><img v-if="r.image" :src="r.image" alt="" referrerpolicy="no-referrer" style="width:48px;height:48px;object-fit:cover;border-radius:6px;background:#f1f5f9" loading="lazy"><span v-else style="color:#cbd5e1">--</span></td>
                 <td style="font-weight:600;max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" :title="r.title"><a v-if="r.link" :href="r.link" target="_blank" rel="noopener noreferrer" style="color:#1677ff;text-decoration:none">{{ r.title }}</a><template v-else>{{ r.title }}</template></td>
@@ -648,7 +664,7 @@
         <div class="ps-table-header">
           <div class="ps-table-title-group">
             <h3><i class="fa-brands fa-tiktok" style="color:#FE2C55;margin-right:6px"></i>抖音市场 · 抖音商城销量前50</h3>
-            <span class="ps-table-badge" style="background:#fff1f2;color:#e11d48">{{ state.markets.douyin.data ? '共 ' + (state.markets.douyin.data.count !== undefined ? state.markets.douyin.data.count : state.markets.douyin.data.products.length) + ' 条' : '尚未抓取' }}</span>
+            <span class="ps-table-badge" style="background:#fff1f2;color:#e11d48">{{ marketBadge(state.markets.douyin.data) }}</span>
           </div>
           <div class="ps-table-tools">
             <div style="display:flex;align-items:center;gap:6px">
@@ -669,8 +685,8 @@
               <th style="width:50px">排名</th><th style="width:76px">封面图</th><th>标题</th>
               <th class="ps-col-num">价格</th><th class="ps-col-num">销量</th><th>店铺名</th>
             </tr></thead>
-            <tbody v-if="state.markets.douyin.data && state.markets.douyin.data.products.length">
-              <tr v-for="(r, i) in state.markets.douyin.data.products" :key="i">
+            <tbody v-if="marketRows(state.markets.douyin.data).length">
+              <tr v-for="(r, i) in marketRows(state.markets.douyin.data)" :key="i">
                 <td style="color:#94a3b8">{{ r.rank }}</td>
                 <td><img v-if="r.image" :src="r.image" alt="" referrerpolicy="no-referrer" style="width:48px;height:48px;object-fit:cover;border-radius:6px;background:#f1f5f9" loading="lazy"><span v-else style="color:#cbd5e1">--</span></td>
                 <td style="font-weight:600;max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" :title="r.title"><a v-if="r.link" :href="r.link" target="_blank" rel="noopener noreferrer" style="color:#1677ff;text-decoration:none">{{ r.title }}</a><template v-else>{{ r.title }}</template></td>
@@ -691,7 +707,7 @@
         <div class="ps-table-header">
           <div class="ps-table-title-group">
             <h3><i class="fa-solid fa-warehouse" style="color:#0f766e;margin-right:6px"></i>1688 市场 · 前10页货源</h3>
-            <span class="ps-table-badge" style="background:#ccfbf1;color:#0f766e">{{ state.markets['1688'].data ? '共 ' + (state.markets['1688'].data.count !== undefined ? state.markets['1688'].data.count : state.markets['1688'].data.products.length) + ' 条' : '尚未抓取' }}</span>
+            <span class="ps-table-badge" style="background:#ccfbf1;color:#0f766e">{{ marketBadge(state.markets['1688'].data) }}</span>
           </div>
           <div class="ps-table-tools">
             <div style="display:flex;align-items:center;gap:6px">
@@ -723,8 +739,8 @@
               <th style="width:50px">排名</th><th style="width:76px">封面图</th><th>标题</th>
               <th class="ps-col-num">价格</th><th>店铺名</th>
             </tr></thead>
-            <tbody v-if="state.markets['1688'].data && state.markets['1688'].data.products.length">
-              <tr v-for="(r, i) in state.markets['1688'].data.products" :key="i">
+            <tbody v-if="marketRows(state.markets['1688'].data).length">
+              <tr v-for="(r, i) in marketRows(state.markets['1688'].data)" :key="i">
                 <td style="color:#94a3b8">{{ r.rank }}</td>
                 <td><img v-if="r.image" :src="r.image" alt="" referrerpolicy="no-referrer" style="width:48px;height:48px;object-fit:cover;border-radius:6px;background:#f1f5f9" loading="lazy"><span v-else style="color:#cbd5e1">--</span></td>
                 <td style="font-weight:600;max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" :title="r.title"><a v-if="r.link" :href="r.link" target="_blank" rel="noopener noreferrer" style="color:#1677ff;text-decoration:none">{{ r.title }}</a><template v-else>{{ r.title }}</template></td>

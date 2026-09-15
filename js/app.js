@@ -29,10 +29,16 @@ const ApiService = (() => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       if (json.code !== 0) throw new Error(json.msg);
-      // 注意：后端「成功但无返回数据」的响应是 {code:0, data:null}，与「请求失败」(返回 null) 无法区分。
-      // 直接 return json.data 会让调用方的 `res === null` / `res !== null` 把保存成功误判为失败
-      // （管理员与权限页的角色/管理员保存、各页 Cookie 保存都踩过这个坑）。
-      // 故成功一律返回非 null：无数据时返回 true。
+      // 后端「成功但无返回数据」的响应是 {code:0, data:null}，而「请求失败」也是返回 null。
+      // 两类调用方对返回值的用法不同，故按请求方法分别处理：
+      //  - 读操作（GET）：必须原样返回 json.data —— null 就是「暂无数据」，调用方和模板依赖它走空态分支。
+      //    若在此把 null 换成 true，会污染数据语义：模板里 `state.markets.x.data ? ... : 空态`
+      //    会因 true 为真而走进取值分支，再访问 xxx.products.length 直接抛错，
+      //    导致 Vue 渲染函数中断 → 整个组件渲染失败 → 整页空白（选品助手白屏即此原因）。
+      //  - 写操作（POST/PUT/DELETE）：调用方只用返回值判断成败（`r === null` 视为失败），
+      //    故成功但无数据时返回 true 作为成功标记，避免保存成功被误判为失败。
+      const method = (options.method || 'GET').toUpperCase();
+      if (method === 'GET') return json.data;
       return (json.data === null || json.data === undefined) ? true : json.data;
     } catch (e) {
       console.warn('[API] 请求失败:', path, e.message);
@@ -883,6 +889,9 @@ const App = (() => {
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
     document.querySelectorAll('.dh-ds-btn').forEach(btn => {
       const range = parseInt(btn.dataset.range);
+      // 无 data-range（或非数字）时 range 为 NaN，下方 new Date(NaN).toISOString() 会抛
+      // RangeError: Invalid time value，直接跳过该按钮。
+      if (!Number.isFinite(range)) { btn.classList.remove('active'); return; }
       let match = false;
       if (range === 1) {
         match = (s === yesterday && e === yesterday);
