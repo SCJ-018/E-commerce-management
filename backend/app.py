@@ -5829,8 +5829,37 @@ def ps_history():
 
 # ======================== 每日 8 点自动抓取 + 筛选 ========================
 
+def _douyin_hot_has_today():
+    """「抖音热搜品类表」当天是否已有筛选结果（用于判断启动时要不要补跑）"""
+    try:
+        rows = db_execute("SELECT COUNT(*) AS c FROM `抖音热搜品类表` WHERE `日期` = %s",
+                          [time.strftime('%Y-%m-%d')])
+        return bool(rows and rows[0]['c'])
+    except Exception as e:
+        # 查询本身异常时按「已有数据」处理，避免失败循环反复灌库
+        print(f'[选品][补跑] 当天数据检查失败: {e}')
+        return True
+
+
 def _douyin_hot_auto_loop():
-    """后台线程：每天 8 点自动抓取抖音热点宝并筛选"""
+    """后台线程：每天 8 点自动抓取抖音热点宝并筛选；启动时当天缺数据则立即补跑"""
+    # ---- 启动补跑 ----
+    # 覆盖两种会让当天数据永久丢失的情况：
+    #   ① 服务恰在 08:00 重启 → 主循环 next_run <= now 会顺延到次日，当天被跳过且无补跑；
+    #   ② 覆盖式整库同步（sync_db.py）把当天已落库的数据冲掉。
+    # 只在 08:00 之后判断：若服务在 8 点前启动，交给下面的主循环正常触发，避免重复抓取。
+    try:
+        time.sleep(15)  # 等 gunicorn worker 与数据库连接池就绪
+        now = datetime.now()
+        if now.hour >= 8 and not _douyin_hot_has_today():
+            print('[选品][补跑] 当天无热搜数据，立即补跑一次抓取+筛选')
+            _run_scrape_and_filter()
+        else:
+            print('[选品][补跑] 当天数据已存在或未到 08:00，跳过补跑')
+    except Exception as e:
+        print(f'[选品][补跑] 异常: {e}')
+
+    # ---- 每日 08:00 定时 ----
     while True:
         try:
             now = datetime.now()
@@ -5869,6 +5898,138 @@ def _seeding_auto_update_loop():
 # daemon 线程，gunicorn 单 worker 下只启动一次；随进程退出自动结束
 _seeding_auto_thread = threading.Thread(target=_seeding_auto_update_loop, daemon=True, name='seeding-auto-update')
 _seeding_auto_thread.start()
+
+
+# ======================== 店铺账号管理 API（千牛/抖店/抖店邮箱/京东） ========================
+# 表：千牛账号表 / 抖店账号表 / 抖店邮箱账号表 / 京东账号表
+# 字段映射：前端 camelCase -> 数据库中文列名
+_ACCOUNT_CFG = {
+    'qianniu': {
+        'table': '千牛账号表',
+        'fields': {'account': '账号', 'password': '密码', 'shopId': '店铺ID', 'brand': '品牌',
+                   'active': '是否运营', 'remark': '备注'},
+        'required': ['account'],
+    },
+    'doudian': {
+        'table': '抖店账号表',
+        'fields': {'shopName': '店铺名', 'shopId': '店铺ID', 'brand': '品牌',
+                   'active': '是否运营', 'remark': '备注'},
+        'required': ['shopName'],
+    },
+    'doudian-email': {
+        'table': '抖店邮箱账号表',
+        'fields': {'email': '邮箱', 'password': '密码', 'active': '是否运营', 'remark': '备注'},
+        'required': ['email'],
+    },
+    'jd': {
+        'table': '京东账号表',
+        'fields': {'account': '账号', 'password': '密码', 'shopId': '店铺ID', 'shopName': '店铺名',
+                   'active': '是否运营', 'remark': '备注'},
+        'required': ['account'],
+    },
+}
+
+
+def _acct_to_front(r, fields):
+    """数据库行（中文列名）-> 前端 camelCase 对象"""
+    rev = {col: key for key, col in fields.items()}
+    item = {'id': r.get('id')}
+    for col, key in rev.items():
+        item[key] = r.get(col)
+    item['createdAt'] = str(r.get('创建时间')) if r.get('创建时间') else ''
+    item['updatedAt'] = str(r.get('更新时间')) if r.get('更新时间') else ''
+    return item
+
+
+def _build_account_views(prefix, cfg):
+    table = cfg['table']
+    fields = cfg['fields']
+    required = cfg['required']
+
+    def list_view():
+        try:
+            rows = db_execute('SELECT * FROM `%s` ORDER BY id' % table)
+            return success([_acct_to_front(r, fields) for r in rows])
+        except Exception as e:
+            return fail(str(e))
+
+    def create_view():
+        try:
+            data = request.get_json(force=True) or {}
+            for req in required:
+                if not str(data.get(req, '')).strip():
+                    return fail('请填写必填字段')
+            cols, vals = [], []
+            for key, col in fields.items():
+                if key not in data:
+                    continue
+                v = 1 if (key == 'active' and data[key]) else (0 if key == 'active' else data[key])
+                cols.append('`%s`' % col)
+                vals.append(v)
+            if not cols:
+                return fail('没有可写入的字段')
+            sql = 'INSERT INTO `%s` (%s) VALUES (%s)' % (table, ', '.join(cols), ', '.join(['%s'] * len(vals)))
+            new_id = db_execute_insert(sql, vals)
+            return success({'id': new_id}, '已新增')
+        except Exception as e:
+            return fail(str(e))
+
+    def update_view(acct_id):
+        try:
+            data = request.get_json(force=True) or {}
+            cols, vals = [], []
+            for key, col in fields.items():
+                if key not in data:
+                    continue
+                v = 1 if (key == 'active' and data[key]) else (0 if key == 'active' else data[key])
+                cols.append('`%s` = %s' % (col, '%s'))
+                vals.append(v)
+            if not cols:
+                return fail('没有可更新的字段')
+            vals.append(acct_id)
+            sql = 'UPDATE `%s` SET %s WHERE id = %s' % (table, ', '.join(cols), '%s')
+            db_execute(sql, vals, fetch=False)
+            return success(None, '已更新')
+        except Exception as e:
+            return fail(str(e))
+
+    def delete_view(acct_id):
+        try:
+            db_execute('DELETE FROM `%s` WHERE id = %s' % (table, '%s'), [acct_id], fetch=False)
+            return success(None, '已删除')
+        except Exception as e:
+            return fail(str(e))
+
+    def toggle_view(acct_id):
+        try:
+            data = request.get_json(force=True) or {}
+            if 'active' in data:
+                active = 1 if data['active'] else 0
+            else:
+                row = db_execute('SELECT `是否运营` FROM `%s` WHERE id = %s' % (table, '%s'), [acct_id])
+                if not row:
+                    return fail('记录不存在')
+                active = 0 if row[0]['是否运营'] else 1
+            db_execute('UPDATE `%s` SET `是否运营` = %s WHERE id = %s' % (table, '%s', '%s'),
+                       [active, acct_id], fetch=False)
+            return success({'active': active}, '已切换')
+        except Exception as e:
+            return fail(str(e))
+
+    return list_view, create_view, update_view, delete_view, toggle_view
+
+
+for _prefix, _cfg in _ACCOUNT_CFG.items():
+    _lv, _cv, _uv, _dv, _tv = _build_account_views(_prefix, _cfg)
+    _base = '/api/store-accounts/%s' % _prefix
+    _ep = _prefix.replace('-', '_')
+    app.add_url_rule(_base, 'acct_%s_list' % _ep, _lv, methods=['GET'])
+    app.add_url_rule(_base, 'acct_%s_create' % _ep, _cv, methods=['POST'])
+    app.add_url_rule(_base + '/<int:acct_id>', 'acct_%s_update' % _ep, _uv, methods=['PUT'])
+    app.add_url_rule(_base + '/<int:acct_id>', 'acct_%s_delete' % _ep, _dv, methods=['DELETE'])
+    app.add_url_rule(_base + '/<int:acct_id>/toggle', 'acct_%s_toggle' % _ep, _tv, methods=['PUT'])
+
+print('[账号API] 店铺账号管理路由已注册（千牛/抖店/抖店邮箱/京东）')
 
 
 if __name__ == '__main__':
