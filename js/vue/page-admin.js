@@ -31,7 +31,6 @@
       { id: 'hr-salary-b', name: '人员薪资标准（表 b）' },
     ]},
     { group: '工具箱', pages: [
-      { id: 'data-import', name: '数据导入' },
       { id: 'toolbox-violation-check', name: '违规词检测' },
     ]},
     { group: '系统管理', pages: [

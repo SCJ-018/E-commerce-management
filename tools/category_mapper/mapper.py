@@ -8,24 +8,105 @@
   3. 写入「商品品类映射表」，支持增量（已存在 ID 不动，新 ID 补标）
 
 用法：
-  python mapper.py --dry-run     # 只跑规则，看覆盖率，不写库、不调 LLM
-  python mapper.py               # 完整跑：规则 + LLM + 写库
-  python mapper.py --only-new    # 增量：只处理映射表里还不存在的 ID（默认即增量）
+  python mapper.py                       # 增量：只补映射表里没有的新 ID（日常/抓完自动跑）
+  python mapper.py --dry-run             # 只跑规则看覆盖率，不写库、不调 LLM
+  python mapper.py --platform 京东       # 只查某个平台（抓取脚本收尾自动用这个）
+  python mapper.py --reclassify          # 重分类映射表里「其他」的行（改完规则后手动跑）
+  python mapper.py --db inner            # 改连 backend/config.py 的内网库（默认连抓取库）
+
+数据源（默认「抓取库」，与 tools/*/shops.py 同源）：
+  服务器本机 127.0.0.1:3306（存在 /opt/pw 标记目录）／本地 127.0.0.1:3307（需先开 SSH 隧道）
+  三张单链接表与「商品品类映射表」都在这个库；backend/config.py 的内网库只是备用。
+
+被抓取脚本自动调用：见 run_incremental()；抓取收尾会以子进程方式跑
+  `mapper.py --platform <平台>`，无新商品时秒退（不调 LLM、不写库）。
 
 依赖：pymysql, requests（与 backend 一致）
 """
 
-import sys, os, re, json, argparse, datetime
+import sys
+import os
+import re
+import json
+import time
+import argparse
+import datetime
+from collections import Counter
+
 import pymysql
 import requests
 
 # ---------------------------------------------------------------------------
-# 配置（与 backend/config.py 保持一致，源：backend/config.py）
+# 配置
 # ---------------------------------------------------------------------------
-# 密钥统一从 backend/config.py 读取（该文件已被 .gitignore 排除，不会进入版本库）
-_BACKEND_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'backend')
-sys.path.insert(0, _BACKEND_DIR)
-from config import DB_CONFIG, DEEPSEEK_API_KEY, DEEPSEEK_API_URL, DEEPSEEK_MODEL  # noqa: E402
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _load_dotenv():
+    """零依赖读取项目根目录 .env（与 backend/config.py 同规则：系统环境变量优先）。
+
+    这里刻意**不复用** backend/config.py，避免 import 时打印内网库配置告警、
+    也避免把 mapper 和网站后端绑死（本脚本读的是抓取库）。
+    """
+    env_path = os.path.join(_ROOT_DIR, '.env')
+    if not os.path.isfile(env_path):
+        return False
+    try:
+        with open(env_path, 'r', encoding='utf-8-sig') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, v = line.split('=', 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        return False
+    return True
+
+
+_HAS_DOTENV = _load_dotenv()
+
+# DeepSeek 兜底分类（URL/模型与 backend/config.py 同值；key 从 .env 读）
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '')
+DEEPSEEK_API_URL = os.environ.get('DEEPSEEK_API_URL', 'https://api.deepseek.com/chat/completions')
+DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
+
+# 抓取库（主库）—— 与 tools/{doudian,jd,qianniu}_crawler/shops.py 的 SERVER_DB 完全同源。
+# ⚠️ 这三处常量必须保持一致；改连接信息时三处一起改。
+FETCH_DB = {
+    'host': '127.0.0.1',
+    'user': 'ecom',
+    'password': 'Ecom@2026',
+    'database': '数据',
+    'charset': 'utf8mb4',
+}
+
+
+def _fetch_db_port():
+    """服务器本机 3306；本地开发走 SSH 隧道 3307（与 shops.py 判据一致）。"""
+    return 3306 if os.path.exists('/opt/pw') else 3307
+
+
+def resolve_db(db_mode='fetch'):
+    """返回 pymysql 连接参数。
+
+    db_mode='fetch'（默认）：抓取库 —— 三张单链接表 + 映射表都在这里
+    db_mode='inner'        ：backend/config.py 的内网自建库（仅备用，需网络可达）
+    """
+    if db_mode == 'inner':
+        backend = os.path.join(_ROOT_DIR, 'backend')
+        if backend not in sys.path:
+            sys.path.insert(0, backend)
+        from config import DB_CONFIG  # noqa: E402  （延迟导入：默认路径不触发它的告警）
+        return {k: v for k, v in DB_CONFIG.items() if k != 'autocommit'}
+    cfg = dict(FETCH_DB)
+    cfg['host'] = os.environ.get('FETCH_DB_HOST', cfg['host'])
+    cfg['port'] = int(os.environ.get('FETCH_DB_PORT', _fetch_db_port()))
+    return cfg
+
 
 # 平台 -> (表名, 商品ID字段, 标题字段, 日期字段)
 PLATFORMS = [
@@ -109,8 +190,8 @@ OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output')
 # ---------------------------------------------------------------------------
 # 基础工具
 # ---------------------------------------------------------------------------
-def get_conn():
-    return pymysql.connect(**DB_CONFIG, cursorclass=pymysql.cursors.DictCursor)
+def get_conn(db_mode='fetch'):
+    return pymysql.connect(**resolve_db(db_mode), cursorclass=pymysql.cursors.DictCursor)
 
 
 def ensure_table(conn):
@@ -132,12 +213,26 @@ def ensure_table(conn):
     conn.commit()
 
 
-def load_unique_products(conn):
+def _platforms_filter(platforms):
+    """platforms 可为 None（全平台）或 ['京东'] / '京东'"""
+    if not platforms:
+        return list(PLATFORMS)
+    if isinstance(platforms, str):
+        platforms = [platforms]
+    want = set(platforms)
+    picked = [p for p in PLATFORMS if p[0] in want]
+    unknown = want - {p[0] for p in picked}
+    if unknown:
+        raise ValueError('未知平台 %s，可选：%s' % (sorted(unknown), [p[0] for p in PLATFORMS]))
+    return picked
+
+
+def load_unique_products(conn, platforms=None):
     """按 (平台, 平台ID) 去重，取每 ID 代表标题（最新日期，同日多标题取最长）。
     返回 dict[(平台, 平台ID)] = 标题"""
     result = {}
     with conn.cursor() as cur:
-        for platform, table, id_col, title_col, date_col in PLATFORMS:
+        for platform, table, id_col, title_col, date_col in _platforms_filter(platforms):
             sql = f"""
             SELECT t.`{id_col}` AS pid, t.`{title_col}` AS title
             FROM `{table}` t
@@ -186,6 +281,9 @@ def classify_by_rules(title):
 # DeepSeek 兜底分类
 # ---------------------------------------------------------------------------
 def _call_deepseek(system_prompt, user_message):
+    if not DEEPSEEK_API_KEY:
+        print('  [LLM] ⚠️ 未配置 DEEPSEEK_API_KEY（检查项目根 .env），跳过 LLM 兜底')
+        return None
     headers = {
         'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
         'Content-Type': 'application/json',
@@ -307,13 +405,14 @@ def _parse_json(raw):
 # ---------------------------------------------------------------------------
 def reclassify_uncategorized(conn):
     """把映射表中「其他」的行重新走一遍（规则优先，LLM 兜底），并 UPDATE 回库"""
+    os.makedirs(OUT_DIR, exist_ok=True)
     with conn.cursor() as cur:
         cur.execute(f"SELECT `平台`,`平台商品ID`,`商品名称快照` FROM `{MAPPING_TABLE}` WHERE `统一品类`='其他'")
         rows = cur.fetchall()
     items = {(r['平台'], str(r['平台商品ID'])): r['商品名称快照'] for r in rows}
     print(f'其他待重分类={len(items)}')
     if not items:
-        return
+        return {'重分类': 0}
 
     rule_hit = {}
     unresolved = {}
@@ -343,107 +442,157 @@ def reclassify_uncategorized(conn):
             cur.execute(sql, (cat, method, now, plat, pid))
     conn.commit()
     print(f'重分类完成，更新 {len(items)} 条')
+    return {'重分类': len(items)}
 
 
 # ---------------------------------------------------------------------------
-# 主流程
+# ★ 增量主流程（抓取脚本收尾自动调用这个）
+# ---------------------------------------------------------------------------
+def run_incremental(platforms=None, conn=None, log=print, dry_run=False):
+    """增量补齐品类映射：只处理映射表里还不存在的 (平台, 平台ID)。
+
+    platforms : None=三个平台都查；传 ['京东'] 只查该平台（抓取脚本按平台调用，省时间）
+    conn      : 外部连接（可选）；不传则自建并负责关闭
+    dry_run   : True 时只跑规则看覆盖率，不写库、不调 LLM
+    返回统计 dict。**无新增商品时立即返回**（不调 LLM、不写库）。
+
+    幂等：已存在的 (平台, 平台ID) 一律不动，所以抓完一次跑一次是安全的。
+    """
+    own = conn is None
+    if own:
+        conn = get_conn()
+    try:
+        os.makedirs(OUT_DIR, exist_ok=True)
+        ensure_table(conn)
+
+        products = load_unique_products(conn, platforms)
+        existing = load_existing_ids(conn)
+        new_products = {k: v for k, v in products.items() if k not in existing}
+        log(f'唯一商品总数={len(products)}  已映射={len(existing)}  待处理={len(new_products)}')
+
+        stats = {'唯一商品': len(products), '已映射': len(existing),
+                 '新增': 0, '规则命中': 0, 'LLM': 0, '其他': 0}
+        if not new_products:
+            log('无新增商品，映射表无需更新')
+            return stats
+
+        # 1) 规则分类
+        rule_matched = {}   # key -> 品类
+        unresolved = {}     # key -> 标题
+        for key, title in new_products.items():
+            cat = classify_by_rules(title)
+            if cat:
+                rule_matched[key] = cat
+            else:
+                unresolved[key] = title
+
+        log(f'规则命中={len(rule_matched)}  LLM待分类={len(unresolved)}')
+
+        # 品类分布（规则部分）
+        dist = Counter(rule_matched.values())
+        with open(os.path.join(OUT_DIR, '规则分布.txt'), 'w', encoding='utf-8') as f:
+            f.write('规则命中品类分布：\n')
+            for cat, n in dist.most_common():
+                f.write(f'{cat}\t{n}\n')
+
+        # 未决标题落盘，供检查
+        with open(os.path.join(OUT_DIR, '未决标题.txt'), 'w', encoding='utf-8') as f:
+            f.write(f'待 LLM 分类的标题数={len(unresolved)}\n平台\tID\t标题\n')
+            for (plat, pid), title in sorted(unresolved.items()):
+                f.write(f'{plat}\t{pid}\t{title}\n')
+
+        if dry_run:
+            log('dry-run 结束，未写库、未调 LLM。详见 output/ 目录')
+            return stats
+
+        # 2) LLM 兜底
+        llm_result = {}
+        if unresolved:
+            idx_map = {i: key for i, key in enumerate(unresolved.keys())}
+            titles = [(i, unresolved[key]) for i, key in enumerate(unresolved.keys())]
+            llm_index = classify_by_llm(titles)
+            for i, key in idx_map.items():
+                llm_result[key] = llm_index.get(i, '其他')
+        log(f'LLM 完成，兜底 {len(llm_result)} 条')
+
+        # 3) 写库
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        inserted = 0
+        with conn.cursor() as cur:
+            sql = (f"INSERT INTO `{MAPPING_TABLE}` "
+                   f"(`平台`,`平台商品ID`,`统一品类`,`商品名称快照`,`归类方式`,`归类时间`,`更新时间`) "
+                   f"VALUES (%s,%s,%s,%s,%s,%s,%s) "
+                   f"ON DUPLICATE KEY UPDATE `统一品类`=VALUES(`统一品类`),"
+                   f"`商品名称快照`=VALUES(`商品名称快照`),`归类方式`=VALUES(`归类方式`),"
+                   f"`更新时间`=VALUES(`更新时间`)")
+            for key, title in new_products.items():
+                plat, pid = key
+                cat = rule_matched.get(key) or llm_result.get(key) or '其他'
+                method = '规则' if key in rule_matched else 'LLM'
+                cur.execute(sql, (plat, pid, cat, title[:255], method, now, now))
+                inserted += 1
+        conn.commit()
+        log(f'写入完成，共 {inserted} 条')
+
+        # 汇总
+        final_dist = Counter(list(rule_matched.values()) + list(llm_result.values()))
+        with open(os.path.join(OUT_DIR, '映射汇总.txt'), 'w', encoding='utf-8') as f:
+            f.write(f'本次新增映射={inserted}\n')
+            f.write('最终品类分布：\n')
+            for cat in CATEGORY_LIST:
+                f.write(f'{cat}\t{final_dist.get(cat, 0)}\n')
+        # 抽样
+        with open(os.path.join(OUT_DIR, '映射抽样.txt'), 'w', encoding='utf-8') as f:
+            f.write('抽样 200 条映射结果：\n平台\tID\t品类\t标题\n')
+            for key, title in list(new_products.items())[:200]:
+                plat, pid = key
+                cat = rule_matched.get(key) or llm_result.get(key) or '其他'
+                f.write(f'{plat}\t{pid}\t{cat}\t{title}\n')
+
+        stats.update({'新增': inserted, '规则命中': len(rule_matched),
+                      'LLM': len(llm_result), '其他': final_dist.get('其他', 0)})
+        return stats
+    finally:
+        if own:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# CLI
 # ---------------------------------------------------------------------------
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description='商品 → 统一品类 映射（增量/重分类/覆盖率）')
     ap.add_argument('--dry-run', action='store_true', help='只跑规则看覆盖率，不写库不调 LLM')
     ap.add_argument('--reclassify', action='store_true', help='重分类映射表中「其他」的行')
+    ap.add_argument('--platform', default=None,
+                    help='只处理指定平台：抖店 / 京东 / 千牛（默认三个都查）')
+    ap.add_argument('--db', default='fetch', choices=['fetch', 'inner'],
+                    help='连哪个库：fetch=抓取库(默认，与抓取脚本同源) / inner=backend 内网库')
     args = ap.parse_args()
 
-    os.makedirs(OUT_DIR, exist_ok=True)
-    conn = get_conn()
-    ensure_table(conn)
+    platforms = [args.platform] if args.platform else None
+    cfg = resolve_db(args.db)
+    print('数据源: %s:%s/%s（db=%s）' % (cfg['host'], cfg['port'], cfg['database'], args.db))
+    if not DEEPSEEK_API_KEY and not args.dry_run:
+        print('⚠️ 未读到 DEEPSEEK_API_KEY，规则未覆盖的商品将全部落入「其他」')
 
-    if args.reclassify:
-        reclassify_uncategorized(conn)
+    conn = get_conn(args.db)
+    try:
+        if args.reclassify:
+            reclassify_uncategorized(conn)
+            return
+        stats = run_incremental(platforms=platforms, conn=conn, dry_run=args.dry_run)
+    finally:
         conn.close()
-        return
 
-    products = load_unique_products(conn)
-    existing = load_existing_ids(conn)
-    new_products = {k: v for k, v in products.items() if k not in existing}
-    print(f'唯一商品总数={len(products)}  已映射={len(existing)}  待处理={len(new_products)}')
-
-    # 1) 规则分类
-    rule_matched = {}   # key -> 品类
-    unresolved = {}     # key -> 标题
-    for key, title in new_products.items():
-        cat = classify_by_rules(title)
-        if cat:
-            rule_matched[key] = cat
-        else:
-            unresolved[key] = title
-
-    print(f'规则命中={len(rule_matched)}  LLM待分类={len(unresolved)}')
-
-    # 品类分布（规则部分）
-    from collections import Counter
-    dist = Counter(rule_matched.values())
-    with open(os.path.join(OUT_DIR, '规则分布.txt'), 'w', encoding='utf-8') as f:
-        f.write('规则命中品类分布：\n')
-        for cat, n in dist.most_common():
-            f.write(f'{cat}\t{n}\n')
-
-    # 未决标题落盘，供检查
-    with open(os.path.join(OUT_DIR, '未决标题.txt'), 'w', encoding='utf-8') as f:
-        f.write(f'待 LLM 分类的标题数={len(unresolved)}\n平台\tID\t标题\n')
-        for (plat, pid), title in sorted(unresolved.items()):
-            f.write(f'{plat}\t{pid}\t{title}\n')
-
-    if args.dry_run:
-        print('dry-run 结束，未写库、未调 LLM。详见 output/ 目录')
-        conn.close()
-        return
-
-    # 2) LLM 兜底
-    llm_result = {}
-    if unresolved:
-        idx_map = {i: key for i, key in enumerate(unresolved.keys())}
-        titles = [(i, unresolved[key]) for i, key in enumerate(unresolved.keys())]
-        llm_index = classify_by_llm(titles)
-        for i, key in idx_map.items():
-            llm_result[key] = llm_index.get(i, '其他')
-    print(f'LLM 完成，兜底 {len(llm_result)} 条')
-
-    # 3) 写库
-    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    inserted = 0
-    with conn.cursor() as cur:
-        sql = (f"INSERT INTO `{MAPPING_TABLE}` "
-               f"(`平台`,`平台商品ID`,`统一品类`,`商品名称快照`,`归类方式`,`归类时间`,`更新时间`) "
-               f"VALUES (%s,%s,%s,%s,%s,%s,%s) "
-               f"ON DUPLICATE KEY UPDATE `统一品类`=VALUES(`统一品类`),"
-               f"`商品名称快照`=VALUES(`商品名称快照`),`归类方式`=VALUES(`归类方式`),"
-               f"`更新时间`=VALUES(`更新时间`)")
-        for key, title in new_products.items():
-            plat, pid = key
-            cat = rule_matched.get(key) or llm_result.get(key) or '其他'
-            method = '规则' if key in rule_matched else 'LLM'
-            cur.execute(sql, (plat, pid, cat, title[:255], method, now, now))
-            inserted += 1
-    conn.commit()
-    print(f'写入完成，共 {inserted} 条')
-
-    # 汇总
-    final_dist = Counter(list(rule_matched.values()) + list(llm_result.values()))
-    with open(os.path.join(OUT_DIR, '映射汇总.txt'), 'w', encoding='utf-8') as f:
-        f.write(f'本次新增映射={inserted}\n')
-        f.write('最终品类分布：\n')
-        for cat in CATEGORY_LIST:
-            f.write(f'{cat}\t{final_dist.get(cat, 0)}\n')
-    # 抽样
-    with open(os.path.join(OUT_DIR, '映射抽样.txt'), 'w', encoding='utf-8') as f:
-        f.write('抽样 200 条映射结果：\n平台\tID\t品类\t标题\n')
-        for key, title in list(new_products.items())[:200]:
-            plat, pid = key
-            cat = rule_matched.get(key) or llm_result.get(key) or '其他'
-            f.write(f'{plat}\t{pid}\t{cat}\t{title}\n')
-    conn.close()
-    print('全部完成，结果见 tools/category_mapper/output/')
+    if not args.dry_run and stats.get('新增'):
+        print('全部完成，结果见 tools/category_mapper/output/')
+    if stats.get('新增'):
+        print('本次新增映射 %d 条（规则 %d / LLM %d）'
+              % (stats['新增'], stats['规则命中'], stats['LLM']))
 
 
 if __name__ == '__main__':

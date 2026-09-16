@@ -2346,150 +2346,6 @@ def db_delete_row(table_name, pk_value):
         return fail(str(e))
 
 
-# ======================== Excel/CSV 网页导入 ========================
-
-# 允许网页上传导入的业务数据表
-IMPORT_TABLES = {
-    '抖店单链接数据表', '京东单链接数据表', '千牛单链接数据表',
-    '千牛单链接推广数据表', '店铺营销数据',
-}
-
-
-def _parse_upload_file(filename, stream, sheet_name=None):
-    """解析上传的 xlsx/xls/csv，返回 (列名列表, 行数据列表[{列:值}])。sheet_name 指定工作表，缺省取第一个。"""
-    ext = os.path.splitext(filename)[1].lower()
-    if ext in ('.xlsx', '.xls'):
-        import io
-        import openpyxl
-        wb = openpyxl.load_workbook(io.BytesIO(stream.read()), read_only=True, data_only=True)
-        ws = wb[sheet_name] if (sheet_name and sheet_name in wb.sheetnames) else wb[wb.sheetnames[0]]
-        cols, rows = [], []
-        for i, row in enumerate(ws.iter_rows(values_only=True)):
-            if i == 0:
-                cols = [str(c).strip() if c is not None else f'Column_{j}' for j, c in enumerate(row)]
-            elif row and any(v is not None and str(v).strip() != '' for v in row):
-                rows.append(dict(zip(cols, row)))
-        return cols, rows
-    if ext == '.csv':
-        import io
-        import csv as _csv
-        data = stream.read()
-        for enc in ('utf-8-sig', 'utf-8', 'gbk', 'gb18030'):
-            try:
-                text = data.decode(enc)
-                break
-            except (UnicodeDecodeError, UnicodeError):
-                continue
-        else:
-            text = data.decode('utf-8', errors='replace')
-        reader = _csv.DictReader(io.StringIO(text))
-        cols = [c.strip() for c in (reader.fieldnames or [])]
-        return cols, [dict(r) for r in reader]
-    raise ValueError('仅支持 .xlsx / .xls / .csv 文件')
-
-
-def _import_convert(value, col_type):
-    """按数据库列类型转换单元格值，无法转换返回 None。"""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.strftime('%Y-%m-%d')
-    if isinstance(value, date):
-        return value.strftime('%Y-%m-%d')
-    s = str(value).strip()
-    if s in ('', 'NULL', 'N/A', '-', 'null', 'None', 'nan', 'NaN'):
-        return None
-    tl = col_type.lower()
-    if any(t in tl for t in ('int', 'decimal', 'float', 'double', 'numeric')):
-        s2 = s.replace(',', '').replace('￥', '').replace('¥', '').replace('元', '').replace('%', '').replace(' ', '')
-        try:
-            return float(s2) if '.' in s2 else int(s2)
-        except ValueError:
-            return None
-    if 'date' in tl or 'time' in tl:
-        for fmt in ('%Y-%m-%d', '%Y/%m/%d', '%Y%m%d', '%Y-%m-%d %H:%M:%S', '%Y/%m/%d %H:%M:%S', '%Y年%m月%d日'):
-            try:
-                return datetime.strptime(s, fmt).strftime('%Y-%m-%d')
-            except ValueError:
-                continue
-        return s
-    return s
-
-
-@app.route('/api/import/sheets', methods=['POST'])
-def import_sheets():
-    """返回上传的 xlsx/xls 的工作表名列表，供前端选择要导入的 sheet。"""
-    try:
-        file = request.files.get('file')
-        if not file or not file.filename:
-            return fail('请选择要导入的文件')
-        ext = os.path.splitext(file.filename)[1].lower()
-        if ext not in ('.xlsx', '.xls'):
-            return success({'sheets': []})
-        import io
-        import openpyxl
-        wb = openpyxl.load_workbook(io.BytesIO(file.read()), read_only=True, data_only=True)
-        return success({'sheets': wb.sheetnames})
-    except Exception as e:
-        return fail(str(e))
-
-
-@app.route('/api/import/excel', methods=['POST'])
-def import_excel():
-    """上传 Excel/CSV 导入到业务数据表（按表主键 upsert，已存在则更新）。"""
-    try:
-        table = (request.form.get('table') or '').strip()
-        sheet = (request.form.get('sheet') or '').strip()
-        file = request.files.get('file')
-        if table not in IMPORT_TABLES:
-            return fail('该表不支持网页导入')
-        if not file or not file.filename:
-            return fail('请选择要导入的文件')
-
-        cols, rows = _parse_upload_file(file.filename, file, sheet)
-        if not rows:
-            return fail('文件里没有数据行')
-
-        col_types = {c['Field']: c['Type'] for c in db_execute(f'SHOW FULL COLUMNS FROM `{table}`')}
-        table_fields = list(col_types.keys())
-        insert_cols = [c for c in cols if c in table_fields]
-        if not insert_cols:
-            return fail('文件列与表字段无交集，请检查表头是否与目标表字段一致')
-
-        pk_cols = [r['Column_name'] for r in db_execute(f"SHOW KEYS FROM `{table}` WHERE Key_name='PRIMARY'")]
-
-        cols_sql = ', '.join([f'`{c}`' for c in insert_cols])
-        placeholders = ', '.join(['%s'] * len(insert_cols))
-        if pk_cols:
-            upd = ', '.join([f'`{c}`=VALUES(`{c}`)' for c in insert_cols if c not in pk_cols])
-            sql = (f'INSERT INTO `{table}` ({cols_sql}) VALUES ({placeholders})'
-                   + (f' ON DUPLICATE KEY UPDATE {upd}' if upd else ''))
-        else:
-            sql = f'INSERT INTO `{table}` ({cols_sql}) VALUES ({placeholders})'
-
-        ok, failed, first_err = 0, 0, ''
-        conn = get_db()
-        try:
-            with conn.cursor() as cur:
-                for row in rows:
-                    vals = [_import_convert(row.get(c), col_types[c]) for c in insert_cols]
-                    try:
-                        cur.execute(sql, vals)
-                        ok += 1
-                    except Exception as e:
-                        failed += 1
-                        if not first_err:
-                            first_err = str(e)
-                conn.commit()
-        finally:
-            return_db(conn)
-
-        return success({'inserted': ok, 'failed': failed, 'error': first_err},
-                       f'导入完成：成功 {ok} 行，失败 {failed} 行')
-    except Exception as e:
-        return fail(str(e))
-
-
 # ======================== 员工花名册 ========================
 
 # 员工花名册全部列（与数据库表结构一致）
@@ -3074,24 +2930,26 @@ _DOUYIN_WORKS_CSV = os.path.join(_SEEDING_DIR, '_douyin_works.csv')
 _XHS_COOKIE_FILE = os.path.join(_SEEDING_DIR, 'xhs_cookie.txt')
 _XHS_WORKS_FILE = os.path.join(_SEEDING_DIR, '_xhs_works.json')
 _SEEDING_STATE_FILE = os.path.join(_SEEDING_DIR, '_seeding_state.json')
+# 作品数据自动更新间隔（秒）：每半小时
+_SEEDING_AUTO_INTERVAL = 1800
 
 
 def _seeding_progress_file(platform):
     return os.path.join(_SEEDING_DIR, '_seeding_progress_%s.json' % platform)
 
 
-def _seeding_progress_write(platform, status, done, total):
+def _seeding_progress_write(platform, status, done, total, msg=''):
     """写抓取进度文件，供前端进度条轮询"""
     try:
         with open(_seeding_progress_file(platform), 'w', encoding='utf-8') as f:
-            json.dump({'status': status, 'done': done, 'total': total}, f, ensure_ascii=False)
+            json.dump({'status': status, 'done': done, 'total': total, 'ts': time.time(), 'msg': msg}, f, ensure_ascii=False)
     except Exception:
         pass
 
 
 def _seeding_progress_read(platform):
-    """读抓取进度：{status, done, total, progress, finished}"""
-    info = {'status': 'idle', 'done': 0, 'total': 0, 'progress': 0, 'finished': False}
+    """读抓取进度：{status, done, total, ts, msg, progress, finished}"""
+    info = {'status': 'idle', 'done': 0, 'total': 0, 'ts': 0, 'msg': '', 'progress': 0, 'finished': False}
     path = _seeding_progress_file(platform)
     if os.path.exists(path):
         try:
@@ -3100,6 +2958,8 @@ def _seeding_progress_read(platform):
             info['status'] = p.get('status', 'idle')
             info['done'] = int(p.get('done', 0) or 0)
             info['total'] = int(p.get('total', 0) or 0)
+            info['ts'] = float(p.get('ts', 0) or 0)
+            info['msg'] = p.get('msg', '') or ''
         except Exception:
             pass
     if info['total']:
@@ -3108,6 +2968,15 @@ def _seeding_progress_read(platform):
         info['progress'] = 100
         info['finished'] = True
     return info
+
+
+def _seeding_is_running(platform):
+    """判断指定平台是否仍在抓取；running 状态持续超过一个更新周期视为卡死，允许重触发"""
+    p = _seeding_progress_read(platform)
+    if p.get('status') != 'running':
+        return False
+    ts = p.get('ts') or 0
+    return (time.time() - ts) < _SEEDING_AUTO_INTERVAL
 
 
 def _seeding_load_accounts():
@@ -3358,6 +3227,9 @@ def seeding_save_cookie():
 def _seeding_launch(platform):
     """后台异步启动指定平台的作品抓取脚本，写进度初始状态。返回 (error_msg or None)"""
     import sys as _sys_scrape
+    # 上次抓取仍在进行时不再重复触发，避免任务堆积
+    if _seeding_is_running(platform):
+        return '该平台抓取正在进行中，请稍后再试'
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if platform == 'xhs':
         scraper = os.path.join(_SEEDING_DIR, 'seeding_xhs.py')
@@ -3367,6 +3239,15 @@ def _seeding_launch(platform):
         scraper = os.path.join(_SEEDING_DIR, 'douyin_video_scraper.py')
     if not os.path.exists(scraper):
         return '抓取脚本不存在：' + scraper
+    # Cookie 校验：缺失时直接给出明确提示，避免后台无谓触发
+    if platform == 'douyin':
+        if not (os.path.exists(_DOUYIN_COOKIE_FILE) and os.path.getsize(_DOUYIN_COOKIE_FILE) > 0):
+            return '抖音 Cookie 未配置，请先在「数据更新」面板保存 Cookie'
+    else:
+        fallback_cookie = os.path.join(_SEEDING_DIR, 'cookie.txt')
+        if not (os.path.exists(_XHS_COOKIE_FILE) and os.path.getsize(_XHS_COOKIE_FILE) > 0) and \
+           not (os.path.exists(fallback_cookie) and os.path.getsize(fallback_cookie) > 0):
+            return '小红书 Cookie 未配置，请先在「数据更新」面板保存 Cookie'
     _seeding_progress_write(platform, 'running', 0, 0)
     log_file = open(os.path.join(_SEEDING_DIR, '_scrape_%s.log' % platform), 'w', encoding='utf-8')
     try:
@@ -5342,21 +5223,89 @@ def _run_douyin_hot_filter():
             "INSERT INTO `抖音热搜品类表` (`热搜名`, `热搜值`, `日期`, `品类`, `是否电商`, `热度数值`) "
             "VALUES (%s, %s, %s, %s, 1, %s)",
             [m['term'], m['heat_raw'], date_str, m['categories'], m['heat_num']], fetch=False)
-    return {'total': len(words), 'matched': len(matched), 'date': date_str}
+    return {'total': len(words), 'matched': len(matched), 'date': date_str, 'terms': matched}
+
+
+_DOUYIN_HOT_AI_MAX_WORDS = 1000  # 送 DeepSeek 的词数上限（按热度截断），控制输入 token
+
+
+def _douyin_hot_ai_filter(filter_result):
+    """DeepSeek 二次过滤：对当天词典筛选落库的词，让 AI 再判定哪些不是电商词，
+    只让 AI 返回「要剔除的词」（少数派，避免输出超长被截断），其余全部保留。
+    失败时跳过、保留词典结果（保证页面始终有数据）。
+    返回 {'kept': n, 'removed': n, 'skipped': bool}"""
+    terms = (filter_result or {}).get('terms') or []
+    date_str = (filter_result or {}).get('date') or time.strftime('%Y-%m-%d')
+    if not terms:
+        return {'kept': 0, 'removed': 0, 'skipped': True}
+    if not DEEPSEEK_SELECTION_API_KEY:
+        print('[选品][AI筛选] 未配置 DEEPSEEK_SELECTION_API_KEY，跳过二次过滤（保留词典结果）')
+        return {'kept': len(terms), 'removed': 0, 'skipped': True}
+
+    # 按热度降序，超出上限截断
+    terms_sorted = sorted(terms, key=lambda m: m.get('heat_num') or 0, reverse=True)
+    if len(terms_sorted) > _DOUYIN_HOT_AI_MAX_WORDS:
+        terms_sorted = terms_sorted[:_DOUYIN_HOT_AI_MAX_WORDS]
+
+    word_list = [{'word': m['term'], 'category': m.get('categories') or ''} for m in terms_sorted]
+    sys_p = (
+        '你是电商选品数据清洗助手。给你一批抖音热搜词（已经过品类词典初筛，但仍有误命中）。'
+        '请挑出其中「不是电商相关搜索词」的——即影视综艺、明星八卦、游戏、社会新闻、品牌事件、'
+        '股市黄金行情、抽象梗词等，用户搜它们不是为了看商品或购买的。电商相关词全部保留、不要列出。'
+        '拿不准的不要剔除（宁多留不误删）。\n'
+        '只返回要剔除的词，JSON 字符串数组格式：["词1", "词2"]，不要任何其他文字。'
+    )
+    user_msg = '热搜词列表（JSON）：\n' + json.dumps(word_list, ensure_ascii=False)
+
+    raw = call_deepseek_api(sys_p, user_msg, temperature=0.1, max_tokens=4000,
+                            api_key=DEEPSEEK_SELECTION_API_KEY)
+    if not raw:
+        print('[选品][AI筛选] DeepSeek 调用失败，跳过二次过滤（保留词典结果）')
+        return {'kept': len(terms), 'removed': 0, 'skipped': True}
+
+    term_names = {m['term'] for m in terms_sorted}
+    removed_words = set()
+    s = re.sub(r'```(?:json)?', '', raw.strip()).strip()
+    i, j = s.find('['), s.rfind(']')
+    if i != -1 and j > i:
+        try:
+            for it in json.loads(s[i:j + 1]):
+                if isinstance(it, str):
+                    removed_words.add(it.strip())
+                elif isinstance(it, dict) and it.get('word'):
+                    removed_words.add(str(it['word']).strip())
+        except Exception:
+            pass
+    removed_set = removed_words & term_names
+    if not removed_set:
+        print('[选品][AI筛选] DeepSeek 未给出剔除名单（视为全部保留），词典 %d 词全留' % len(terms_sorted))
+        return {'kept': len(terms), 'removed': 0, 'skipped': True}
+
+    for m in terms_sorted:
+        if m['term'] in removed_set:
+            continue
+        db_execute("DELETE FROM `抖音热搜品类表` WHERE `日期` = %s AND `热搜名` = %s",
+                   [date_str, m['term']], fetch=False)
+    kept = len(terms_sorted) - len(removed_set)
+    print('[选品][AI筛选] 词典 %d 词 -> AI 保留 %d，剔除 %d' % (len(terms_sorted), kept, len(removed_set)))
+    return {'kept': kept, 'removed': len(removed_set)}
 
 
 def _run_scrape_and_filter():
     """抓取热点宝 → 品类筛选，写进度文件。手动触发与每日 8 点定时共用。"""
     try:
         _write_douyin_hot_progress('scraping', '正在抓取抖音热点宝热搜...')
-        ok = _run_py_script(_DOUYIN_HOT_SCRAPER, timeout=600)
+        ok = _run_py_script(_DOUYIN_HOT_SCRAPER, timeout=900)
         if not ok:
             _write_douyin_hot_progress('error', '热点宝抓取脚本运行失败')
             return
         _write_douyin_hot_progress('filtering', '正在筛选电商品类...')
         result = _run_douyin_hot_filter()
+        _write_douyin_hot_progress('ai_filtering', 'DeepSeek 二次过滤中...')
+        ai = _douyin_hot_ai_filter(result)
         _write_douyin_hot_progress('done', '抓取并筛选完成',
                                    {'total': result.get('total'), 'matched': result.get('matched'),
+                                    'ai_kept': ai.get('kept'), 'ai_removed': ai.get('removed'),
                                     'date': result.get('date')})
     except Exception as e:
         traceback.print_exc()
@@ -5882,17 +5831,24 @@ _douyin_hot_auto_thread.start()
 # ======================== 启动 ========================
 
 def _seeding_auto_update_loop():
-    """后台线程：每小时自动触发一次作品抓取（抖音 + 小红书），随进程存活"""
+    """后台线程：每半小时自动触发一次作品抓取（抖音 + 小红书），随进程存活。
+
+    - 启动后短暂等待，先做首次抓取，再进入每半小时一次的循环；
+    - 任一平台仍在抓取（含卡死判定）时自动跳过，避免任务堆积。
+    """
+    time.sleep(10)  # 等服务完成初始化，避免与启动过程竞争
     while True:
-        time.sleep(3600)
         try:
             for platform in ('douyin', 'xhs'):
                 err = _seeding_launch(platform)
                 if err:
-                    print(f'[种草][自动更新] {platform} 触发失败: {err}')
+                    print(f'[种草][自动更新] {platform}: {err}')
+                else:
+                    print(f'[种草][自动更新] 已触发 {platform} 作品抓取（每 {_SEEDING_AUTO_INTERVAL // 60} 分钟）')
                 time.sleep(5)  # 两个平台错开，避免同时打满
         except Exception as e:
             print(f'[种草][自动更新] 触发异常: {e}')
+        time.sleep(_SEEDING_AUTO_INTERVAL)
 
 
 # daemon 线程，gunicorn 单 worker 下只启动一次；随进程退出自动结束

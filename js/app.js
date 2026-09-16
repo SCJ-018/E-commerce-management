@@ -114,6 +114,13 @@ const ApiService = (() => {
     async updateRole(id, data) { return request('/admin/roles/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
     async deleteRole(id) { return request('/admin/roles/' + id, { method: 'DELETE' }); },
 
+    /** 店铺账号管理：type = qianniu | doudian | doudian-email | jd */
+    async getStoreAccounts(type) { return request('/store-accounts/' + type); },
+    async createStoreAccount(type, data) { return request('/store-accounts/' + type, { method: 'POST', body: JSON.stringify(data) }); },
+    async updateStoreAccount(type, id, data) { return request('/store-accounts/' + type + '/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
+    async deleteStoreAccount(type, id) { return request('/store-accounts/' + type + '/' + id, { method: 'DELETE' }); },
+    async toggleStoreAccount(type, id, active) { return request('/store-accounts/' + type + '/' + id + '/toggle', { method: 'PUT', body: JSON.stringify({ active: active }) }); },
+
     /** 员工花名册（旧接口，保留兼容） */
     async getHrEmployees() { return request('/hr/employees'); },
     async createEmployee(data) { return request('/hr/employees', { method: 'POST', body: JSON.stringify(data) }); },
@@ -666,7 +673,6 @@ const App = (() => {
       'order-details': '订单详情',
       'category-marketing': '品类营销数据',
       'seeding-monitor': '种草监测中台',
-      'data-import': '数据导入',
     };
     document.getElementById('pageTitle').textContent = titles[page] || page;
     if (page === 'marketing-overview') renderMarketingOverview();
@@ -2408,7 +2414,6 @@ const App = (() => {
       { id: 'hr-salary-b', name: '人员薪资标准（表 b）' },
     ]},
     { group: '工具箱', pages: [
-      { id: 'data-import', name: '数据导入' },
       { id: 'toolbox-violation-check', name: '违规词检测' },
     ]},
     { group: '系统管理', pages: [
@@ -5695,6 +5700,15 @@ const App = (() => {
     var timer = setInterval(async function() {
       tries++;
       var st = await ApiService.getSeedingScrapeStatus(platform);
+      if (st && st.status === 'error') {
+        clearInterval(timer);
+        _sdHideProgress();
+        await _sdLoadWorks(platform);
+        _sdLoadDeleted();
+        var emsg = (st.msg && String(st.msg).trim()) || '抓取失败，请检查 Cookie 是否有效';
+        showToast(emsg, 'error');
+        return;
+      }
       if (st && st.status === 'running') {
         var done = st.done || 0, total = st.total || 0;
         _sdShowProgress(st.progress || 0, total ? ('抓取中 ' + done + '/' + total + ' 个账号') : '抓取中...');
@@ -5715,82 +5729,9 @@ const App = (() => {
         _sdHideProgress();
         await _sdLoadWorks(platform);
         _sdLoadDeleted();
-        showToast('抓取可能仍在进行或未完成，请稍后手动点击「数据更新」查看', 'error');
+        showToast('抓取超时未完成，请稍后手动点击「数据更新」查看', 'error');
       }
     }, 3000);
-  }
-
-  // ==================== 数据导入（Excel/CSV 上传到业务表） ====================
-  // 选择文件后加载其工作表列表，供用户选择要导入的 sheet
-  async function onImpFileChange() {
-    const fileInput = document.getElementById('impFile');
-    const wrap = document.getElementById('impSheetWrap');
-    const sel = document.getElementById('impSheet');
-    const file = fileInput && fileInput.files.length ? fileInput.files[0] : null;
-    if (!file || !/\.(xlsx|xls)$/i.test(file.name)) {
-      if (wrap) wrap.style.display = 'none';
-      if (sel) sel.value = '';
-      return;
-    }
-    const fd = new FormData();
-    fd.append('file', file);
-    try {
-      const res = await fetch('/api/import/sheets', { method: 'POST', body: fd });
-      if (res.status === 401) { sessionStorage.clear(); location.reload(); return; }
-      const json = await res.json();
-      if (json.code === 0 && json.data && Array.isArray(json.data.sheets) && json.data.sheets.length) {
-        sel.innerHTML = '';
-        json.data.sheets.forEach(s => {
-          const o = document.createElement('option');
-          o.value = s; o.textContent = s;
-          sel.appendChild(o);
-        });
-        sel.value = json.data.sheets[0];
-        wrap.style.display = 'flex';
-      } else {
-        wrap.style.display = 'none';
-      }
-    } catch (e) {
-      wrap.style.display = 'none';
-    }
-  }
-
-  async function importExcel() {
-    const tableSel = document.getElementById('impTable');
-    const fileInput = document.getElementById('impFile');
-    const status = document.getElementById('impStatus');
-    const table = tableSel ? tableSel.value : '';
-    const file = fileInput && fileInput.files.length ? fileInput.files[0] : null;
-    if (!table) { showToast('请选择目标表', 'error'); return; }
-    if (!file) { showToast('请选择数据文件', 'error'); return; }
-    const sheetSel = document.getElementById('impSheet');
-    const fd = new FormData();
-    fd.append('table', table);
-    fd.append('file', file);
-    if (sheetSel && sheetSel.value) fd.append('sheet', sheetSel.value);
-    const btn = document.querySelector('#page-data-import .btn');
-    if (btn) btn.disabled = true;
-    if (status) status.textContent = '正在导入，请稍候...';
-    try {
-      const res = await fetch('/api/import/excel', { method: 'POST', body: fd });
-      if (res.status === 401) { sessionStorage.clear(); location.reload(); return; }
-      const json = await res.json();
-      if (json.code !== 0) {
-        if (status) status.textContent = json.msg || '导入失败';
-        showToast(json.msg || '导入失败', 'error');
-      } else {
-        const d = json.data || {};
-        let text = '成功 ' + d.inserted + ' 行' + (d.failed ? '，失败 ' + d.failed + ' 行' : '');
-        if (d.failed && d.error) text += ' ｜ 失败原因示例：' + d.error;
-        if (status) status.textContent = text;
-        showToast(text, d.failed ? 'error' : 'success');
-      }
-    } catch (e) {
-      if (status) status.textContent = '导入失败: ' + e.message;
-      showToast('导入失败', 'error');
-    } finally {
-      if (btn) btn.disabled = false;
-    }
   }
 
   return {
@@ -5832,8 +5773,6 @@ const App = (() => {
     aiToggleChat, aiSendMessage,
     // Order Details
     renderOrderDetails, _odGoPage, _odSetDateRange, toggleOdColPanel, toggleOdCol, toggleOdDatePicker, odCalPick, odCalNav, odCalClear, odCalToday,
-    // Data Import
-    importExcel, onImpFileChange,
   };
 })();
 

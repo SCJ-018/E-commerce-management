@@ -39,6 +39,7 @@ tools/_taobao_*.txt
 
 # === 抖音采集（含 cookie，勿提交）===
 tools/douyin_cookie.txt
+tools/douyin_profile/
 tools/_douyin_*.csv
 tools/_douyin_*.json
 
@@ -50,6 +51,7 @@ tools/1688_profile/
 
 # === 小红书登录态（含 cookie，勿提交）===
 tools/xhs_cookie.txt
+tools/xhs_profile/
 tools/cookie.txt
 tools/_xhs_works.json
 

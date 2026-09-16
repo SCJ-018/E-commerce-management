@@ -499,6 +499,9 @@
     var oldSection = document.getElementById('page-marketing-overview');
     var mount = document.getElementById('page-marketing-overview-vue');
     if (!oldSection || !mount) return;
+    // 守卫：旧 section 已被导航隐藏（.hidden）时拒绝挂载，
+    // 防止 observer 时序竞争导致离开本页后 Vue 容器仍占位渲染（残留内容顶跑后续页面布局）
+    if (oldSection.classList.contains('hidden')) return;
     oldSection.style.display = 'none';
     mount.classList.remove('hidden');
     _moApp = Vue.createApp(MarketingOverviewPage);
@@ -521,8 +524,10 @@
     function isLoggedIn() {
       return sessionStorage.getItem('admin_logged_in') === 'true';
     }
+    // 首页默认可见 → 走过 mount+return 分支后 observer 从未建立，导航离开后永远不卸载
+    // （仪表盘残留 bug 根因）。修复：observer 无条件创建，回调自身用 _moApp 判幂等。
     var isVisible = !oldSection.classList.contains('hidden');
-    if (isVisible && isLoggedIn()) { mountMarketingVue(); return; }
+    if (isVisible && isLoggedIn()) mountMarketingVue();
     var observer = new MutationObserver(function () {
       var nowVisible = !oldSection.classList.contains('hidden');
       if (nowVisible && !_moApp && isLoggedIn()) mountMarketingVue();

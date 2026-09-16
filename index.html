@@ -267,6 +267,68 @@
     .ap-btn-sm.delete:hover{background:#fee2e2;color:#dc2626;border-color:#fecaca}
     .ap-table-info{padding:10px 16px;font-size:12px;color:#94a3b8;background:#fff;border-radius:0 0 12px 12px;border:1px solid #f1f5f9;border-top:none}
 
+    /* ======== 店铺账号管理（Vue 页，样式全局注入——Vue3 运行时会丢弃模板内 <style>） ======== */
+    .sa-toolbar-left{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0}
+    .sa-toolbar-right{display:flex;gap:8px;align-items:center;flex-shrink:0}
+    .sa-tabs{display:inline-flex;gap:8px;align-items:center}
+    .sa-tab{display:inline-flex;align-items:center;gap:8px;padding:5px 16px 5px 6px;border-radius:22px;border:1px solid #e2e8f0;background:#fff;cursor:pointer;font-size:13px;font-weight:600;color:#64748b;font-family:inherit;transition:all .18s ease;height:38px}
+    .sa-tab .sa-tab-ico{width:26px;height:26px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;color:#fff;flex-shrink:0;transition:background .18s ease}
+    .sa-tab:hover{border-color:#cbd5e1;color:#334155;box-shadow:0 2px 8px rgba(15,23,42,.06)}
+    .sa-tab.active{box-shadow:0 4px 12px rgba(15,23,42,.14)}
+    .ap-btn-primary.sa-btn-update{background:linear-gradient(135deg,#0ea5e9,#6366f1)}
+    .ap-btn-primary.sa-btn-update:hover{background:linear-gradient(135deg,#0284c7,#4f46e5);box-shadow:0 2px 8px rgba(14,165,233,.25)}
+    .sa-email-panel{background:#fff;border:1px solid #eef0f3;border-radius:12px;padding:14px 16px;margin-bottom:16px}
+    .sa-email-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+    .sa-modal-mask{position:fixed;inset:0;background:rgba(15,23,42,.45);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;z-index:9999;animation:saFade .18s ease}
+    .sa-modal{background:#fff;border-radius:16px;width:460px;max-width:92vw;max-height:88vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.22);animation:saPop .22s ease}
+    @keyframes saFade{from{opacity:0}to{opacity:1}}
+    @keyframes saPop{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
+    .sa-modal-head{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid #eef0f3;font-size:15px}
+    .sa-modal-close{border:none;background:transparent;font-size:18px;color:#94a3b8;cursor:pointer;line-height:1}
+    .sa-modal-close:hover{color:#475569}
+    .sa-modal-body{padding:16px 20px}
+    .sa-modal-foot{display:flex;justify-content:flex-end;gap:10px;padding:14px 20px;border-top:1px solid #eef0f3;background:#fafbfc;border-radius:0 0 16px 16px}
+    .sa-field{margin-bottom:12px}
+    .sa-field label{display:block;font-size:12px;color:#64748b;margin-bottom:6px}
+    .sa-field input{width:100%;padding:8px 12px;border:1px solid #e2e8f0;border-radius:8px;font-size:14px;box-sizing:border-box;outline:none}
+    .sa-field input:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.08)}
+    .sa-field-row{display:flex;gap:12px}
+    .ap-btn-plain{padding:8px 16px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#475569;cursor:pointer;font-size:13px;font-family:inherit}
+    .ap-btn-plain:hover{background:#f8fafc}
+    .sa-up-head{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid #eef0f3;background:linear-gradient(180deg,#f8fafc,#fff)}
+    .sa-up-title{display:flex;align-items:center;gap:10px}
+    .sa-up-ico{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#0ea5e9,#6366f1);display:flex;align-items:center;justify-content:center;color:#fff;font-size:15px;box-shadow:0 2px 8px rgba(14,165,233,.28);flex-shrink:0}
+    .sa-up-title strong{font-size:15px;color:#0f172a}
+    .sa-up-sub{display:block;font-size:11px;color:#94a3b8;font-weight:400;margin-top:2px}
+    .sa-up-hint{display:flex;align-items:center;gap:6px;font-size:12px;color:#0369a1;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:8px 12px;margin-bottom:14px}
+    .sa-date-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+    .sa-date-field{position:relative;display:flex;align-items:center;gap:8px;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;background:#fff;cursor:pointer;transition:border-color .15s,box-shadow .15s;user-select:none;-webkit-user-select:none}
+    .sa-date-field:hover{border-color:#c7d2fe}
+    .sa-date-field:active{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.08)}
+    .sa-date-field-label{font-size:12px;color:#64748b;flex-shrink:0}
+    .sa-date-field-value{flex:1;font-size:13px;color:#334155;font-weight:500}
+    .sa-date-field-value.empty{color:#94a3b8;font-weight:400}
+    .sa-date-field .fa-calendar-days{color:#6366f1;font-size:13px;flex-shrink:0}
+    .sa-date-native{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);border:0;padding:0;pointer-events:none}
+    .sa-shop-filter{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+    .sa-shop-search{position:relative;flex:1;max-width:280px}
+    .sa-shop-search i{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#94a3b8;font-size:12px}
+    .sa-shop-search input{width:100%;padding:7px 10px 7px 30px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;outline:none;box-sizing:border-box;color:#334155}
+    .sa-shop-search input:focus{border-color:#6366f1}
+    .sa-link-btn{border:none;background:transparent;color:#6366f1;font-size:12px;cursor:pointer;padding:4px 8px;border-radius:6px;font-family:inherit}
+    .sa-link-btn:hover{background:#eef2ff}
+    .sa-shop-groups{max-height:260px;overflow:auto;display:flex;flex-direction:column;gap:10px}
+    .sa-shop-group-head{display:flex;align-items:center;gap:6px;cursor:pointer;padding:2px 0;user-select:none}
+    .sa-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
+    .sa-group-count{font-size:11px;color:#94a3b8;background:#f1f5f9;border-radius:10px;padding:1px 8px}
+    .sa-shop-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding-left:14px}
+    .sa-shop-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid #eef0f3;border-radius:8px;cursor:pointer;font-size:12.5px;background:#fff;transition:all .12s;margin:0}
+    .sa-shop-item:hover{border-color:#c7d2fe;background:#f8fafc}
+    .sa-shop-item.on{border-color:#6366f1;background:#eef2ff}
+    .sa-shop-item input{margin:0;flex-shrink:0}
+    .sa-shop-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .sa-shop-off{font-size:10px;color:#d97706;background:#fef3c7;border-radius:4px;padding:1px 5px;flex-shrink:0}
+
     /* 管理员弹窗 */
     .ap-modal-wide{max-width:480px}
     .ap-form-group{margin-bottom:16px}
@@ -657,7 +719,6 @@
       <div class="nav-group">
         <div class="nav-group-title"><i class="fa-solid fa-toolbox ng-icon"></i> 工具箱 <i class="fa-solid fa-chevron-right ng-chevron"></i></div>
         <div class="nav-group-items">
-          <a href="#data-import" class="nav-item" data-page="data-import"><i class="fa-solid fa-file-import ni-icon"></i> 数据导入</a>
           <a href="#toolbox-violation-check" class="nav-item" data-page="toolbox-violation-check"><i class="fa-solid fa-shield-halved ni-icon"></i> 违规词检测</a>
         </div>
       </div>
@@ -1621,47 +1682,6 @@
       </div><!-- /.sd-layout -->
     </section>
     <div id="page-seeding-monitor-vue" class="hidden" style="padding:8px 24px 40px;width:100%"></div>
-    <section id="page-data-import" class="page-section hidden">
-      <div class="dashboard-header">
-        <div class="dh-left">
-          <div class="dh-icon" style="background:linear-gradient(135deg,#0ea5e9,#38bdf8);box-shadow:0 2px 8px rgba(14,165,233,0.25)"><i class="fa-solid fa-file-import" style="color:#fff;font-size:18px"></i></div>
-          <div class="dh-title-group"><h2 class="dh-title">数据导入</h2><span class="dh-subtitle">Data Import</span><span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>上传 Excel/CSV 更新经营数据</span></div>
-        </div>
-      </div>
-      <div class="ps-table-card">
-        <div class="ps-table-header">
-          <div class="ps-table-title-group"><h3>导入经营数据</h3><span class="ps-table-badge">同一天同一商品重复导入会自动更新</span></div>
-        </div>
-        <div style="padding:24px;display:flex;flex-direction:column;gap:20px;max-width:680px">
-          <div style="display:flex;flex-direction:column;gap:8px">
-            <label style="font-size:0.85rem;font-weight:600;color:#334155">1. 选择目标表</label>
-            <select id="impTable" style="padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;font-size:0.9rem;color:#334155;outline:none;background:#fff;max-width:420px">
-              <option value="">请选择目标表</option>
-              <option>抖店单链接数据表</option>
-              <option>京东单链接数据表</option>
-              <option>千牛单链接数据表</option>
-              <option>千牛单链接推广数据表</option>
-              <option>店铺营销数据</option>
-            </select>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:8px">
-            <label style="font-size:0.85rem;font-weight:600;color:#334155">2. 选择数据文件（.xlsx / .xls / .csv）</label>
-            <input type="file" id="impFile" accept=".xlsx,.xls,.csv" onchange="App.onImpFileChange()" style="padding:10px;border:1px dashed #cbd5e1;border-radius:10px;font-size:0.85rem;color:#475569;max-width:420px">
-          </div>
-          <div style="display:none;flex-direction:column;gap:8px" id="impSheetWrap">
-            <label style="font-size:0.85rem;font-weight:600;color:#334155">3. 选择工作表（Sheet）</label>
-            <select id="impSheet" style="padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;font-size:0.9rem;color:#334155;outline:none;background:#fff;max-width:420px"></select>
-          </div>
-          <div style="display:flex;align-items:center;gap:16px">
-            <button class="btn btn-primary btn-sm" style="width:auto;height:38px;padding:0 24px" onclick="App.importExcel()"><i class="fa-solid fa-cloud-arrow-up"></i> 开始导入</button>
-            <span id="impStatus" style="font-size:0.85rem;color:#64748b"></span>
-          </div>
-          <div style="font-size:0.8rem;color:#94a3b8;line-height:1.6;background:#f8fafc;border:1px solid #f1f5f9;border-radius:10px;padding:12px 16px">
-            提示：表头需与目标表字段一致（导入时按列名自动匹配）。文件中的日期、金额列会自动转换格式；同一天同一商品的记录会覆盖更新，不会重复累加。
-          </div>
-        </div>
-      </div>
-    </section>
     <div id="page-finance" class="page-section hidden" style="padding:8px 24px 40px;width:100%"></div>
     <div id="page-hr" class="page-section hidden" style="padding:8px 24px 40px;width:100%"></div>
     <!-- ====== 工具箱 - 违规词检测 (v3 仪表盘风格) ====== -->

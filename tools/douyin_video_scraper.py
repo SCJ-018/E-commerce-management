@@ -38,11 +38,11 @@ OUTPUT_CSV = os.path.join(BASE_DIR, "_douyin_works.csv")
 PROGRESS_FILE = os.path.join(BASE_DIR, "_seeding_progress_douyin.json")
 
 
-def write_progress(status, done, total):
+def write_progress(status, done, total, msg=""):
     """写进度文件，供后端 /status 接口读取"""
     try:
         with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
-            json.dump({"status": status, "done": done, "total": total}, f, ensure_ascii=False)
+            json.dump({"status": status, "done": done, "total": total, "ts": time.time(), "msg": msg}, f, ensure_ascii=False)
     except Exception:
         pass
 
@@ -183,7 +183,14 @@ def fetch_account_works(account):
     page = 0
     while True:
         page += 1
-        data = fetch_page(account["sec_user_id"], max_cursor=max_cursor)
+        try:
+            data = fetch_page(account["sec_user_id"], max_cursor=max_cursor)
+        except requests.exceptions.HTTPError as e:
+            print(f"[{account['name']} 第{page}页] HTTP 错误: {e}（Cookie 可能已失效或触发风控，请重新获取 Cookie）")
+            break
+        except Exception as e:
+            print(f"[{account['name']} 第{page}页] 请求异常: {e}")
+            break
 
         if data.get("status_code") != 0:
             print(f"[{account['name']} 第{page}页] 接口异常 status_code={data.get('status_code')}，可能 Cookie 失效或触发风控")
@@ -218,23 +225,38 @@ def fetch_account_works(account):
 def main():
     accounts = load_accounts()
     all_rows = []
+    failed_accounts = []
 
     write_progress("running", 0, len(accounts))
-    for i, account in enumerate(accounts):
-        all_rows.extend(fetch_account_works(account))
-        write_progress("running", i + 1, len(accounts))
+    try:
+        for i, account in enumerate(accounts):
+            try:
+                before = len(all_rows)
+                all_rows.extend(fetch_account_works(account))
+                if len(all_rows) == before:
+                    failed_accounts.append(account.get("name") or account.get("douyin_id") or "未命名")
+            except Exception as e:
+                print(f"[{account.get('name')} 抓取异常: {e}")
+                failed_accounts.append(account.get("name") or account.get("douyin_id") or "未命名")
+            write_progress("running", i + 1, len(accounts))
 
-    if all_rows:
-        fieldnames = ["名称", "账号", "标题", "链接", "点赞", "评论", "收藏", "分享", "发布时间"]
-        with open(OUTPUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(all_rows)
-        print(f"\n✅ 共采集 {len(all_rows)} 条作品，已导出到：{OUTPUT_CSV}")
-        write_progress("done", len(accounts), len(accounts))
-    else:
-        print("\n未采集到任何作品，请检查 Cookie 是否有效")
-        write_progress("error", 0, len(accounts))
+        if all_rows:
+            fieldnames = ["名称", "账号", "标题", "链接", "点赞", "评论", "收藏", "分享", "发布时间"]
+            with open(OUTPUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(all_rows)
+            msg = "共采集 %d 条作品" % len(all_rows)
+            print(f"\n✅ {msg}，已导出到：{OUTPUT_CSV}")
+            write_progress("done", len(accounts), len(accounts), msg)
+        else:
+            msg = "未采集到任何作品，请检查 Cookie 是否有效"
+            print("\n" + msg)
+            write_progress("error", 0, len(accounts), msg)
+    except Exception as e:
+        msg = "抓取异常: %s" % e
+        print("\n" + msg)
+        write_progress("error", 0, len(accounts), msg)
 
 
 if __name__ == "__main__":
