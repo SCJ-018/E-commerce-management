@@ -88,3 +88,16 @@ tools/_selection_job.json
 # === 部署时的数据库导出（体积大，勿提交）===
 .deploy/db_dump.sql
 .deploy/db_dump.sql.gz
+
+# === 三平台店铺抓取（下划线开头 = 探测脚本/截图/运行产物/登录态 state，勿提交）===
+# 登录态 state（含 cookie）在 _states/ 子目录，属敏感凭据
+tools/qianniu_crawler/_*
+tools/doudian_crawler/_*
+tools/jd_crawler/_*
+
+# === 品类映射运行产物 + 探测脚本（仅 mapper.py 入库）===
+tools/category_mapper/output/
+tools/category_mapper/_*
+
+# === 服务器环境侦查脚本（一次性）===
+.deploy/_probe_*.py
