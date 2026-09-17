@@ -1057,7 +1057,8 @@
       <input class="ap-form-input" style="width:140px;height:32px" v-model="state.pushModal.newUser.name" autocomplete="off" placeholder="姓名，如「张三」">
       <input class="ap-form-input" style="width:150px;height:32px" v-model="state.pushModal.newUser.mobile" autocomplete="off" placeholder="手机号（可选）">
       <input class="ap-form-input" style="width:200px;height:32px" v-model="state.pushModal.newUser.userId" autocomplete="off" placeholder="userId（可选）">
-      <button type="button" class="btn btn-sm btn-primary" :disabled="state.pushModal.saving" @click="addContact">
+      <button type="button" class="btn btn-sm btn-primary" style="flex:0 0 auto;width:auto;height:32px"
+              :disabled="state.pushModal.saving" @click="addContact">
         {{ state.pushModal.saving ? '提交中…' : '添加联系人' }}
       </button>
       <span v-if="state.pushModal.newForDept" style="font-size:11px;color:#16a34a">添加后自动绑定到「{{ state.pushModal.newForDept }}」</span>
