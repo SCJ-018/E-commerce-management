@@ -242,6 +242,14 @@ const ApiService = (() => {
     async getHistoryDates() {
       return request('/product-selection/history/dates');
     },
+    // 历史选品记录：按「单次运行」分页（每页 = 一次运行）
+    async getHistoryRuns(page, pageSize) {
+      return request('/product-selection/history/runs?page=' + (page || 1) + '&page_size=' + (pageSize || 1));
+    },
+    // 按运行 id 取单次记录（备用；列表接口已直接返回完整结果）
+    async getHistoryById(id) {
+      return request('/product-selection/history?id=' + encodeURIComponent(id));
+    },
     async getHistory(date) {
       let path = '/product-selection/history';
       if (date) path += '?date=' + encodeURIComponent(date);

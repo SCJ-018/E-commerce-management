@@ -44,6 +44,9 @@
     m1688: { get: 'get1688MarketCookie', save: 'save1688MarketCookie', label: '1688 Cookie' },
   };
 
+  // 历史记录翻页序号：每次切页自增，回来时若序号已变则丢弃过期响应（防连点错配）
+  var _histSeq = 0;
+
   // ---- 模块级状态（跨挂载/卸载保留，切走再回来数据不丢） ----
   var _st = Vue.reactive({
     activeTab: 'tmall',
@@ -70,7 +73,17 @@
     },
     priceModal: { open: false, min: '', max: '' },
     cardsPanel: { open: false },
-    historyPanel: { open: false, dates: [], date: '', body: null },
+    // 历史选品记录：累计的次数一行一条，前端一页展示一次运行
+    historyPanel: {
+      open: false,
+      runs: 0,        // 累计运行次数（后端 total）
+      page: 1,        // 当前第几次运行（= 第几页）
+      totalPages: 1,
+      meta: null,     // 当前这次运行的摘要（时间 / 价格区间 / 入选商品）
+      body: null,     // 当前这次运行的完整结果（selection-final 用）
+      loading: false,
+      error: '',
+    },
   });
 
   // ---- 格式化辅助 ----
@@ -108,10 +121,19 @@
 
   // ---- 最终选品结果子组件（实时结果区 + 历史记录面板共用） ----
   var SelectionFinal = {
-    props: { final: Object },
+    props: { final: Object, title: { type: String, default: '' } },
+    computed: {
+      // 标题文案在 JS 里拼好，模板只渲染字符串（模板不裸访问嵌套属性）
+      headText: function () {
+        var f = this.final || {};
+        var extra = f.priceLabel || f.date || '';
+        var label = this.title || '当日选品结果';
+        return extra ? (label + ' · ' + extra) : label;
+      },
+    },
     template: `
 <div v-if="final && final.data">
-  <div class="ps-final-head"><i class="fa-solid fa-clipboard-check" style="color:#16a34a"></i> 当日选品结果 · {{ final.priceLabel || final.date || '' }}</div>
+  <div class="ps-final-head"><i class="fa-solid fa-clipboard-check" style="color:#16a34a"></i> {{ headText }}</div>
   <div v-for="(p, i) in final.data.products" :key="i" class="ps-big-card">
     <div class="ps-big-head"><span class="ps-big-name">{{ p.name }}</span><span class="ps-big-cat">{{ p.category }}</span></div>
     <div v-if="p.summary" class="ps-big-sum">{{ p.summary }}</div>
@@ -385,32 +407,59 @@
         }
       }
 
-      // ============ 历史选品记录 ============
+      // ============ 历史选品记录（一页 = 一次运行，只累计不覆盖） ============
       function historyToggle() {
         if (_st.historyPanel.open) { _st.historyPanel.open = false; return; }
         _st.historyPanel.open = true;
-        loadHistoryDates();
+        loadHistoryPage(_st.historyPanel.page || 1);
       }
       function closeHistory() { _st.historyPanel.open = false; }
 
-      async function loadHistoryDates() {
-        var data = await ApiService.getHistoryDates();
-        var dates = (data && data.dates) || [];
-        if (dates.length) {
-          _st.historyPanel.dates = dates;
-          _st.historyPanel.date = dates[0];
-          await loadHistory(dates[0]);
-        } else {
-          _st.historyPanel.dates = [];
-          _st.historyPanel.date = '';
-          _st.historyPanel.body = null;
+      // 翻页：始终请求「每页 1 条」，页号即第几次运行
+      async function loadHistoryPage(page) {
+        var seq = ++_histSeq;
+        var hp = _st.historyPanel;
+        hp.loading = true;
+        hp.error = '';
+        var data = await ApiService.getHistoryRuns(page, 1);
+        if (seq !== _histSeq) return;          // 已连点翻到别页 → 丢弃过期响应
+        hp.loading = false;
+        if (!data || !Array.isArray(data.items)) {
+          hp.runs = 0; hp.page = 1; hp.totalPages = 1; hp.meta = null; hp.body = null;
+          hp.error = '历史记录加载失败，请稍后重试';
+          return;
         }
+        hp.runs = data.total || 0;
+        hp.page = data.page || page || 1;
+        hp.totalPages = data.totalPages || 1;
+        var run = data.items[0] || null;
+        if (!run) { hp.meta = null; hp.body = null; return; }
+        hp.meta = {
+          id: run.id,
+          seq: run.seq || hp.page,
+          date: run.date || '',
+          createdAt: run.createdAt || run.date || '',
+          priceLabel: run.priceLabel || '',
+          productCount: run.productCount || 0,
+          products: run.products || [],
+        };
+        hp.body = (run.result && run.result.data) ? run.result : null;
       }
-
-      async function loadHistory(date) {
-        if (!date) return;
-        var data = await ApiService.getHistory(date);
-        _st.historyPanel.body = (data && data.data) ? data : null;
+      function historyGoPage(p) {
+        var tp = _st.historyPanel.totalPages || 1;
+        if (!p || p < 1 || p > tp || p === _st.historyPanel.page) return;
+        loadHistoryPage(p);
+      }
+      // 入选商品摘要（模板里不裸访问嵌套属性）
+      function runProductsText(meta) {
+        if (!meta || !meta.products || !meta.products.length) return '';
+        var txt = meta.products.join(' / ');
+        if (meta.productCount > meta.products.length) txt += ' 等 ' + meta.productCount + ' 个';
+        return txt;
+      }
+      function runTimeText(meta) {
+        if (!meta) return '';
+        return meta.createdAt || meta.date || '';
       }
 
       // ============ 初始化：一次性加载 6 个榜单 ============
@@ -433,7 +482,8 @@
         toggleCookie, saveCookie,
         openPriceModal, closePriceModal, confirmPrice,
         expandCards, closeCardsPanel, submitCards, checkedCount,
-        rising, historyToggle, closeHistory, loadHistoryDates, loadHistory,
+        rising, historyToggle, closeHistory, loadHistoryPage, historyGoPage,
+        runProductsText, runTimeText,
       };
     },
 
@@ -857,25 +907,41 @@
   </div>
 </teleport>
 
-<!-- ====== 弹窗 3：历史选品记录 ====== -->
+<!-- ====== 弹窗 3：历史选品记录（一页 = 一次运行） ====== -->
 <teleport to="body">
   <div v-if="state.historyPanel.open" class="ps-overlay">
-    <div class="ps-modal" style="width:720px;height:86vh">
+    <div class="ps-modal" style="width:780px;height:88vh">
       <div class="ps-modal-head">
         <div class="ps-modal-title"><i class="fa-solid fa-clock-rotate-left" style="color:#8b5cf6"></i> 历史选品记录</div>
         <button class="ps-modal-close" @click="closeHistory"><i class="fa-solid fa-xmark"></i></button>
       </div>
       <div class="ps-modal-body" style="padding-top:14px">
-        <div style="margin-bottom:14px;display:flex;align-items:center;gap:8px">
-          <span style="font-size:13px;color:#64748b">日期</span>
-          <select v-model="state.historyPanel.date" @change="loadHistory(state.historyPanel.date)" class="ps-select-sm" style="height:34px;min-width:170px">
-            <option v-if="state.historyPanel.dates.length === 0" value="" disabled selected>暂无记录</option>
-            <option v-for="d in state.historyPanel.dates" :key="d" :value="d">{{ d }}</option>
-          </select>
+        <div class="ps-hist-bar">
+          <span class="ps-hist-total">累计 {{ state.historyPanel.runs }} 次选品运行（每次运行独立存档，不会覆盖）</span>
+          <span v-if="state.historyPanel.runs" class="ps-hist-pos">第 {{ state.historyPanel.page }} / {{ state.historyPanel.totalPages }} 次</span>
         </div>
-        <div v-if="state.historyPanel.dates.length === 0" style="color:#94a3b8;padding:24px;text-align:center">暂无选品记录</div>
-        <div v-else-if="!state.historyPanel.body" style="color:#94a3b8;padding:24px;text-align:center">该日期无选品记录</div>
-        <selection-final v-else :final="state.historyPanel.body"></selection-final>
+        <div v-if="state.historyPanel.loading" class="sa-loading"><i class="fa-solid fa-spinner"></i> 正在加载历史记录...</div>
+        <div v-else-if="state.historyPanel.error" class="sa-analysis" style="color:#dc2626">{{ state.historyPanel.error }}</div>
+        <div v-else-if="!state.historyPanel.meta" style="color:#94a3b8;padding:24px;text-align:center">
+          {{ state.historyPanel.runs ? '该次运行未取到选品结果' : '暂无选品记录' }}
+        </div>
+        <template v-else>
+          <div class="ps-run-head">
+            <div class="ps-run-line">
+              <span class="ps-run-tag">第 {{ state.historyPanel.meta.seq }} 次运行</span>
+              <span class="ps-run-time"><i class="fa-regular fa-clock"></i> {{ runTimeText(state.historyPanel.meta) }}</span>
+              <span v-if="state.historyPanel.meta.priceLabel" class="ps-run-price">价格区间 {{ state.historyPanel.meta.priceLabel }}</span>
+            </div>
+            <div v-if="runProductsText(state.historyPanel.meta)" class="ps-run-products">
+              入选：{{ runProductsText(state.historyPanel.meta) }}
+            </div>
+          </div>
+          <selection-final v-if="state.historyPanel.body" :final="state.historyPanel.body" :title="'第 ' + state.historyPanel.meta.seq + ' 次运行结果'"></selection-final>
+          <div v-else class="sa-analysis">该次运行存档里没有选品结果（可能当时分析失败）。</div>
+        </template>
+      </div>
+      <div class="ps-modal-foot" style="padding:0;justify-content:center">
+        <ecom-pagination :page="state.historyPanel.page" :total-pages="state.historyPanel.totalPages" :total="state.historyPanel.runs" unit="次运行" @change="historyGoPage"></ecom-pagination>
       </div>
     </div>
   </div>

@@ -1287,6 +1287,16 @@
         .ps-v-sum{font-size:12px;color:#64748b;line-height:1.5}
         .ps-advice{margin-top:14px;background:linear-gradient(135deg,#faf5ff,#f5f3ff);border:1px solid #e9d5ff;border-radius:12px;padding:14px 16px;font-size:13px;color:#334155;line-height:1.8;white-space:pre-wrap}
         .ps-advice-title{font-size:13px;font-weight:700;color:#7c3aed;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+        /* 历史选品记录：一页 = 一次运行 */
+        .ps-hist-bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:12px;color:#94a3b8;margin-bottom:14px;padding-bottom:10px;border-bottom:1px dashed #eef2f7}
+        .ps-hist-total{font-weight:600;color:#64748b}
+        .ps-hist-pos{font-weight:600;color:#7c3aed}
+        .ps-run-head{background:linear-gradient(135deg,#faf5ff,#f5f3ff);border:1px solid #e9d5ff;border-radius:12px;padding:12px 14px;margin-bottom:14px}
+        .ps-run-line{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+        .ps-run-tag{font-size:11px;font-weight:700;color:#fff;background:#8b5cf6;border-radius:999px;padding:2px 10px}
+        .ps-run-time,.ps-run-price{font-size:12px;color:#64748b}
+        .ps-run-time i{margin-right:4px;color:#a78bfa}
+        .ps-run-products{font-size:12px;color:#475569;line-height:1.7;margin-top:8px;word-break:break-word}
         /* 悬浮面板 & 弹窗 */
         .ps-overlay{position:fixed;inset:0;z-index:200;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;padding:24px}
         .ps-overlay.hidden{display:none}
@@ -2329,7 +2339,7 @@
   <div class="ai-chat-footer">聚浪网络科技 · AI 服务可能产生误差，请以实际数据为准</div>
 </div>
 
-<script src="js/app.js?v=20260917c"></script>
+<script src="js/app.js?v=20260917d"></script>
 <script src="js/vue/components.js"></script>
 <script src="js/vue/page-profile.js"></script>
 <script src="js/vue/page-hr-common.js"></script>
@@ -2337,7 +2347,7 @@
 <script src="js/vue/page-hr.js"></script>
 <script src="js/vue/page-violation.js"></script>
 <script src="js/vue/page-admin.js"></script>
-<script src="js/vue/page-selection.js"></script>
+<script src="js/vue/page-selection.js?v=20260917d"></script>
 <script src="js/vue/page-seeding.js?v=20260917c"></script>
 <script src="js/vue/page-order-details.js"></script>
 <script src="js/vue/page-platform-store.js"></script>

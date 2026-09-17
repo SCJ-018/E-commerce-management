@@ -6141,7 +6141,7 @@ def _ensure_aisou_columns():
 
 
 def _ensure_selection_record_table():
-    """选品记录表：每日选品最终结果存档，供前端「历史选品记录」回看"""
+    """选品记录表：每次选品运行存一行（id 自增），供前端「历史选品记录」按运行翻页回看"""
     db_execute(
         "CREATE TABLE IF NOT EXISTS `选品记录表` ("
         "id INT AUTO_INCREMENT PRIMARY KEY, "
@@ -6150,6 +6150,35 @@ def _ensure_selection_record_table():
         "`结果` MEDIUMTEXT NOT NULL, "
         "`创建时间` DATETIME DEFAULT CURRENT_TIMESTAMP"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4", fetch=False)
+
+
+def _selection_record_brief(raw):
+    """从「选品记录表.结果」里抽列表页摘要（入选商品名 / 数量）。
+
+    历史记录是长期存档，难免混进旧结构或截断的脏 JSON —— 这里一律降级成空摘要，
+    绝不抛异常，否则一条坏记录会让整页翻不出来。
+    """
+    brief = {'productCount': 0, 'products': []}
+    try:
+        obj = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except Exception:
+        return brief
+    if not isinstance(obj, dict):
+        return brief
+    data = obj.get('data')
+    products = data.get('products') if isinstance(data, dict) else None
+    if isinstance(products, list):
+        names = []
+        for p in products:
+            if isinstance(p, dict):
+                n = str(p.get('name') or '').strip()
+            else:
+                n = str(p or '').strip()
+            if n:
+                names.append(n)
+        brief['productCount'] = len(names)
+        brief['products'] = names[:8]
+    return brief
 
 
 def _ensure_douyin_category_columns():
@@ -6993,15 +7022,85 @@ def ps_history_dates():
         return fail(str(e))
 
 
-@app.route('/api/product-selection/history', methods=['GET'])
-def ps_history():
+@app.route('/api/product-selection/history/runs', methods=['GET'])
+def ps_history_runs():
+    """历史选品记录（分页）：**每次选品运行 = 一条记录 = 前端一页**。
+
+    - page / page_size（page_size 默认 1，最大 10）——前端按「一页一次运行」翻页。
+    - 返回 total = 累计运行次数（永不因同一天多次运行而丢失），items 按时间倒序。
+    - 每条 item 直接带完整 result，避免前端「翻页 + 取详情」两次请求错配。
+    """
     try:
         _ensure_selection_record_table()
-        d = request.args.get('date', '').strip()
-        if d:
-            rows = list(db_execute("SELECT `日期`, `价格区间`, `结果` FROM `选品记录表` WHERE `日期` = %s ORDER BY `创建时间` DESC LIMIT 1", [d]))
+        try:
+            page = int(request.args.get('page', 1) or 1)
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(request.args.get('page_size', 1) or 1)
+        except (TypeError, ValueError):
+            page_size = 1
+        page = max(1, page)
+        page_size = min(max(page_size, 1), 10)
+
+        cnt = list(db_execute("SELECT COUNT(*) AS c FROM `选品记录表`"))
+        total = int(cnt[0]['c']) if cnt and cnt[0].get('c') is not None else 0
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        if page > total_pages:
+            page = total_pages
+        offset = (page - 1) * page_size
+
+        rows = list(db_execute(
+            "SELECT `id`, `日期`, `价格区间`, `结果`, `创建时间` FROM `选品记录表` "
+            "ORDER BY `创建时间` DESC, `id` DESC LIMIT %s OFFSET %s",
+            [page_size, offset]))
+
+        items = []
+        for idx, r in enumerate(rows):
+            brief = _selection_record_brief(r.get('结果'))
+            try:
+                result = json.loads(r['结果'])
+            except Exception:
+                result = None
+            if not isinstance(result, dict):
+                result = {'date': str(r.get('日期') or ''), 'priceLabel': r.get('价格区间') or '',
+                          'priceRange': {'min': None, 'max': None}, 'data': None}
+            created = r.get('创建时间')
+            items.append({
+                'id': r.get('id'),
+                'date': str(r.get('日期') or ''),
+                'priceLabel': r.get('价格区间') or '',
+                'createdAt': str(created) if created else '',
+                'seq': total - offset - idx,          # 第 N 次运行（1 起，倒序展示仍可读）
+                'productCount': brief['productCount'],
+                'products': brief['products'],
+                'result': result,
+            })
+        return success({'items': items, 'total': total, 'page': page,
+                        'pageSize': page_size, 'totalPages': total_pages})
+    except Exception as e:
+        traceback.print_exc()
+        return fail(str(e))
+
+
+@app.route('/api/product-selection/history', methods=['GET'])
+def ps_history():
+    """单次运行详情：?id=<运行id> 取指定次；?date= 取该日**最后一次**（旧行为，保留兼容）。"""
+    try:
+        _ensure_selection_record_table()
+        rid = (request.args.get('id') or '').strip()
+        d = (request.args.get('date') or '').strip()
+        cols = "SELECT `日期`, `价格区间`, `结果` FROM `选品记录表`"
+        if rid:
+            try:
+                rid = int(rid)
+            except (TypeError, ValueError):
+                return fail('运行记录 id 非法')
+            rows = list(db_execute(cols + " WHERE `id` = %s LIMIT 1", [rid]))
+        elif d:
+            rows = list(db_execute(cols + " WHERE `日期` = %s ORDER BY `创建时间` DESC, `id` DESC LIMIT 1", [d]))
         else:
-            rows = list(db_execute("SELECT `日期`, `价格区间`, `结果` FROM `选品记录表` ORDER BY `创建时间` DESC LIMIT 1"))
+            rows = list(db_execute(cols + " ORDER BY `创建时间` DESC, `id` DESC LIMIT 1"))
         if not rows:
             return success(None)
         r = rows[0]

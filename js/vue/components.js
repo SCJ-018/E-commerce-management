@@ -13,6 +13,8 @@ EcomUI.Pagination = {
     page: { type: Number, default: 1 },
     totalPages: { type: Number, default: 1 },
     total: { type: Number, default: 0 },
+    // 计数单位，默认「条」（不改任何现有页面的显示）；历史选品记录传「次运行」
+    unit: { type: String, default: '条' },
   },
   emits: ['change'],
   computed: {
@@ -36,7 +38,7 @@ EcomUI.Pagination = {
   },
   template: `
 <div class="ps-table-footer">
-  <span>第 {{ page }} / {{ totalPages }} 页，共 {{ total }} 条</span>
+  <span>第 {{ page }} / {{ totalPages }} 页，共 {{ total }} {{ unit }}</span>
   <div class="ps-pagination-btns">
     <button :disabled="page <= 1" @click="go(page - 1)"><i class="fa-solid fa-chevron-left"></i></button>
     <template v-for="(it, idx) in pages" :key="idx">
