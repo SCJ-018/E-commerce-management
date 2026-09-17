@@ -360,6 +360,17 @@ const ApiService = (() => {
       return requestFull('/analysis/push/now', { method: 'POST', body: JSON.stringify({ date: date || '' }) });
     },
 
+    // ---- 开发自检（前端未捕获 JS 异常 → 后端转钉钉告警开发） ----
+    async reportClientError(payload) {
+      try {
+        return await requestFull('/dev/report-error', {
+          method: 'POST', body: JSON.stringify(payload || {}),
+        });
+      } catch (e) {
+        return { ok: false, msg: '上报失败' };
+      }
+    },
+
     // ---- 种草监测中台 ----
     async getSeedingAccounts() { return request('/seeding/accounts'); },
     async createSeedingAccount(data) { return request('/seeding/accounts', { method: 'POST', body: JSON.stringify(data) }); },
@@ -5871,3 +5882,47 @@ const App = (() => {
 
 // Boot
 document.addEventListener('DOMContentLoaded', () => App.init());
+
+// ==================== 前端未捕获异常上报 ====================
+// 目的：Vue 渲染函数一抛错就是整页空白，以前只能等用户反馈；现在直接钉钉告警开发（李自豪）。
+// 约束：同一条错误每会话只报一次、最多 10 条、失败静默——上报本身绝不能影响页面。
+(function () {
+  if (typeof window === 'undefined' || window.__ecomErrReporterInstalled) return;
+  window.__ecomErrReporterInstalled = true;
+  var seen = {};
+  var sent = 0;
+
+  function send(message, stack) {
+    try {
+      if (!message || sent >= 10) return;
+      var key = String(message).slice(0, 120);
+      if (seen[key]) return;
+      seen[key] = true;
+      sent++;
+      var api = (typeof ApiService !== 'undefined') ? ApiService : null;
+      if (!api || !api.reportClientError) return;
+      api.reportClientError({
+        message: String(message).slice(0, 500),
+        stack: String(stack || '').slice(0, 1500),
+        page: (window.location && window.location.pathname) || '',
+        location: (window.location && window.location.href) || '',
+      });
+    } catch (e) { /* 上报失败就算了，绝不能因为上报再引发错误 */ }
+  }
+
+  window.addEventListener('error', function (e) {
+    try {
+      if (!e) return;
+      // 资源加载失败（img/script 的 error 事件没有 message、target 是元素）不算 JS 异常
+      if (e.target && e.target.tagName) return;
+      send(e.message, e.error && e.error.stack);
+    } catch (err) { /* ignore */ }
+  });
+
+  window.addEventListener('unhandledrejection', function (e) {
+    try {
+      var r = e && e.reason;
+      send('Promise 未捕获：' + ((r && (r.message || r)) || 'unknown'), r && r.stack);
+    } catch (err) { /* ignore */ }
+  });
+})();

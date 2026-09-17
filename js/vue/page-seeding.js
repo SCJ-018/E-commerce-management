@@ -30,7 +30,7 @@
     deptConfig: { departments: [], rules: {}, candidates: [] },  // 部门列表 + 部门→钉钉推送规则 + 联系人候选
     deptPanelOpen: false,         // 部门「+」浮层
     deptNewName: '',              // 待新增的部门名
-    pushModal: { open: false, saving: false },   // 「钉钉推送」配置悬浮窗
+    pushModal: { open: false, saving: false, newForDept: '', newUser: { name: '', mobile: '', userId: '' } },   // 「钉钉推送」配置悬浮窗
     confirm: { open: false, msg: '', action: null },
     cal: { open: false, base: null, start: null, end: null, pickStart: true },   // 双月日历
     agent: { busy: false, input: '', result: '', meta: '', error: '' },          // 种草智能体
@@ -154,7 +154,12 @@
       }
 
       // ---------- 钉钉推送配置（部门 → 联系人 + 点赞阈值 N） ----------
-      function openPushModal() { _st.pushModal.open = true; }
+      function openPushModal() {
+        _st.pushModal.open = true;
+        _st.pushModal.newForDept = '';
+        _st.pushModal.newUser = { name: '', mobile: '', userId: '' };
+        loadDeptConfig();   // 打开时拉最新名单（与「每日数据分析 → 钉钉推送」同一份）
+      }
       function closePushModal() { _st.pushModal.open = false; }
       function _ruleOf(dept) {
         var r = _st.deptConfig.rules[dept];
@@ -194,6 +199,106 @@
         if (res === null) { App.showToast('保存失败，请重试', 'error'); return; }
         _st.pushModal.open = false;
         App.showToast('钉钉推送配置已保存');
+      }
+
+      // ---------- 钉钉联系人：自定义新增 / 手机号匹配 / 管理 ----------
+      // ★ 与「每日数据分析 → 钉钉推送」共用同一张 dingtalk_push_users 表与同一批接口：
+      //   这里加的人那边立刻能看到，那边加的人这里的下拉立刻能选到——单一名单，两处维护必然不一致。
+      /** 某部门的联系人下拉选项：已有成员 + 规则里那个不在名单中的自定义 userId */
+      function contactOptions(dept) {
+        var r = _ruleOf(dept);
+        var list = (_st.deptConfig.candidates || []).slice();
+        if (r.userId && !list.some(function (c) { return c.userId === r.userId; })) {
+          list.push({ id: 'custom-' + r.userId, name: r.userName || r.userId, userId: r.userId,
+                      mobile: '', enabled: 1, custom: true });
+        }
+        return list;
+      }
+      /** 部门行的「＋」：提示到下方表单新建，添加成功后自动绑定到该部门 */
+      function newContactForDept(dept) {
+        _st.pushModal.newForDept = dept || '';
+        _st.pushModal.newUser = { name: '', mobile: '', userId: '' };
+        App.showToast('在下方「钉钉联系人管理」填好姓名后点「添加联系人」，会自动绑到「' + dept + '」');
+      }
+      async function addContact() {
+        var u = _st.pushModal.newUser || {};
+        var name = (u.name || '').trim(), mobile = (u.mobile || '').trim(), uid = (u.userId || '').trim();
+        if (!name) { App.showToast('请填写联系人姓名', 'error'); return; }
+        if (!mobile && !uid) { App.showToast('请填写手机号或钉钉 userId（至少一个）', 'error'); return; }
+        _st.pushModal.saving = true;
+        var r = await ApiService.addPushUser({ name: name, mobile: mobile, userId: uid, enabled: true });
+        if (!r.ok) { _st.pushModal.saving = false; App.showToast(r.msg || '添加失败', 'error'); return; }
+        var newId = r.data && r.data.id;
+        // 只填了手机号 → 顺手把 userId 匹配出来（欠了这一环，这个人在点赞推送上是用不了的）
+        if (!uid && mobile) {
+          var m = await ApiService.resolvePushUser(mobile);
+          if (m.ok && m.data && m.data.userId) {
+            await ApiService.updatePushUser(newId, { userId: m.data.userId });
+          } else {
+            App.showToast('已添加「' + name + '」，但手机号没匹配到 userId：' +
+              ((m && m.msg) || '请稍后点「匹配ID」或直接填 userId'), 'error');
+          }
+        }
+        await loadDeptConfig();
+        _st.pushModal.saving = false;
+        _st.pushModal.newUser = { name: '', mobile: '', userId: '' };
+        var dept = _st.pushModal.newForDept;
+        var hit = (_st.deptConfig.candidates || []).find(function (c) { return c.id === newId; });
+        if (dept && hit && hit.userId) {
+          setPushContact(dept, hit.userId);
+          _st.pushModal.newForDept = '';
+          App.showToast('已添加联系人「' + name + '」并绑定到「' + dept + '」');
+        } else if (dept && hit) {
+          App.showToast('已添加「' + name + '」，但它还没有 userId：点「匹配ID」后再到「' + dept + '」里选', 'error');
+        } else {
+          App.showToast('已添加联系人「' + name + '」');
+        }
+      }
+      async function matchContact(c) {
+        if (!c.mobile) { App.showToast('该联系人没填手机号，请直接填 userId', 'error'); return; }
+        _st.pushModal.saving = true;
+        var r = await ApiService.resolvePushUser(c.mobile);
+        if (!r.ok) { _st.pushModal.saving = false; App.showToast(r.msg || '匹配失败', 'error'); return; }
+        var uid = r.data && r.data.userId;
+        var w = await ApiService.updatePushUser(c.id, { userId: uid });
+        _st.pushModal.saving = false;
+        if (!w.ok) { App.showToast(w.msg || '写入 userId 失败', 'error'); return; }
+        await loadDeptConfig();
+        App.showToast('手机号 ' + c.mobile + ' 匹配到 userId：' + uid);
+      }
+      async function toggleContact(c) {
+        var r = await ApiService.updatePushUser(c.id, { enabled: !c.enabled });
+        if (!r.ok) { App.showToast(r.msg || '操作失败', 'error'); return; }
+        await loadDeptConfig();
+        App.showToast(c.enabled ? '已停用「' + c.name + '」' : '已启用「' + c.name + '」');
+      }
+      async function removeContact(c) {
+        if (!confirm('确定删除联系人「' + c.name + '」？\n各平台绑到他的部门会一起清空。')) return;
+        var r = await ApiService.deletePushUser(c.id);
+        if (!r.ok) { App.showToast(r.msg || '删除失败', 'error'); return; }
+        // 本地同步清掉绑定并立即落盘，避免删完直接关弹窗留下悬空的 userId
+        var rules = _st.deptConfig.rules || {};
+        Object.keys(rules).forEach(function (d) {
+          if (c.userId && rules[d] && rules[d].userId === c.userId) {
+            rules[d].userId = '';
+            rules[d].userName = '';
+          }
+        });
+        var res = await _saveDeptConfig();
+        await loadDeptConfig();
+        App.showToast('已删除联系人「' + c.name + '」');
+        if (res === null) {
+          App.showToast('注意：该联系人在部门里的绑定没能同步保存，请稍后再打开弹窗保存一次', 'error');
+        }
+      }
+      /** 该联系人被哪些部门绑定（管理列表里做提示） */
+      function contactBoundDepts(c) {
+        var out = [];
+        var rules = _st.deptConfig.rules || {};
+        Object.keys(rules).forEach(function (d) {
+          if (c.userId && rules[d] && rules[d].userId === c.userId) out.push(d);
+        });
+        return out.join('、');
       }
 
       // 搜索框防浏览器自动填充：初始 readonly，浏览器不会填充只读框；首次聚焦时解除
@@ -589,6 +694,10 @@
         openPushModal: openPushModal, closePushModal: closePushModal,
         setPushContact: setPushContact, setPushThreshold: setPushThreshold,
         togglePushEnabled: togglePushEnabled, savePushModal: savePushModal,
+        // 钉钉联系人（自定义新增/匹配/管理，与「每日数据分析 → 钉钉推送」同一份名单）
+        contactOptions: contactOptions, newContactForDept: newContactForDept,
+        addContact: addContact, matchContact: matchContact, toggleContact: toggleContact,
+        removeContact: removeContact, contactBoundDepts: contactBoundDepts,
       };
     },
     template: `
@@ -862,11 +971,11 @@
 </ecom-modal>
 
 <!-- 钉钉推送配置弹窗：部门 → 钉钉联系人 + 点赞阈值 N -->
-<ecom-modal :visible="state.pushModal.open" title="钉钉推送设置" width="780px" saveText="保存配置" @close="closePushModal" @save="savePushModal">
+<ecom-modal :visible="state.pushModal.open" title="钉钉推送设置" width="900px" saveText="保存配置" @close="closePushModal" @save="savePushModal">
   <div style="font-size:12px;color:#475569;line-height:1.75;margin-bottom:12px;background:#f8fafc;border-radius:8px;padding:10px 12px">
     为每个部门指定一位钉钉联系人并设置点赞阈值 <b>N</b>。<br>
     抓取完成后自动检查：作品点赞达到 N 时，把<b>作品链接</b>推送给该部门对应的联系人（同一作品只推一次）。<br>
-    <span style="color:#94a3b8">联系人名单取自「钉钉推送」页已添加的成员；推送走企业内部应用机器人单聊。</span>
+    <span style="color:#94a3b8">联系人可以直接在下拉里选，也可以点行尾「＋」自定义新增（姓名 + 手机号/userId，支持手机号匹配 userId）；名单与「每日数据分析 → 钉钉推送」共用同一份。</span>
   </div>
   <div class="ap-table-wrap" v-if="state.deptConfig.departments.length">
     <table class="ap-table">
@@ -880,12 +989,17 @@
         <tr v-for="d in state.deptConfig.departments" :key="d">
           <td><strong>{{ d }}</strong></td>
           <td>
-            <select class="ap-form-input" :value="(state.deptConfig.rules[d] || {}).userId || ''" @change="setPushContact(d, $event.target.value)">
-              <option value="">— 未指定 —</option>
-              <option v-for="c in state.deptConfig.candidates" :key="c.id" :value="c.userId">
-                {{ c.name }}<template v-if="!c.userId">（缺 userId）</template>
-              </option>
-            </select>
+            <div style="display:flex;gap:6px;align-items:center">
+              <select class="ap-form-input" style="flex:1" :value="(state.deptConfig.rules[d] || {}).userId || ''" @change="setPushContact(d, $event.target.value)">
+                <option value="">— 未指定 —</option>
+                <option v-for="c in contactOptions(d)" :key="c.userId || c.id" :value="c.userId">
+                  {{ c.name }}<template v-if="!c.userId">（缺 userId）</template><template v-if="c.custom">（自定义）</template>
+                </option>
+              </select>
+              <button type="button" title="自定义新增钉钉联系人并绑定到本部门"
+                      style="height:32px;min-width:34px;flex:0 0 auto;border:1px solid #cbd5e1;background:#f8fafc;border-radius:6px;color:#475569;cursor:pointer;font-size:14px"
+                      @click="newContactForDept(d)">＋</button>
+            </div>
           </td>
           <td>
             <input class="ap-form-input" type="number" min="0" step="100" style="height:32px"
@@ -901,8 +1015,61 @@
     </table>
   </div>
   <div v-else style="font-size:12px;color:#94a3b8;padding:10px 0">还没有部门，请先在「部门筛选」处点 + 添加部门。</div>
+
+  <!-- 钉钉联系人管理：与「每日数据分析 → 钉钉推送」同一份名单（dingtalk_push_users） -->
+  <div style="margin-top:16px;border-top:1px solid #e2e8f0;padding-top:12px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <strong style="font-size:13px;color:#334155">钉钉联系人管理</strong>
+      <span style="font-size:11px;color:#94a3b8">与「每日数据分析 → 钉钉推送」共用同一份名单</span>
+    </div>
+    <div class="ap-table-wrap">
+      <table class="ap-table">
+        <thead><tr>
+          <th style="width:120px">姓名</th>
+          <th style="width:130px">手机号</th>
+          <th>userId</th>
+          <th style="width:110px">已绑定部门</th>
+          <th style="width:80px">状态</th>
+          <th style="width:190px">操作</th>
+        </tr></thead>
+        <tbody>
+          <tr v-for="c in state.deptConfig.candidates" :key="c.id">
+            <td>{{ c.name }}</td>
+            <td>{{ c.mobile || '—' }}</td>
+            <td style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px">{{ c.userId || '—' }}</td>
+            <td>{{ contactBoundDepts(c) || '—' }}</td>
+            <td>
+              <span :style="{ color: c.enabled ? '#16a34a' : '#94a3b8' }">{{ c.enabled ? '已启用' : '已停用' }}</span>
+            </td>
+            <td>
+              <button type="button" style="height:26px;padding:0 8px;margin-right:4px;border:1px solid #cbd5e1;background:#fff;border-radius:5px;color:#475569;cursor:pointer;font-size:12px" @click="matchContact(c)">匹配ID</button>
+              <button type="button" style="height:26px;padding:0 8px;margin-right:4px;border:1px solid #cbd5e1;background:#fff;border-radius:5px;color:#475569;cursor:pointer;font-size:12px" @click="toggleContact(c)">{{ c.enabled ? '停用' : '启用' }}</button>
+              <button type="button" style="height:26px;padding:0 8px;border:1px solid #fecaca;background:#fff;border-radius:5px;color:#dc2626;cursor:pointer;font-size:12px" @click="removeContact(c)">删除</button>
+            </td>
+          </tr>
+          <tr v-if="!state.deptConfig.candidates.length">
+            <td colspan="6" style="text-align:center;color:#94a3b8;padding:10px">还没有联系人，在下面添加</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap">
+      <input class="ap-form-input" style="width:140px;height:32px" v-model="state.pushModal.newUser.name" autocomplete="off" placeholder="姓名，如「张三」">
+      <input class="ap-form-input" style="width:150px;height:32px" v-model="state.pushModal.newUser.mobile" autocomplete="off" placeholder="手机号（可选）">
+      <input class="ap-form-input" style="width:200px;height:32px" v-model="state.pushModal.newUser.userId" autocomplete="off" placeholder="userId（可选）">
+      <button type="button" class="btn btn-sm btn-primary" :disabled="state.pushModal.saving" @click="addContact">
+        {{ state.pushModal.saving ? '提交中…' : '添加联系人' }}
+      </button>
+      <span v-if="state.pushModal.newForDept" style="font-size:11px;color:#16a34a">添加后自动绑定到「{{ state.pushModal.newForDept }}」</span>
+    </div>
+    <div style="font-size:11px;color:#94a3b8;margin-top:8px;line-height:1.7">
+      手机号与 userId <b>二选一即可</b>：只填 userId 最省事（不依赖通讯录权限）；只填手机号时点「匹配ID」由后端换取并缓存 userId，需要应用已开通「手机号获取成员信息」权限。<br>
+      不论填哪种，成员都必须在该钉钉应用的「可见范围」内，否则推送会返回「不在可见范围」。
+    </div>
+  </div>
+
   <div style="font-size:11px;color:#94a3b8;margin-top:10px">
-    未勾选「启用」的部门不推送；下拉里看不到人，请先到「钉钉推送」页添加成员并填好 userId。
+    未勾选「启用」的部门不推送；被「停用」的联系人收不到每日报告，但仍可被部门选中。
   </div>
 </ecom-modal>
 

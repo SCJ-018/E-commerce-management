@@ -150,6 +150,42 @@ def discard_db(conn):
     pool._discard(conn)
 
 
+# ======================== 开发告警：安全入口 ========================
+# 「后台任何报错都直接钉钉给李自豪」的统一入口，实现在 backend/dev_alert.py。
+# 这里统一走 globals() 取函数（模块未加载完就被调用也不会 NameError），
+# 并且告警自身出任何问题都必须静默 —— 绝不能把主流程带崩。
+
+def _dev_alert(title, detail='', signature=None, source='', force=False):
+    try:
+        fn = globals().get('notify_dev')
+        if fn is None:
+            print('[开发告警][未加载] %s' % title)
+            return False
+        return fn(title, detail, signature=signature, source=source, force=force)
+    except Exception:
+        return False
+
+
+def _dev_alert_exc(source, exc, extra='', signature=None):
+    try:
+        fn = globals().get('notify_dev_exception')
+        if fn is None:
+            print('[开发告警][未加载] %s: %s' % (source, exc))
+            return False
+        return fn(source, exc, extra=extra, signature=signature)
+    except Exception:
+        return False
+
+
+def _sql_brief(sql, limit=120):
+    """SQL 摘要 —— 告警正文只放片段，避免报文过长/条件泄露"""
+    try:
+        s = ' '.join(str(sql).split())
+        return s[:limit] + ('…' if len(s) > limit else '')
+    except Exception:
+        return '(无法解析 SQL)'
+
+
 def db_execute(sql, params=None, fetch=True, max_retries=2):
     """执行 SQL。fetch=True 返回查询结果，否则返回受影响行数。支持自动重试。"""
     last_error = None
@@ -175,11 +211,16 @@ def db_execute(sql, params=None, fetch=True, max_retries=2):
             if attempt < max_retries:
                 time.sleep(0.3 * (attempt + 1))  # 递增等待
                 continue
+            # 重试仍失败 = 数据库真出问题了，直接告警开发（同签名 5 分钟冷却）
+            _dev_alert_exc('数据库连接异常', e, extra='SQL: %s' % _sql_brief(sql),
+                           signature='db:operational')
             raise
-        except Exception:
+        except Exception as e:
             if conn:
                 return_db(conn)
             traceback.print_exc()
+            _dev_alert_exc('SQL 执行异常', e, extra='SQL: %s' % _sql_brief(sql),
+                           signature='db:sql:%s' % _sql_brief(sql, 60))
             raise
     raise last_error
 
@@ -204,11 +245,15 @@ def db_execute_insert(sql, params=None, max_retries=2):
             if attempt < max_retries:
                 time.sleep(0.3 * (attempt + 1))
                 continue
+            _dev_alert_exc('数据库连接异常（INSERT）', e, extra='SQL: %s' % _sql_brief(sql),
+                           signature='db:operational')
             raise
-        except Exception:
+        except Exception as e:
             if conn:
                 return_db(conn)
             traceback.print_exc()
+            _dev_alert_exc('SQL 执行异常（INSERT）', e, extra='SQL: %s' % _sql_brief(sql),
+                           signature='db:sql:%s' % _sql_brief(sql, 60))
             raise
     raise last_error
 
@@ -3101,6 +3146,41 @@ def _push_resolve_userid(client, row, write_back=True):
     return user_id, ''
 
 
+# ======================== 开发告警：初始化 + 全局兜底 ========================
+# 规则：后台任何报错 → 钉钉单聊「李自豪」（收件人自动从 dingtalk_push_users 里按名字匹配，
+# 页面上改手机号/userId 即可生效；查不到时回落 .env 的 DEV_ALERT_USER_ID / DEV_ALERT_MOBILE）。
+# 实现与冷却/限流策略见 backend/dev_alert.py。
+try:
+    from dev_alert import (init_dev_alert, notify_dev, notify_dev_exception,  # noqa: F401
+                           dev_recipient as _dev_recipient)
+    init_dev_alert(db_execute, _push_client, _push_resolve_userid)
+except Exception as _dev_alert_init_err:
+    print('[开发告警] 模块加载失败: %s' % _dev_alert_init_err)
+
+    def _dev_recipient(force=False):
+        return None
+
+
+@app.errorhandler(Exception)
+def _handle_uncaught_exception(e):
+    """未捕获异常统一兜底：告警开发 + 返回统一 JSON（不再向前端吐 HTML 错误页）
+
+    注意：Flask 的 Exception 处理器也会接到 HTTPException（404/405/413 等），
+    这类是正常语义的响应，必须原样放行，不能当成故障告警。
+    """
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return e
+    try:
+        traceback.print_exc()
+    except Exception:
+        pass
+    _dev_alert_exc('接口未捕获异常', e,
+                   extra='%s %s' % (request.method, request.path),
+                   signature='http:%s:%s' % (request.path, type(e).__name__))
+    return jsonify({'code': 1, 'msg': '服务器内部错误：%s' % e, 'data': None}), 500
+
+
 def _push_apply_robot_code(cfg, robot_code):
     """机器人接口实际生效的 robotCode 与配置不一致时回写，减少后续试错"""
     robot_code = (robot_code or '').strip()
@@ -3307,6 +3387,12 @@ def _run_daily_report_push(push_type='auto'):
     # 3) 推送
     status, detail = _push_daily_report(target_date, result, push_type)
     print('[钉钉推送] %s 推送结果：%s | %s' % (target_date, status, detail))
+    if status != 'success':
+        # 日报是有人等着看的产物：部分送达/未送达都直接告警开发（同一日期同一状态只报一次）
+        _dev_alert('每日数据分析报告推送%s（%s）'
+                   % ('部分失败' if status == 'partial' else '失败', target_date),
+                   detail=detail, signature='push:daily:%s:%s' % (target_date, status),
+                   source='每日报告推送')
 
 
 def _daily_report_push_loop():
@@ -3330,6 +3416,8 @@ def _daily_report_push_loop():
             print('[钉钉推送][补跑] 无需补跑')
     except Exception as e:
         print('[钉钉推送][补跑] 异常: %s' % e)
+        _dev_alert_exc('每日报告启动补跑异常', e, signature='push:catchup',
+                       source='每日报告推送')
 
     # ---- 主循环 ----
     last_fired = ''
@@ -3346,6 +3434,8 @@ def _daily_report_push_loop():
                 _run_daily_report_push('auto')
         except Exception as e:
             print('[钉钉推送][定时] 异常: %s' % e)
+            _dev_alert_exc('每日报告定时循环异常', e, signature='push:loop',
+                           source='每日报告推送')
         time.sleep(60)
 
 
@@ -6211,14 +6301,36 @@ def is_ecommerce_hot(word):
 # ======================== 通用小工具 ========================
 
 def _run_py_script(script_path, timeout=1200):
-    """同步运行一个 Python 脚本（用于爬虫），成功返回 True"""
+    """同步运行一个 Python 脚本（用于爬虫），成功返回 True
+
+    ★ 退出码也算失败（2026-09-17 修正）：此前只看有没有抛异常，
+    脚本以非 0 退出（Cookie 失效、登录失败等）会被当成成功静默略过，故障无人知晓。
+    现在「非 0 退出码」= 失败 → 钉钉告警开发人员。
+    子进程 stdout/stderr 仍直接写进服务日志（不 capture），排查细节看 journalctl -u ecom。
+    """
     import sys as _sys
+    name = os.path.basename(script_path)
     try:
-        subprocess.run([_sys.executable, script_path], check=False, timeout=timeout)
-        return True
+        proc = subprocess.run([_sys.executable, script_path], check=False, timeout=timeout)
+        code = proc.returncode
+    except subprocess.TimeoutExpired:
+        print(f'[选品] 脚本超时 {script_path}: {timeout}s')
+        _dev_alert('脚本执行超时（%ds）：%s' % (timeout, name),
+                   detail='脚本：%s\n详见 journalctl -u ecom' % script_path,
+                   signature='script:timeout:%s' % name, source='脚本调度')
+        return False
     except Exception as e:
         print(f'[选品] 脚本运行异常 {script_path}: {e}')
+        _dev_alert_exc('脚本启动失败', e, extra='脚本：%s' % script_path,
+                       signature='script:spawn:%s' % name, source='脚本调度')
         return False
+    if code != 0:
+        print(f'[选品] 脚本非零退出 {script_path}: code={code}')
+        _dev_alert('脚本失败（退出码 %d）：%s' % (code, name),
+                   detail='脚本：%s\n详见 journalctl -u ecom' % script_path,
+                   signature='script:exit:%s:%s' % (name, code), source='脚本调度')
+        return False
+    return True
 
 
 def _read_json(path, default=None):
@@ -6903,6 +7015,8 @@ def _douyin_hot_auto_loop():
             _run_scrape_and_filter()
         except Exception as e:
             print(f'[选品][定时] 异常: {e}')
+            _dev_alert_exc('抖音热点定时任务异常', e, signature='douyin:hot:loop',
+                           source='短视频热词定时任务')
 
 
 _douyin_hot_auto_thread = threading.Thread(target=_douyin_hot_auto_loop, daemon=True,
@@ -6935,6 +7049,8 @@ def _seeding_reconcile_now():
                 print(f'[种草][对账] {platform}: 跳过（{reason}）', flush=True)
         except Exception as e:
             print(f'[种草][对账] {platform}: 异常 {e}', flush=True)
+            _dev_alert_exc('种草作品对账异常', e, extra='平台：%s' % platform,
+                           signature='seeding:reconcile:%s' % platform, source='种草定时任务')
 
 
 def _seeding_auto_update_loop():
@@ -6972,6 +7088,8 @@ def _seeding_auto_update_loop():
                 print('[种草][点赞推送] %s' % why, flush=True)
             except Exception as e:
                 print('[种草][点赞推送] 检查异常: %s' % e)
+                _dev_alert_exc('种草点赞推送检查异常', e, signature='seeding:like-push',
+                               source='种草定时任务')
             for platform in ('douyin', 'xhs'):
                 err = _seeding_launch(platform)
                 if err:
@@ -6981,6 +7099,8 @@ def _seeding_auto_update_loop():
                 time.sleep(5)  # 两个平台错开，避免同时打满
         except Exception as e:
             print(f'[种草][自动更新] 触发异常: {e}')
+            _dev_alert_exc('种草自动更新循环异常', e, signature='seeding:loop',
+                           source='种草定时任务')
         time.sleep(_SEEDING_AUTO_INTERVAL)
 
 
@@ -7475,6 +7595,120 @@ def api_fetch_reconcile():
         return success(out)
     except Exception as e:
         return fail('对账记录读取失败：%s' % e)
+
+
+# ======================== 开发告警：接口与全局异常钩子 ========================
+# 三个运维自用接口：
+#   POST /api/dev/report-error  前端未捕获 JS 异常上报（Vue 整页白屏那类问题以前没人知道）
+#   POST /api/dev/alert/test    自检：立刻给李自豪发一条测试消息，验证告警链路是否通
+#   GET  /api/dev/alert/status  查看收件人解析结果（排查「为什么没收到告警」）
+
+@app.route('/api/dev/report-error', methods=['POST'])
+def dev_report_error():
+    """前端 JS 未捕获异常上报 → 转钉钉告警开发"""
+    try:
+        d = request.get_json(silent=True) or {}
+        msg = (d.get('message') or '').strip()[:500]
+        if not msg:
+            return success(None, 'ignored')
+        detail = ('页面：%s\n位置：%s\n浏览器：%s\n\n%s'
+                  % (d.get('page') or '-', d.get('location') or '-',
+                     (request.headers.get('User-Agent') or '')[:200],
+                     (d.get('stack') or '')[:1000]))
+        _dev_alert('前端 JS 异常：%s' % msg[:80], detail=detail,
+                   signature='js:%s:%s' % ((d.get('page') or '-'), msg[:80]),
+                   source='前端页面')
+        return success(None, 'reported')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/dev/alert/test', methods=['POST'])
+def dev_alert_test():
+    """给开发（李自豪）发一条测试告警，验证链路"""
+    try:
+        row = _dev_recipient(force=True) if _dev_recipient else None
+        if not row:
+            return fail('没有找到收件人：请先在「每日数据分析 → 钉钉推送」里添加名字含「李自豪」的成员，'
+                        '或在服务器 .env 配置 DEV_ALERT_USER_ID')
+        queued = _dev_alert('开发告警链路测试',
+                            detail='这是后台手动触发的测试消息，收到即代表告警通道正常。',
+                            signature='manual:test', source='告警自检', force=True)
+        return success({'recipient': row.get('name'),
+                        'userId': row.get('user_id') or '(待匹配)',
+                        'queued': bool(queued)}, '测试告警已发送')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/dev/alert/status', methods=['GET'])
+def dev_alert_status():
+    """查看告警开关状态与收件人解析结果"""
+    try:
+        try:
+            from dev_alert import DEV_NAME as _dev_name
+        except Exception:
+            _dev_name = '李自豪'
+        row = _dev_recipient(force=True) if _dev_recipient else None
+        return success({
+            'enabled': bool(globals().get('notify_dev')),
+            'devName': _dev_name,
+            'recipient': ({'name': row.get('name'), 'userId': row.get('user_id') or '',
+                           'mobile': row.get('mobile') or ''} if row else None),
+        })
+    except Exception as e:
+        return fail(str(e))
+
+
+def _install_dev_alert_hooks():
+    """安装线程/主线程未捕获异常钩子
+
+    定时任务全是模块级 daemon 线程，异常平时只写进 journalctl，没人翻等于没有 ——
+    这里统一转成钉钉告警。原钩子照常调用，不改变原有行为。
+    """
+    import sys as _sysmod
+    try:
+        _prev_thread_hook = getattr(threading, 'excepthook', None)
+
+        def _thread_hook(args):
+            try:
+                if args.exc_type is not SystemExit and args.exc_value is not None:
+                    name = getattr(args.thread, 'name', 'unknown') if args.thread else 'unknown'
+                    _dev_alert_exc('后台线程未捕获异常（%s）' % name, args.exc_value,
+                                   extra='线程：%s' % name, signature='thread:%s' % name,
+                                   source='后台线程')
+            except Exception:
+                pass
+            try:
+                if _prev_thread_hook:
+                    _prev_thread_hook(args)
+            except Exception:
+                pass
+
+        threading.excepthook = _thread_hook
+
+        _prev_sys_hook = _sysmod.excepthook
+
+        def _sys_hook(etype, value, tb):
+            try:
+                if etype is not SystemExit and value is not None:
+                    _dev_alert_exc('主线程未捕获异常', value,
+                                   signature='main:%s' % getattr(etype, '__name__', 'Error'),
+                                   source='主进程')
+            except Exception:
+                pass
+            try:
+                _prev_sys_hook(etype, value, tb)
+            except Exception:
+                pass
+
+        _sysmod.excepthook = _sys_hook
+        print('[开发告警] 异常钩子已安装（接口 / 线程 / 主进程 未捕获异常均会告警）')
+    except Exception as e:
+        print('[开发告警] 安装异常钩子失败: %s' % e)
+
+
+_install_dev_alert_hooks()
 
 
 if __name__ == '__main__':
