@@ -63,6 +63,18 @@
   // 轮询定时器（非响应式，避免被 Vue 代理）
   var _pollTimer = null;
 
+  // ★ in-flight 守卫（2026-09-17）
+  //   服务器跑抓取时，被 headless Chrome（swiftshader 软件渲染）吃到 CPU 满载，
+  //   /api/fetch/job 的响应会从几十毫秒掉到几秒。原来 setInterval(pollJob, 3000)
+  //   不等待上一次返回 → 在途请求成倍堆积；等服务器缓过来，一批响应同时到达，
+  //   Vue 要一口气做完全部响应式更新 + DOM patch，渲染进程主线程被占满，
+  //   浏览器标题栏直接变「未响应」。
+  //   现在：上一发没回来就跳过这一拍；但超过 POLL_TIMEOUT_MS 仍未回来则放行，
+  //   避免请求永久挂住（fetch 本身没有超时）把轮询彻底卡死。
+  var _pollBusy = false;
+  var _pollStartAt = 0;
+  var POLL_TIMEOUT_MS = 15000;
+
   // 日期选择器的原生 input 引用（用于 showPicker 强制弹出日历）
   var upStartInput = Vue.ref(null);
   var upEndInput = Vue.ref(null);
@@ -175,6 +187,8 @@
       // ---------------- 抓取任务轮询 ----------------
       function stopPoll() {
         if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+        _pollBusy = false;
+        _pollStartAt = 0;
       }
       function startPoll() {
         stopPoll();
@@ -182,7 +196,16 @@
       }
       async function pollJob() {
         if (!_sa.job || !_sa.job.jobId) { stopPoll(); return; }
-        var j = await ApiService.getFetchJob(_sa.job.jobId);
+        // 上一发还在途 → 跳过这一拍（超过兜底时限才放行，见顶部说明）
+        if (_pollBusy && (Date.now() - _pollStartAt) < POLL_TIMEOUT_MS) return;
+        _pollBusy = true;
+        _pollStartAt = Date.now();
+        var j = null;
+        try {
+          j = await ApiService.getFetchJob(_sa.job.jobId);
+        } finally {
+          _pollBusy = false;
+        }
         if (!j) return;
         _sa.job = j;
         if (j.status !== 'running') {

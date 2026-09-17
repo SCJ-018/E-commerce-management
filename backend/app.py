@@ -7258,6 +7258,7 @@ print('[账号API] 店铺账号管理路由已注册（千牛/抖店/抖店邮�
 #   千牛账号表 → 平台「千牛」 / 抖店账号表 → 平台「抖音」 / 京东账号表 → 平台「京东」
 # 账号列表来源就是店铺账号管理在编辑的那三张表，`是否运营=1` 即「运营中」。
 import threading  # noqa: E402  （下文线程用；模块前面只 import 了 Lock/RLock）
+import signal     # noqa: E402  （超时强杀进程组用，见 _fetch_kill_tree）
 
 _FETCH_PW = '/opt/pw'
 _FETCH_PY = '/opt/pw/venv/bin/python'
@@ -7370,18 +7371,61 @@ def _fetch_build_cmds(platforms, dates, sel_ids):
     return cmds
 
 
+def _fetch_kill_tree(proc, grace=3):
+    """超时强杀：连**整个进程组**一起清，不要只杀最外层。
+
+    ★ 2026-09-17 修（线上实测残留 7 个孤儿 Xvfb，:99~:105，横跨 6 小时）：
+      抓取命令是 `xvfb-run -a python xxx.py`，而 xvfb-run 是 shell 脚本，
+      它自己再去启 Xvfb 和 python。原来的 proc.kill() 只杀掉 xvfb-run 这一层 ——
+      下面的 Xvfb / python / Chrome 全部变孤儿被 init 收养，继续跑到底：
+        · Xvfb 没有「父进程断开就自退」的机制 → 只增不减（占显示号 + 内存）
+        · Chrome 若没退干净会持续吃 CPU（实测单渲染进程 156%），
+          叠几次之后整个 4 核机器就被拖垮 —— 网页端随之卡成「未响应」。
+      配合 Popen(start_new_session=True)，子进程自成一个进程组，这里 killpg 一锅端。
+      注意：start_new_session 只改会话、不改 cgroup —— systemd 的
+      KillMode=control-group 依然能在重启 ecom 时把这些进程一起带走，不影响运维。
+    """
+    if proc is None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:
+        pgid = None
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=grace)
+        return
+    except Exception:
+        pass
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except Exception:
+        pass
+
+
 def _fetch_exec(argv, job, timeout):
     """执行单条抓取命令，stdout 实时灌进 job['log']。返回退出码。"""
     cmd = ([_FETCH_XVFB, '-a'] + argv) if os.path.isfile(_FETCH_XVFB) else argv
     _fetch_log(job, '$ ' + ' '.join(cmd))
     try:
+        # start_new_session=True：子进程自成进程组，超时才杀得干净（见 _fetch_kill_tree）
         proc = subprocess.Popen(cmd, cwd=_FETCH_PW, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True,
-                                encoding='utf-8', errors='replace', bufsize=1)
+                                encoding='utf-8', errors='replace', bufsize=1,
+                                start_new_session=True)
     except Exception as e:
         _fetch_log(job, '[err] 启动失败: %s' % e)
         return -1
-    killer = threading.Timer(timeout, lambda: proc.kill())
+    killer = threading.Timer(timeout, lambda: _fetch_kill_tree(proc))
     killer.start()
     try:
         for line in proc.stdout:

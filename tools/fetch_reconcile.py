@@ -48,6 +48,7 @@ import sys
 import os
 import json
 import time
+import signal
 import argparse
 import datetime
 import threading
@@ -239,6 +240,46 @@ def _stream_path():
     return os.path.join(d, 'fetch_stream_%s.log' % datetime.date.today().isoformat())
 
 
+def _kill_tree(proc, grace=3):
+    """超时强杀：连**整个进程组**一起清，不要只杀最外层。
+
+    ★ 2026-09-17 修（服务器实测残留 7 个孤儿 Xvfb，:99~:105，横跨 6 小时）：
+      命令被 _wrap() 包成 `xvfb-run -a python xxx.py`，而 xvfb-run 是 shell 脚本，
+      它自己再去启 Xvfb 和 python。原来的 proc.kill() 只杀 xvfb-run 这一层 ——
+      它下面的 Xvfb / python / Chrome 全部变孤儿被 init 收养，继续跑到底：
+        · Xvfb 没有「父进程断开就自退」的机制 → 只增不减
+        · Chrome 没退干净会持续吃 CPU（实测单渲染进程 156%）
+      配合 Popen(start_new_session=True)，子进程自成一个进程组，这里 killpg 一锅端。
+      注意：start_new_session 只改会话、不改 cgroup —— systemd 的
+      KillMode=control-group 依然能在重启 ecom 时把这些进程一起带走，不影响运维。
+    """
+    if proc is None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:
+        pgid = None
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=grace)
+        return
+    except Exception:
+        pass
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except Exception:
+        pass
+
+
 def _run(cmd, timeout, log_lines, cwd=None):
     if IS_SERVER:
         inner = ' '.join("'%s'" % c.replace("'", "'\\''") for c in cmd)
@@ -257,8 +298,11 @@ def _run(cmd, timeout, log_lines, cwd=None):
             fh.flush()
             cp = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                cwd=cwd, bufsize=1, text=True, encoding='utf-8', errors='replace')
-            timer = threading.Timer(timeout, lambda: (setattr(cp, '_killed', True), cp.kill()))
+                cwd=cwd, bufsize=1, text=True, encoding='utf-8', errors='replace',
+                start_new_session=True)
+            # ★ 超时必须杀整个进程组（理由见 _kill_tree）：只 kill 最外层会留下孤儿
+            #   Xvfb / Chrome 继续吃 CPU，下一次抓取就更卡。
+            timer = threading.Timer(timeout, lambda: (setattr(cp, '_killed', True), _kill_tree(cp)))
             timer.start()
             try:
                 for line in cp.stdout:
