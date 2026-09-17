@@ -11,10 +11,10 @@
 
   // ==================== 模块级状态（跨挂载/卸载保留，切走再回来不丢筛选） ====================
   var _cat = Vue.reactive({
-    range: 'all',        // 'all' | '1' | '7' | '30' | 'custom'
+    range: '7',          // 'all' | '1' | '7' | '30' | 'custom'  ← 默认「近7天」（比「全部」快约 20 倍）
     dateStart: '',
     dateEnd: '',
-    dateLabel: '选择日期',
+    dateLabel: '近7天',
     cal: { open: false, base: null, start: null, end: null, pickStart: true },   // 双月日历
     totals: null,        // { payment, orders, buyers, refund, productCount, refundRate, categoryCount, spend, adGmv, roi }
     categories: [],      // [{ category, keywords[], products, payment, orders, buyers, refund, refundRate, spend, ad_gmv, roi }]
@@ -40,10 +40,13 @@
   function _computeRange(range, start, end) {
     if (range === 'all') return ['', ''];
     if (range === 'custom') return [start || '', end || ''];
-    var endDate = new Date(Date.now() - 86400000);
-    var startDate = new Date(endDate);
-    startDate.setDate(startDate.getDate() - parseInt(range, 10) + 1);
-    return [startDate.toISOString().slice(0, 10), endDate.toISOString().slice(0, 10)];
+    // ⚠️ 必须用本地时间算日期：原写法 toISOString() 取的是 **UTC 日期**，
+    // 北京时间凌晨 0~8 点会整体差一天（如 09-17 03:00 算出「昨天」= 09-15）
+    var now = new Date();
+    var endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);      // 昨天
+    var startDate = new Date(endDate.getFullYear(), endDate.getMonth(),
+                             endDate.getDate() - parseInt(range, 10) + 1);
+    return [_fmtDate(startDate), _fmtDate(endDate)];
   }
 
   // ==================== 组件 ====================
@@ -191,6 +194,13 @@
 
       Vue.onMounted(function () {
         document.addEventListener('click', onDocClick);
+        // 首次进入：把非自定义范围（默认近7天）展开成具体起止日期，让日期按钮显示真实区间
+        // （切走再回来时会保留用户上次选的筛选，不覆盖）
+        if (!_cat.dateStart && !_cat.dateEnd && _cat.range !== 'custom' && _cat.range !== 'all') {
+          var r = _computeRange(_cat.range, _cat.dateStart, _cat.dateEnd);
+          _cat.dateStart = r[0]; _cat.dateEnd = r[1];
+          updateDateLabel();
+        }
         loadData();
       });
       Vue.onUnmounted(function () {

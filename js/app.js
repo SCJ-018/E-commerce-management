@@ -46,6 +46,36 @@ const ApiService = (() => {
     }
   }
 
+  /**
+   * 需要拿到后端具体报错文案的请求（保存设置、推送、测试等操作类接口）。
+   * request() 只返回 null，无法把「未配置 AppSecret」这类原因透给用户，故单独提供。
+   * 返回 { ok, data, msg }
+   */
+  async function requestFull(path, options = {}) {
+    try {
+      const res = await fetch(BASE_URL + path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      if (res.status === 401) {
+        sessionStorage.removeItem('admin_logged_in');
+        sessionStorage.removeItem('admin_current_user');
+        sessionStorage.removeItem('admin_current_role');
+        sessionStorage.removeItem('admin_current_account');
+        sessionStorage.removeItem('admin_permissions');
+        location.reload();
+        return { ok: false, msg: '登录已过期，请重新登录' };
+      }
+      const json = await res.json().catch(() => null);
+      if (!json) return { ok: false, msg: `HTTP ${res.status}` };
+      if (json.code !== 0) return { ok: false, msg: json.msg || '请求失败' };
+      return { ok: true, data: json.data, msg: json.msg || '' };
+    } catch (e) {
+      console.warn('[API] 请求失败:', path, e.message);
+      return { ok: false, msg: e.message || '网络异常' };
+    }
+  }
+
   return {
     /** 健康检查 — 判断后端是否可用 */
     async health() {
@@ -120,6 +150,15 @@ const ApiService = (() => {
     async updateStoreAccount(type, id, data) { return request('/store-accounts/' + type + '/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
     async deleteStoreAccount(type, id) { return request('/store-accounts/' + type + '/' + id, { method: 'DELETE' }); },
     async toggleStoreAccount(type, id, active) { return request('/store-accounts/' + type + '/' + id + '/toggle', { method: 'PUT', body: JSON.stringify({ active: active }) }); },
+
+    // ---- 抓取任务（店铺账号管理「更新数据」→ 唤起 /opt/pw 抓取程序）----
+    // 账号列表来源＝三张账号表的「是否运营=1」，与抓取程序 shops.py 同一份来源
+    async getFetchStatus() { return request('/fetch/status'); },
+    async getFetchLatestJob() { return request('/fetch/job/latest'); },
+    async getFetchJob(jobId) { return request('/fetch/job/' + jobId); },
+    async triggerFetch(payload) { return requestFull('/fetch/trigger', { method: 'POST', body: JSON.stringify(payload || {}) }); },
+    async stopFetch(jobId) { return requestFull('/fetch/stop', { method: 'POST', body: JSON.stringify({ jobId: jobId }) }); },
+    async getFetchReconcile(limit) { return request('/fetch/reconcile?limit=' + (limit || 60)); },
 
     /** 员工花名册（旧接口，保留兼容） */
     async getHrEmployees() { return request('/hr/employees'); },
@@ -290,6 +329,37 @@ const ApiService = (() => {
       });
     },
 
+    // ---- 每日数据分析：钉钉推送设置 ----
+    /** 读取推送配置（含推送人名单与最近推送记录） */
+    async getPushConfig() {
+      return request('/analysis/push/config');
+    },
+    /** 保存推送配置：AppSecret 传回掩码时后端保持原值 */
+    async savePushConfig(data) {
+      return requestFull('/analysis/push/config', { method: 'POST', body: JSON.stringify(data) });
+    },
+    async addPushUser(data) {
+      return requestFull('/analysis/push/users', { method: 'POST', body: JSON.stringify(data) });
+    },
+    async updatePushUser(id, data) {
+      return requestFull('/analysis/push/users/' + id, { method: 'PUT', body: JSON.stringify(data) });
+    },
+    async deletePushUser(id) {
+      return requestFull('/analysis/push/users/' + id, { method: 'DELETE' });
+    },
+    /** 手机号 → 钉钉 userId */
+    async resolvePushUser(mobile) {
+      return requestFull('/analysis/push/resolve', { method: 'POST', body: JSON.stringify({ mobile: mobile || '' }) });
+    },
+    /** 给所有启用成员发测试消息 */
+    async testPush() {
+      return requestFull('/analysis/push/test', { method: 'POST', body: JSON.stringify({}) });
+    },
+    /** 立即生成并推送指定日期报告（不传则昨日） */
+    async pushNow(date) {
+      return requestFull('/analysis/push/now', { method: 'POST', body: JSON.stringify({ date: date || '' }) });
+    },
+
     // ---- 种草监测中台 ----
     async getSeedingAccounts() { return request('/seeding/accounts'); },
     async createSeedingAccount(data) { return request('/seeding/accounts', { method: 'POST', body: JSON.stringify(data) }); },
@@ -305,6 +375,9 @@ const ApiService = (() => {
     async getSeedingDeleted() { return request('/seeding/deleted'); },
     async deleteSeedingDeleted(id) { return request('/seeding/deleted/' + id, { method: 'DELETE' }); },
     async clearSeedingDeleted() { return request('/seeding/deleted', { method: 'DELETE' }); },
+    /** 部门列表 + 部门→钉钉联系人/点赞阈值规则 + 钉钉联系人候选 */
+    async getSeedingDeptConfig() { return request('/seeding/dept-config'); },
+    async saveSeedingDeptConfig(data) { return request('/seeding/dept-config', { method: 'POST', body: JSON.stringify(data) }); },
 
     // ---- CRUD 快捷方法 ----
     create(type, data) {
@@ -675,16 +748,36 @@ const App = (() => {
       'seeding-monitor': '种草监测中台',
     };
     document.getElementById('pageTitle').textContent = titles[page] || page;
-    if (page === 'marketing-overview') renderMarketingOverview();
-    if (page === 'platform-store') renderPlatformStore();
-    if (page === 'daily-analysis') renderDailyAnalysis();
-    if (page === 'product-selection') renderProductSelection();
-    if (page === 'admin-permissions') renderAdminPermissions();
-    if (page === 'profile') renderProfile();
-    if (page === 'toolbox-violation-check') renderToolboxViolationCheck();
-    if (page === 'order-details') renderOrderDetails();
-    if (page === 'category-marketing') renderCategoryMarketing();
-    if (page === 'seeding-monitor') renderSeedingMonitor();
+    // ★★ 已迁移到 Vue 的页面：**跳过旧渲染函数**（2026-09-17 性能修复）
+    //
+    // 症状：这些页面迁到 Vue 之后，旧渲染函数仍在被调用 → 旧版 + Vue 版**同时跑**：
+    //   · 同一接口在一次「进入页面」里被请求 2 次（nginx access.log 实证：
+    //     品类营销 15:02:39 / 15:02:41、订单详情 15:03:00 各出现两条完全相同的请求）；
+    //   · 旧 DOM 还白算一遍（含 ECharts 初始化），用户侧表现为
+    //     「先闪一下旧版数据 → 再被 Vue 版替换」，体感慢一倍。
+    //
+    // 为什么可以直接跳过：旧 section 在 Vue 挂载时会被 `style.display='none'` 隐藏，
+    //   **用户根本看不到旧渲染的结果** → 跳过它零视觉损失，纯粹消除浪费。
+    //   （Vue 版也不依赖 App IIFE 内的 state/全局函数，各页面自带 loadStores 等实现。）
+    //
+    // 判据用「-vue 挂载容器是否存在」：容器缺失时自动回退到旧渲染，不会白屏。
+    const _VUE_PAGES = ['marketing-overview', 'platform-store', 'daily-analysis',
+      'product-selection', 'admin-permissions', 'profile', 'toolbox-violation-check',
+      'order-details', 'category-marketing', 'seeding-monitor'];
+    const _skipLegacyRender = _VUE_PAGES.indexOf(page) >= 0
+      && !!document.getElementById('page-' + page + '-vue');
+    if (!_skipLegacyRender) {
+      if (page === 'marketing-overview') renderMarketingOverview();
+      if (page === 'platform-store') renderPlatformStore();
+      if (page === 'daily-analysis') renderDailyAnalysis();
+      if (page === 'product-selection') renderProductSelection();
+      if (page === 'admin-permissions') renderAdminPermissions();
+      if (page === 'profile') renderProfile();
+      if (page === 'toolbox-violation-check') renderToolboxViolationCheck();
+      if (page === 'order-details') renderOrderDetails();
+      if (page === 'category-marketing') renderCategoryMarketing();
+      if (page === 'seeding-monitor') renderSeedingMonitor();
+    }
     // Close sidebar on mobile
     if (window.innerWidth <= 768) toggleSidebar(false);
   }

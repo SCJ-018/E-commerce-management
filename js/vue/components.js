@@ -67,7 +67,10 @@ EcomUI.Modal = {
   template: `
 <div class="modal" :class="{ hidden: !visible }">
   <div class="modal-content" :style="width ? 'max-width:' + width : ''">
-    <div class="modal-header">{{ title }}</div>
+    <div class="modal-header">
+      <h3>{{ title }}</h3>
+      <button type="button" class="modal-close" title="关闭" aria-label="关闭" @click="onClose">&times;</button>
+    </div>
     <div class="modal-body"><slot></slot></div>
     <div class="modal-footer">
       <button class="btn btn-outline" @click="onClose">取消</button>

@@ -54,7 +54,14 @@
     modal: false, modalType: 'qianniu', editingId: null, form: {}, saving: false,
     // 更新数据弹窗
     showUpdate: false, upStart: '', upEnd: '', selected: {}, upShopSearch: '',
+    // 抓取任务（更新数据 → 后端唤起 /opt/pw 抓取程序，轮询进度）
+    view: 'form', job: null, submitting: false, fetchReady: true, fetchErr: '',
+    // 每日抓取对账记录（抓取程序跑完与账号列表对照的结果）
+    recon: [], reconLoading: false,
   });
+
+  // 轮询定时器（非响应式，避免被 Vue 代理）
+  var _pollTimer = null;
 
   // 日期选择器的原生 input 引用（用于 showPicker 强制弹出日历）
   var upStartInput = Vue.ref(null);
@@ -134,7 +141,65 @@
         _sa.loading = false;
       }
 
-      Vue.onMounted(function () { loadAll(); });
+      // 抓取环境是否就绪（站点与抓取程序同机时才可触发）
+      async function loadFetchStatus() {
+        var r = await ApiService.getFetchStatus();
+        _sa.fetchReady = !r || r.ready !== false;
+      }
+
+      // 每日对账记录：抓取程序跑完 vs 账号表「运营中」列表
+      async function loadRecon() {
+        _sa.reconLoading = true;
+        var r = await ApiService.getFetchReconcile(30);
+        _sa.recon = r || [];
+        _sa.reconLoading = false;
+      }
+
+      Vue.onMounted(function () {
+        loadAll();
+        loadFetchStatus();
+        loadRecon();
+        // 刷新页面后若已有任务在跑，自动接回进度
+        ApiService.getFetchLatestJob().then(function (j) {
+          if (j && j.status === 'running') {
+            _sa.job = j;
+            _sa.view = 'run';
+            _sa.showUpdate = true;
+            startPoll();
+          }
+        });
+      });
+
+      Vue.onUnmounted(function () { stopPoll(); });
+
+      // ---------------- 抓取任务轮询 ----------------
+      function stopPoll() {
+        if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+      }
+      function startPoll() {
+        stopPoll();
+        _pollTimer = setInterval(pollJob, 3000);
+      }
+      async function pollJob() {
+        if (!_sa.job || !_sa.job.jobId) { stopPoll(); return; }
+        var j = await ApiService.getFetchJob(_sa.job.jobId);
+        if (!j) return;
+        _sa.job = j;
+        if (j.status !== 'running') {
+          stopPoll();
+          if (j.status === 'done') {
+            App.showToast(j.missing ? '抓取完成，但有店铺未落库' : '抓取完成，全部落库', j.missing ? 'error' : 'success');
+          } else {
+            App.showToast('抓取任务异常结束，请查看日志', 'error');
+          }
+          loadRecon();
+        }
+      }
+      async function stopJob() {
+        if (!_sa.job || !_sa.job.jobId) return;
+        var r = await ApiService.stopFetch(_sa.job.jobId);
+        App.showToast((r && r.ok) ? '已请求停止' : ((r && r.msg) || '操作失败'), (r && r.ok) ? 'info' : 'error');
+      }
 
       function switchTab(t) { _sa.tab = t; _sa.search = ''; }
 
@@ -196,18 +261,85 @@
       }
 
       function openUpdate() {
+        _sa.upShopSearch = '';
+        // 已有任务在跑：直接回到进度视图，不要覆盖
+        if (_sa.job && _sa.job.status === 'running') {
+          _sa.view = 'run';
+          _sa.showUpdate = true;
+          startPoll();
+          return;
+        }
         _sa.upStart = '';
         _sa.upEnd = '';
         _sa.selected = {};
-        _sa.upShopSearch = '';
+        _sa.view = 'form';
+        _sa.job = null;
+        _sa.fetchErr = '';
         _sa.showUpdate = true;
       }
-      function submitUpdate() {
+
+      // 把勾选的店铺按平台归组，交给后端唤起对应平台的抓取程序
+      function buildTriggerPayload() {
+        var platforms = [], itemKeys = [];
+        Object.keys(_sa.selected).forEach(function (k) {
+          if (!_sa.selected[k]) return;
+          itemKeys.push(k);
+          var p = k.split(':')[0];
+          if (platforms.indexOf(p) < 0) platforms.push(p);
+        });
+        return {
+          platforms: platforms,
+          itemKeys: itemKeys,
+          start: _sa.upStart,
+          end: _sa.upEnd || '',
+        };
+      }
+
+      async function submitUpdate() {
         if (selectedCount.value === 0) { App.showToast('请先选择要抓取的店铺', 'error'); return; }
         if (!_sa.upStart) { App.showToast('请选择开始日期', 'error'); return; }
-        App.showToast('抓取引擎将在后续模块接入，当前先完成账号配置', 'info');
+        if (!_sa.fetchReady) { App.showToast('本机未找到抓取程序（/opt/pw），无法触发', 'error'); return; }
+        _sa.submitting = true;
+        _sa.fetchErr = '';
+        var r = await ApiService.triggerFetch(buildTriggerPayload());
+        _sa.submitting = false;
+        if (!r || !r.ok) {
+          _sa.fetchErr = (r && r.msg) || '触发失败，请重试';
+          App.showToast(_sa.fetchErr, 'error');
+          return;
+        }
+        _sa.job = {
+          jobId: r.data.jobId, status: 'running', total: r.data.total,
+          done: 0, current: '正在唤起抓取程序…', log: [],
+        };
+        _sa.view = 'run';
+        App.showToast('抓取任务已启动', 'success');
+        startPoll();
       }
+
       function closeUpdate() { _sa.showUpdate = false; }
+      function backToForm() { _sa.view = 'form'; _sa.job = null; }
+
+      function progressPct() {
+        var j = _sa.job;
+        if (!j || !j.total) return 0;
+        return Math.min(100, Math.round((j.done || 0) * 100 / j.total));
+      }
+      function jobLogText() {
+        var j = _sa.job;
+        if (!j || !j.log || !j.log.length) return '';
+        return j.log.slice(-60).join('\n');
+      }
+      function jobPlatformHint() {
+        var j = _sa.job;
+        if (!j || !j.platforms) return '';
+        if (j.platforms.indexOf('doudian') >= 0) {
+          return '抖店需邮箱登录，若登录态已过期，请保持本机浏览器可用并留意滑块提示';
+        }
+        return '';
+      }
+      function reconStatusText(r) { return r.status === 'ok' ? '全部落库' : '有缺失'; }
+      function reconStatusClass(r) { return r.status === 'ok' ? 'sa-recon-ok' : 'sa-recon-bad'; }
 
       // 点击整个日期框触发日历（showPicker 让 Chrome 直接弹日历，不再依赖点图标）
       function pickDate(kind) {
@@ -239,6 +371,10 @@
         pickDate: pickDate, unlockInput: unlockInput,
         upStartInput: upStartInput, upEndInput: upEndInput,
         tabClass: tabClass, tabStyle: tabStyle, tabIcoStyle: tabIcoStyle, activeText: activeText,
+        // 抓取任务 / 对账
+        loadRecon: loadRecon, stopJob: stopJob, backToForm: backToForm,
+        progressPct: progressPct, jobLogText: jobLogText, jobPlatformHint: jobPlatformHint,
+        reconStatusText: reconStatusText, reconStatusClass: reconStatusClass,
       };
     },
 
@@ -347,6 +483,36 @@
   </div>
   <div class="ap-table-info">共 {{ filtered.length }} 条记录</div>
 
+  <div class="sa-recon-panel">
+    <div class="sa-recon-head">
+      <div>
+        <i class="fa-solid fa-clipboard-check" style="color:#6366f1"></i> <strong>抓取对账记录</strong>
+        <span style="color:#94a3b8;font-size:12px;margin-left:8px">抓取跑完后与「运营中」列表逐店对照，缺数据的自动补抓；仍有缺失会推钉钉</span>
+      </div>
+      <button class="ap-btn-sm edit" @click="loadRecon"><i class="fa-solid fa-rotate"></i></button>
+    </div>
+    <table class="ap-table">
+      <thead>
+        <tr>
+          <th style="width:110px">日期</th><th style="width:80px">平台</th>
+          <th style="width:110px">已落库/运营中</th><th>缺失店铺</th>
+          <th style="width:90px">状态</th><th style="width:150px">生成时间</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="r in sa.recon" :key="r.date + '#' + r.platform">
+          <td>{{ r.date }}</td>
+          <td>{{ r.platform }}</td>
+          <td>{{ r.okCount }} / {{ r.activeCount }}</td>
+          <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="r.missingShops">{{ r.missingShops || '—' }}</td>
+          <td><span :class="reconStatusClass(r)">{{ reconStatusText(r) }}</span></td>
+          <td style="font-size:12px;color:#94a3b8">{{ r.createdAt }}</td>
+        </tr>
+        <tr v-if="!sa.recon.length"><td colspan="6" style="text-align:center;padding:24px;color:#94a3b8">暂无对账记录（每日 9:00 抓取跑完后生成）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
   <div v-if="sa.modal" class="sa-modal-mask" @click.self="closeModal">
     <div class="sa-modal">
       <div class="sa-modal-head"><strong>{{ sa.editingId ? '编辑' : '新增' }}</strong><button type="button" class="sa-modal-close" @click="closeModal"><i class="fa-solid fa-xmark"></i></button></div>
@@ -372,7 +538,7 @@
         </div>
         <button type="button" class="sa-modal-close" @click="closeUpdate"><i class="fa-solid fa-xmark"></i></button>
       </div>
-      <div class="sa-modal-body">
+      <div class="sa-modal-body" v-if="sa.view === 'form'">
         <div class="sa-up-hint"><i class="fa-solid fa-circle-info"></i> 支持多选店铺、单日或区间抓取；已停用店铺默认不参与。</div>
         <div class="sa-date-grid">
           <div class="sa-date-field" @click="pickDate('start')">
@@ -412,10 +578,41 @@
             </div>
           </div>
         </div>
+        <div v-if="sa.fetchErr" class="sa-up-err"><i class="fa-solid fa-circle-exclamation"></i> {{ sa.fetchErr }}</div>
       </div>
-      <div class="sa-modal-foot">
-        <button class="ap-btn-primary sa-btn-update" @click="submitUpdate"><i class="fa-solid fa-play"></i> 开始抓取</button>
+
+      <div class="sa-modal-body" v-else-if="sa.job">
+        <div class="sa-up-hint" v-if="jobPlatformHint()"><i class="fa-solid fa-triangle-exclamation"></i> {{ jobPlatformHint() }}</div>
+        <div class="sa-prog-head">
+          <span class="sa-prog-label">
+            <i class="fa-solid" :class="sa.job.status === 'running' ? 'fa-spinner fa-spin' : (sa.job.status === 'done' ? 'fa-circle-check' : 'fa-circle-exclamation')"></i>
+            {{ sa.job.status === 'running' ? '抓取中' : (sa.job.status === 'done' ? '抓取完成' : '任务异常结束') }}
+          </span>
+          <span class="sa-prog-step">{{ sa.job.done || 0 }} / {{ sa.job.total }} 步</span>
+        </div>
+        <div class="sa-prog-bar"><span :style="{ width: progressPct() + '%' }"></span></div>
+        <div class="sa-prog-cur" v-if="sa.job.current">当前：{{ sa.job.current }}</div>
+        <div class="sa-prog-stat" v-if="sa.job.status !== 'running'">
+          <span>成功 {{ sa.job.okCount }}</span>
+          <span>失败 {{ sa.job.failCount }}</span>
+          <span :class="sa.job.missing ? 'sa-recon-bad' : 'sa-recon-ok'">
+            {{ sa.job.missing ? ('对账未落库 ' + sa.job.missing + ' 项') : '对账全部落库' }}
+          </span>
+        </div>
+        <pre class="sa-prog-log">{{ jobLogText() || '等待输出…' }}</pre>
+      </div>
+
+      <div class="sa-modal-foot" v-if="sa.view === 'form'">
+        <button class="ap-btn-primary sa-btn-update" :disabled="sa.submitting" @click="submitUpdate">
+          <i class="fa-solid" :class="sa.submitting ? 'fa-spinner fa-spin' : 'fa-play'"></i>
+          {{ sa.submitting ? '正在启动…' : '开始抓取' }}
+        </button>
         <button class="ap-btn-plain" @click="closeUpdate">取消</button>
+      </div>
+      <div class="sa-modal-foot" v-else>
+        <button v-if="sa.job && sa.job.status === 'running'" class="ap-btn-plain" @click="stopJob"><i class="fa-solid fa-stop"></i> 停止</button>
+        <button v-if="sa.job && sa.job.status !== 'running'" class="ap-btn-plain" @click="backToForm">再抓一批</button>
+        <button class="ap-btn-primary" @click="closeUpdate"><i class="fa-solid fa-check"></i> {{ sa.job && sa.job.status === 'running' ? '后台运行' : '完成' }}</button>
       </div>
     </div>
   </div>

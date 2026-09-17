@@ -60,23 +60,76 @@ def is_logged_in(page):
     return any('sessionid' in k.lower() for k in ck)
 
 
+CAPTCHA_JS = r"""
+() => {
+  // 真滑块弹窗 vs 常驻 verify-center 容器的区分点：
+  //   常驻 iframe[src*="captcha"] 的**默认尺寸就是 300×150**，is_visible() 会认，
+  //   但真弹窗的容器远大于此。所以要求 尺寸 ≥ 280×180 且 opacity ≥ 0.15。
+  const big = (el) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const st = getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden') return null;
+    if (parseFloat(st.opacity || '1') < 0.15) return null;
+    if (r.width < 280 || r.height < 180) return null;
+    return {w: Math.round(r.width), h: Math.round(r.height),
+            id: el.id || '', cls: (el.className || '').toString().slice(0, 40)};
+  };
+  const boxes = [];
+  ['#captcha_container', 'iframe[src*="captcha"]', '[id*="captcha"]',
+   'img.captcha-verify-image', '#vc_captcha_box', 'div.captcha-slider',
+   'div[class*="captcha"]'].forEach(sel => {
+    document.querySelectorAll(sel).forEach(el => {
+      const b = big(el);
+      if (b) boxes.push(b);
+    });
+  });
+  // 文案判据：字节弹窗的标题与操作提示都在**父页面**（不在 iframe 内）
+  const t = (document.body && document.body.innerText) || '';
+  const m = t.match(/(请完成下列验证[^\n]{0,10}|按住左边按钮[^\n]{0,12}|拖动[^\n]{0,6}(滑块|拼图)|(滑块|拼图)[^\n]{0,5}验证)/);
+  return {boxes: boxes, text: m ? m[1] : ''};
+}
+"""
+
+# 登录成功信号：进入「请选择店铺」弹层 / 工作台，或已经离开登录页
+LOGIN_OK_JS = r"""
+() => {
+  const t = (document.body && document.body.innerText) || '';
+  if (/请选择店铺|选择店铺|抖店工作台|店铺管理/.test(t)) return true;
+  return false;
+}
+"""
+
+
 def has_captcha(page):
-    """检测拼图滑块是否**可见**（拖完后 DOM 残留不算，必须用 is_visible）。"""
-    sels = [
-        'img.captcha-verify-image',
-        '#vc_captcha_box',
-        'div.captcha-slider',
-    ]
-    for s in sels:
-        try:
-            loc = page.locator(s)
-            n = loc.count()
-            for i in range(n):
-                if loc.nth(i).is_visible():
-                    return True
-        except Exception:
-            pass
-    return False
+    """检测拼图验证弹窗是否**真的**出现。
+
+    ⚠️ 2026-09-17 二次修正（关键，别再退回旧写法）：
+      第一版只有 img.captcha-verify-image / #vc_captcha_box / div.captcha-slider，
+      字节 verify-center 一个都不匹配 → **漏检** → 撞「1105 滑动滑块」卡死。
+      第二版加了一堆 [id*="captcha"] 选择器 + is_visible()，结果**反向误判** ——
+      Playwright 的 is_visible() 只要求「有非空 box 且非 visibility:hidden」，
+      **不看 opacity、也不管 iframe 的默认尺寸**。verify-center 的
+      `iframe[src*="captcha"]` 是常驻 DOM 的，默认 300×150，于是「登录早就成功、
+      页面都跳到『请选择店铺』了」还被判成有滑块 → 白等 300s 超时 →
+      转判「登录验证失败」→ 整条自动补抓链回滚。
+      现在改为：尺寸/透明度过滤 + 父页面文案命中，两道判据任一命中才算。
+    """
+    try:
+        d = page.evaluate(CAPTCHA_JS)
+    except Exception:
+        return False
+    return bool(d.get('text')) or bool(d.get('boxes'))
+
+
+def login_landed(page):
+    """是否已经登录成功（进到店铺选择 / 工作台）。用于等待循环里**优先放行**，"""
+    try:
+        if '/login' not in page.url and 'passport' not in page.url:
+            return True
+        return bool(page.evaluate(LOGIN_OK_JS))
+    except Exception:
+        return False
 
 
 def login(shop_name=None):
@@ -152,18 +205,38 @@ def login(shop_name=None):
             print('  [warn] 点登录:', e)
         time.sleep(3)
 
-        # 检测拼图滑块 → 等人工拖完（滑块消失）
-        print('[4/5] 检测拼图滑块')
-        if has_captcha(page):
-            print('  ⚠️ 出现拼图滑块！请在浏览器窗口里人工拖拽拼图块到缺口位置')
-            deadline = time.time() + 180
-            while time.time() < deadline:
-                if not has_captcha(page):
-                    break
-                time.sleep(2)
-            print('  滑块已消失' if not has_captcha(page) else '  [warn] 滑块仍在（可能拖错，重试拖一次）')
+        # 检测拼图滑块 → 等人工拖完。
+        # ★ 2026-09-17 改为**以「登录是否成功」为主判据**：抖店是 SPA，
+        #   登录成功后 URL 可能一直停在 /login（旧逻辑 `'/login' not in url` 永远不成立），
+        #   而 verify-center 的常驻 iframe 又会被误判成滑块 → 死等满 300s 才走。
+        #   现在只要看到「请选择店铺/工作台」就立刻放行。
+        print('[4/5] 等待登录结果（若出现拼图验证弹窗则需人工拖动）')
+        page.screenshot(path=os.path.join(BASE_DIR, '_dd_before_captcha.png'))
+        warned = has_captcha(page)
+        if warned:
+            print('  ⚠️⚠️ 出现拼图验证弹窗！请在弹出的窗口里**按住左边按钮拖动**把拼图补齐')
+            print('      （弹窗标题「请完成下列验证后继续」，最多等 300 秒）')
         else:
-            print('  未检测到滑块')
+            print('  未检测到滑块，等待登录跳转...')
+        deadline = time.time() + 300
+        last, landed = 0, False
+        while time.time() < deadline:
+            if login_landed(page):
+                landed = True
+                break
+            if not warned and has_captcha(page):
+                warned = True
+                print('  ⚠️⚠️ 出现拼图验证弹窗！请按住左边按钮拖动把拼图补齐（最多等 300 秒）')
+            waited = int(300 - (deadline - time.time()))
+            if waited // 30 > last:
+                last = waited // 30
+                print('      ...已等待 %ds（剩余 %ds）' % (waited, 300 - waited))
+            time.sleep(2)
+        page.screenshot(path=os.path.join(BASE_DIR, '_dd_after_captcha.png'))
+        if landed:
+            print('  ✅ 登录成功：%s' % page.url[:80])
+        else:
+            print('  [warn] 300s 内未见登录成功信号，截图 _dd_after_captcha.png')
 
         # 滑块通过后若仍在登录页 → 再点一次登录按钮（force 绕过残留容器拦截）
         time.sleep(2)

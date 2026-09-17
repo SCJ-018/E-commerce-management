@@ -418,6 +418,7 @@ def main():
     date_str = args[1] if len(args) > 1 else (datetime.date.today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
 
     results = []
+    failed = []
     if target == 'all':
         for s in shops.get_active_shops():
             print('\n======== 取数：%s (%s) ========' % (s['账号'], date_str))
@@ -425,12 +426,21 @@ def main():
                 r = fetch_one(s['账号'], date_str)
                 if r:
                     results.append(r)
+                else:
+                    failed.append(s['账号'])
             except Exception as e:
                 print('  异常:', e)
+                failed.append(s['账号'])
     else:
-        r = fetch_one(target, date_str)
-        if r:
-            results.append(r)
+        try:
+            r = fetch_one(target, date_str)
+            if r:
+                results.append(r)
+            else:
+                failed.append(target)
+        except Exception as e:
+            print('  异常:', e)
+            failed.append(target)
 
     out_path = os.path.join(BASE_DIR, '_fetch_result.json')
     with open(out_path, 'w', encoding='utf-8') as f:
@@ -442,6 +452,12 @@ def main():
     #   逐账号跑 N 次与跑 1 次结果完全相同，但只跑一次省掉 N-1 次全表扫描。
     if not no_map:
         auto_category_map('千牛')
+
+    # 退出码：0=全部取到数据，3=有账号未取到（让 cron / fetch_reconcile 能感知失败，
+    # 避免「静默 0 行」被当成抓取成功）
+    if failed:
+        print('\n⚠️ %d 个账号未取到数据，需重抓：%s' % (len(failed), ', '.join(failed)))
+        sys.exit(3)
 
 
 if __name__ == '__main__':

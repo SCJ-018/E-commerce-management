@@ -31,6 +31,16 @@ try:
 except Exception:
     _category_mapper = None
 
+# 钉钉推送（每日分析报告自动发到指定成员）
+try:
+    from dingtalk import DingTalkClient, DingTalkError
+except Exception as _dt_err:  # 缺文件/缺依赖时不影响主服务启动，推送功能不可用
+    DingTalkClient = None
+    print('[钉钉推送] 模块加载失败: %s' % _dt_err)
+
+    class DingTalkError(Exception):
+        pass
+
 app = Flask(__name__)
 CORS(app)
 
@@ -2512,23 +2522,24 @@ def analysis_agent():
         return fail(str(e))
 
 
-@app.route('/api/analysis/generate', methods=['POST'])
-def generate_analysis():
-    """生成指定日期数据分析报告 — 模板规则 + DeepSeek AI 洞见，默认分析昨日"""
-    try:
-        # 支持传入日期参数，否则默认昨日
-        target_str = (request.get_json(silent=True) or {}).get('date', '').strip()
-        if target_str:
-            target_date = datetime.strptime(target_str, '%Y-%m-%d').date()
-        else:
-            target_date = date.today() - timedelta(days=1)
+class ReportNoData(Exception):
+    """目标日期没有任何营销数据，无法生成报告"""
+    pass
 
+
+def _generate_analysis_report(target_date):
+    """生成指定日期的数据分析报告 — 模板规则 + DeepSeek AI 洞见，落库后返回结果。
+
+    供 /api/analysis/generate 路由与「每日 11:00 定时推送」后台任务共用。
+    返回 {'id', 'reportDate', 'report', 'generatedBy'}；无数据时抛 ReportNoData。
+    """
+    try:
         # 收集指定日期数据
         data = gather_daily_data(target_date)
         sm = data['summary']
 
         if sm['netPayment'] == 0 and sm['visitors'] == 0:
-            return fail(f'{target_date} 暂无营销数据，无法生成分析报告', code=404)
+            raise ReportNoData(f'{target_date} 暂无营销数据，无法生成分析报告')
 
         # 模板规则：计算指标 & 预警
         refund_rate = round(sm['refundAmount'] / sm['netPayment'] * 100, 2) if sm['netPayment'] > 0 else 0
@@ -2719,14 +2730,38 @@ JSON 必须包含以下 6 个字符串字段：
              'success', '' if ai_available else 'DeepSeek API不可用或解析失败，已使用规则生成报告']
         )
 
-        return success({
+        return {
             'id': new_id,
             'reportDate': str(target_date),
             'report': full_html,
             'generatedBy': gen_by,
-        }, '报告生成成功')
+        }
 
+    except ReportNoData:
+        raise
     except Exception as e:
+        traceback.print_exc()
+        raise
+
+
+@app.route('/api/analysis/generate', methods=['POST'])
+def generate_analysis():
+    """生成指定日期数据分析报告 — 模板规则 + DeepSeek AI 洞见，默认分析昨日"""
+    target_str = (request.get_json(silent=True) or {}).get('date', '').strip()
+    if target_str:
+        try:
+            target_date = datetime.strptime(target_str, '%Y-%m-%d').date()
+        except ValueError:
+            return fail('日期格式不正确，应为 YYYY-MM-DD')
+    else:
+        target_date = date.today() - timedelta(days=1)
+
+    try:
+        return success(_generate_analysis_report(target_date), '报告生成成功')
+    except ReportNoData as e:
+        return fail(str(e), code=404)
+    except Exception as e:
+        print('[每日分析] 报告生成失败:', e)
         return fail(str(e))
 
 
@@ -2778,7 +2813,7 @@ def get_analysis_dates():
 _DA_STANDALONE_CSS = """
 @page{size:A4;margin:14mm 12mm}
 *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-body{font-family:"Microsoft YaHei","微软雅黑",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#fff;margin:0;padding:0;color:#334155;line-height:1.7}
+body{font-family:"Microsoft YaHei","微软雅黑","Noto Sans CJK SC","Source Han Sans SC","WenQuanYi Micro Hei",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#fff;margin:0;padding:0;color:#334155;line-height:1.7}
 .da-page{max-width:980px;margin:0 auto}
 .da-report{background:#fff;border-radius:16px;border:1px solid #eef2f7;box-shadow:0 8px 30px rgba(15,23,42,.06);overflow:hidden}
 .da-header{display:flex;align-items:center;justify-content:space-between;padding:22px 28px;background:linear-gradient(135deg,#0f766e,#14b8a6 55%,#6366f1 130%);flex-wrap:wrap;gap:12px}
@@ -2832,9 +2867,21 @@ def _build_standalone_report(report_date, content):
 
 
 def _find_browser():
-    """定位 Chrome / Edge 可执行文件，用于无头渲染 PDF"""
+    """定位 Chrome / Edge / Chromium 可执行文件，用于无头渲染 PDF
+
+    兼顾本地 Windows 开发与线上 Linux（服务器为 /usr/bin/google-chrome），
+    可用环境变量 CHROME_PATH 覆盖。
+    """
     candidates = [
         os.environ.get('CHROME_PATH', ''),
+        # Linux（线上服务器）
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/usr/lib/chromium/chromium',
+        '/snap/bin/chromium',
+        # Windows（本地开发）
         r'C:\Program Files\Google\Chrome\Application\chrome.exe',
         r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
         r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
@@ -2921,6 +2968,612 @@ def download_analysis_report():
         return fail(str(e))
 
 
+# ======================== 钉钉推送（每日分析报告） ========================
+# 需求：每天定时生成昨日数据分析报告 → 渲染 PDF → 通过企业机器人发给指定成员，
+#      推送人名单 / 应用凭证 / 开关 / 推送时间都在「每日数据分析」页面维护。
+# 数据表：dingtalk_push_config（key-value 配置）/ dingtalk_push_users（推送人）/ dingtalk_push_logs（推送记录）
+# 注意：线上由 gunicorn 启动（app:app）不会执行 __main__ 块，所以建表必须在模块导入阶段完成。
+
+# 钉钉新版控制台「凭证与基础信息」有三个值：App ID（UnifiedAppId，UUID 格式，即旧版 AgentId）、
+# Client ID（原 AppKey）、Client Secret（原 AppSecret）。换取 accessToken 必须用 Client ID + Client Secret，
+# 所以这里不给默认值，由页面填写；「小钉」的 App ID 为 616ebaf8-08bc-4c48-85bf-115da040c1c8（填 agent_id 那格）。
+_PUSH_DEFAULT_APP_KEY = ''
+_PUSH_SECRET_MASK = '********'
+_PUSH_CFG_DEFAULTS = {
+    'app_key': _PUSH_DEFAULT_APP_KEY,
+    'app_secret': '',
+    'robot_code': '',
+    'agent_id': '',
+    'enabled': '1',
+    'push_hour': '11',
+    'push_minute': '0',
+}
+_PUSH_RETRY_INTERVAL = 900      # 昨日数据未落库时的重试间隔（秒）
+_PUSH_RETRY_DEADLINE = (12, 30)  # 最晚重试到 12:30，仍无数据则跳过当日
+
+
+def _push_ensure_tables():
+    """建表：推送配置 / 推送人 / 推送记录（模块导入时执行）"""
+    try:
+        db_execute("""
+            CREATE TABLE IF NOT EXISTS dingtalk_push_config (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                cfg_key VARCHAR(64) NOT NULL UNIQUE,
+                cfg_value TEXT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """, fetch=False)
+        db_execute("""
+            CREATE TABLE IF NOT EXISTS dingtalk_push_users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(64) NOT NULL,
+                mobile VARCHAR(32) DEFAULT '',
+                user_id VARCHAR(128) DEFAULT '',
+                enabled TINYINT DEFAULT 1,
+                remark VARCHAR(255) DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """, fetch=False)
+        db_execute("""
+            CREATE TABLE IF NOT EXISTS dingtalk_push_logs (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                report_date DATE,
+                push_type VARCHAR(20) DEFAULT 'auto',
+                status VARCHAR(20) DEFAULT '',
+                total INT DEFAULT 0,
+                ok_count INT DEFAULT 0,
+                detail TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """, fetch=False)
+        print('[钉钉推送] 数据表就绪（配置 / 推送人 / 推送记录）')
+    except Exception as e:
+        print('[钉钉推送] 建表失败: %s' % e)
+
+
+def _push_config():
+    """读取推送配置（缺失项回落到默认值）"""
+    cfg = dict(_PUSH_CFG_DEFAULTS)
+    try:
+        rows = db_execute('SELECT cfg_key, cfg_value FROM dingtalk_push_config') or []
+        for r in rows:
+            k = r.get('cfg_key')
+            if k in cfg and r.get('cfg_value') is not None:
+                cfg[k] = r.get('cfg_value')
+    except Exception as e:
+        print('[钉钉推送] 读取配置失败: %s' % e)
+    return cfg
+
+
+def _push_config_save(items):
+    """保存推送配置，返回 (ok, msg)"""
+    if not items:
+        return True, ''
+    try:
+        for k, v in items.items():
+            db_execute(
+                'INSERT INTO dingtalk_push_config (cfg_key, cfg_value) VALUES (%s, %s) '
+                'ON DUPLICATE KEY UPDATE cfg_value = VALUES(cfg_value)',
+                [k, '' if v is None else str(v)], fetch=False)
+        return True, ''
+    except Exception as e:
+        return False, str(e)
+
+
+def _push_client(cfg=None):
+    """构造钉钉客户端；凭证不全时抛 DingTalkError"""
+    if DingTalkClient is None:
+        raise DingTalkError('钉钉模块未加载（backend/dingtalk.py 缺失或依赖异常）')
+    cfg = cfg or _push_config()
+    if not (cfg.get('app_secret') or '').strip():
+        raise DingTalkError('未配置 AppSecret，请先在「钉钉推送」设置里填写')
+    return DingTalkClient(cfg.get('app_key'), cfg.get('app_secret'),
+                          cfg.get('robot_code'), cfg.get('agent_id'))
+
+
+def _push_users(only_enabled=False):
+    """推送人列表"""
+    sql = 'SELECT id, name, mobile, user_id, enabled, remark FROM dingtalk_push_users'
+    if only_enabled:
+        sql += ' WHERE enabled = 1'
+    return db_execute(sql + ' ORDER BY id') or []
+
+
+def _push_resolve_userid(client, row, write_back=True):
+    """取成员 userid：已有则直接用；只填了手机号则调接口换取并回写缓存"""
+    user_id = (row.get('user_id') or '').strip()
+    if user_id:
+        return user_id, ''
+    mobile = (row.get('mobile') or '').strip()
+    if not mobile:
+        return '', '未填写 userId 或手机号'
+    try:
+        user_id = client.get_userid_by_mobile(mobile)
+    except DingTalkError as e:
+        return '', str(e)
+    if write_back:
+        try:
+            db_execute('UPDATE dingtalk_push_users SET user_id = %s WHERE id = %s',
+                       [user_id, row.get('id')], fetch=False)
+        except Exception:
+            pass
+    return user_id, ''
+
+
+def _push_apply_robot_code(cfg, robot_code):
+    """机器人接口实际生效的 robotCode 与配置不一致时回写，减少后续试错"""
+    robot_code = (robot_code or '').strip()
+    if not robot_code or robot_code == (cfg.get('robot_code') or '').strip():
+        return
+    ok, _ = _push_config_save({'robot_code': robot_code})
+    if ok:
+        cfg['robot_code'] = robot_code
+        print('[钉钉推送] robotCode 已自动记录为 %s' % robot_code)
+
+
+def _load_report_metrics(target_date):
+    """读取报告落库时保存的原始指标，用于拼摘要"""
+    try:
+        rows = db_execute('SELECT metrics_json FROM daily_analysis_reports WHERE report_date = %s',
+                          [target_date])
+        if rows and rows[0].get('metrics_json'):
+            return json.loads(rows[0]['metrics_json'])
+    except Exception as e:
+        print('[钉钉推送] 读取报告指标失败: %s' % e)
+    return {}
+
+
+def _num(v, digits=2):
+    """千分位格式化（钉钉 markdown 里可读性更好）"""
+    try:
+        return format(float(v or 0), ',.%df' % digits)
+    except Exception:
+        return '0'
+
+
+def _int(v):
+    try:
+        return format(int(v or 0), ',d')
+    except Exception:
+        return '0'
+
+
+def _push_summary_md(target_date, metrics):
+    """把报告指标拼成钉钉 markdown 摘要（控制长度，平台取 TOP3、预警最多 4 条）"""
+    sm = (metrics or {}).get('summary') or {}
+    net = float(sm.get('netPayment') or 0)
+    refund_amt = float(sm.get('refundAmount') or 0)
+    ad_spend = float(sm.get('adSpend') or 0)
+    ad_total = float(sm.get('adTotal') or 0)
+    conv = float(sm.get('convRate') or 0)
+    refund_rate = round(refund_amt / net * 100, 2) if net > 0 else 0
+    roi = round(ad_total / ad_spend, 2) if ad_spend > 0 else 0
+
+    lines = [
+        '### 每日经营数据分析 · %s' % target_date,
+        '',
+        '**核心指标**',
+        '- 净支付金额：**¥%s**' % _num(net),
+        '- 退款率：%s%%（订单退款率 %s%%）' % (refund_rate, _num(sm.get('orderRefundRate'))),
+        '- 推广 ROI：**%s**（花费 ¥%s / 产出 ¥%s）' % (roi, _num(ad_spend), _num(ad_total)),
+        '- 访客 %s ｜ 买家 %s ｜ 转化率 %s%%' % (_int(sm.get('visitors')), _int(sm.get('payers')), _num(conv)),
+        '- 客单价：¥%s' % _num(sm.get('aov')),
+    ]
+
+    plats = sorted((metrics or {}).get('byPlatform') or [],
+                   key=lambda p: -(p.get('netPayment') or 0))[:3]
+    if plats:
+        lines += ['', '**平台表现**']
+        for p in plats:
+            lines.append('- %s：净支付 ¥%s' % (p.get('name') or '', _num(p.get('netPayment'))))
+
+    warns = []
+    if refund_rate > 20:
+        warns.append('整体退款率 %s%%%s' % (refund_rate, '（严重）' if refund_rate > 30 else '（偏高）'))
+    if ad_spend > 0 and roi < 1:
+        warns.append('推广 ROI %s 低于 1，投放处于亏损' % roi)
+    if conv and conv < 2:
+        warns.append('支付转化率 %s%% 偏低' % _num(conv))
+    bad_stores = [s for s in ((metrics or {}).get('byStore') or [])
+                  if (s.get('refundRate') or 0) > 20]
+    bad_stores.sort(key=lambda s: -(s.get('refundRate') or 0))
+    for s in bad_stores[:2]:
+        warns.append('[%s] %s 退款率 %s%%' % (s.get('platform') or '', s.get('name') or '',
+                                            round(s.get('refundRate') or 0, 1)))
+    if warns:
+        lines += ['', '**预警**'] + ['- %s' % w for w in warns[:4]]
+
+    lines += ['', '> 完整报告见附件 PDF']
+    return '\n'.join(lines)
+
+
+def _push_log_write(report_date, push_type, status, total, ok_count, detail):
+    """写推送记录（失败不影响主流程）"""
+    try:
+        db_execute(
+            'INSERT INTO dingtalk_push_logs (report_date, push_type, status, total, ok_count, detail) '
+            'VALUES (%s, %s, %s, %s, %s, %s)',
+            [report_date, push_type, status, total, ok_count, (detail or '')[:2000]], fetch=False)
+    except Exception as e:
+        print('[钉钉推送] 写推送记录失败: %s' % e)
+
+
+def _push_daily_report(target_date, result, push_type='auto'):
+    """把报告渲染成 PDF 并推送给所有启用成员，返回 (status, detail)
+
+    status: success（全部送达）/ partial（部分送达）/ fail（未送达）
+    """
+    users = _push_users(only_enabled=True)
+    if not users:
+        msg = '没有启用中的推送人，请先在「钉钉推送」里添加'
+        _push_log_write(target_date, push_type, 'fail', 0, 0, msg)
+        return 'fail', msg
+
+    # 1) 渲染 PDF + 上传拿 media_id（同一份文件发给所有人，只上传一次）
+    try:
+        client = _push_client()
+        standalone = _build_standalone_report(str(target_date), result['report'])
+        pdf_bytes = _html_to_pdf(standalone)
+        filename = '每日数据分析报告_%s.pdf' % target_date
+        media_id = client.upload_file(filename, pdf_bytes)
+    except Exception as e:
+        msg = '生成或上传 PDF 失败：%s' % e
+        print('[钉钉推送] ' + msg)
+        _push_log_write(target_date, push_type, 'fail', len(users), 0, msg)
+        return 'fail', msg
+
+    # 2) 逐人推送：先发指标摘要，再发 PDF 附件
+    summary = _push_summary_md(target_date, _load_report_metrics(target_date))
+    title = '每日经营数据分析 · %s' % target_date
+    ok_count = 0
+    details = []
+    for u in users:
+        name = u.get('name') or ('id=%s' % u.get('id'))
+        uid, err = _push_resolve_userid(client, u)
+        if err:
+            details.append('%s：%s' % (name, err))
+            continue
+        try:
+            r1 = client.send_markdown([uid], title, summary)
+            bad = (r1 or {}).get('invalidStaffIdList') or []
+            if bad:
+                raise DingTalkError('该成员不在应用可见范围内')
+            r2 = client.send_file([uid], media_id, filename, 'pdf')
+            bad = (r2 or {}).get('invalidStaffIdList') or []
+            if bad:
+                raise DingTalkError('该成员不在应用可见范围内')
+            _push_apply_robot_code(_push_config(), (r2 or {}).get('robotCode'))
+            ok_count += 1
+            details.append('%s：已送达' % name)
+        except Exception as e:
+            details.append('%s：%s' % (name, e))
+
+    status = 'success' if ok_count == len(users) else ('partial' if ok_count else 'fail')
+    detail = '；'.join(details)
+    _push_log_write(target_date, push_type, status, len(users), ok_count, detail)
+    return status, detail
+
+
+def _push_data_ready(target_date):
+    """昨日数据是否已落库（净支付与访客都为 0 视为未就绪）"""
+    try:
+        sm = (gather_daily_data(target_date) or {}).get('summary') or {}
+        return (sm.get('netPayment') or 0) != 0 or (sm.get('visitors') or 0) != 0
+    except Exception as e:
+        print('[钉钉推送] 数据就绪检查失败: %s' % e)
+        return False
+
+
+def _push_log_has_success(report_date):
+    """该报告日期今天是否已成功推送过（用于服务重启后的补跑判断）"""
+    try:
+        today0 = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        rows = db_execute(
+            "SELECT COUNT(*) AS c FROM dingtalk_push_logs "
+            "WHERE report_date = %s AND status = 'success' AND created_at >= %s",
+            [report_date, today0])
+        return bool(rows and rows[0]['c'])
+    except Exception as e:
+        # 查询异常时按「已推送」处理，避免重复打扰
+        print('[钉钉推送] 推送记录检查失败: %s' % e)
+        return True
+
+
+def _run_daily_report_push(push_type='auto'):
+    """自动任务：等昨日数据落库 → 生成报告 → 推送钉钉"""
+    target_date = date.today() - timedelta(days=1)
+    cfg = _push_config()
+    if push_type == 'auto' and cfg.get('enabled') != '1':
+        print('[钉钉推送] 自动推送已关闭，跳过')
+        return
+
+    # 1) 等昨日数据落库（三平台抓取 9:00 起跑，可能 10 点多才完）
+    deadline = datetime.now().replace(hour=_PUSH_RETRY_DEADLINE[0],
+                                      minute=_PUSH_RETRY_DEADLINE[1], second=0, microsecond=0)
+    while not _push_data_ready(target_date):
+        if push_type != 'auto' or datetime.now() >= deadline:
+            msg = '%s 数据尚未落库，本次跳过' % target_date
+            print('[钉钉推送] ' + msg)
+            _push_log_write(target_date, push_type, 'skipped', 0, 0, msg)
+            return
+        print('[钉钉推送] %s 数据未就绪，%d 秒后重试' % (target_date, _PUSH_RETRY_INTERVAL))
+        time.sleep(_PUSH_RETRY_INTERVAL)
+
+    # 2) 生成报告（覆盖式更新，保证推送的是最新数据）
+    print('[钉钉推送] 开始生成 %s 报告' % target_date)
+    result = _generate_analysis_report(target_date)
+
+    # 3) 推送
+    status, detail = _push_daily_report(target_date, result, push_type)
+    print('[钉钉推送] %s 推送结果：%s | %s' % (target_date, status, detail))
+
+
+def _daily_report_push_loop():
+    """后台线程：每天到配置时间点自动生成昨日报告并推送钉钉；服务重启后自动补跑
+
+    每分钟检查一次（而非一觉睡到时间点），这样页面改推送时间/开关后 1 分钟内生效。
+    """
+    time.sleep(20)  # 等数据库连接池与服务初始化
+
+    # ---- 启动补跑：服务恰在时间点之后重启时，当天容易漏推 ----
+    try:
+        cfg = _push_config()
+        now = datetime.now()
+        run_at = now.replace(hour=int(cfg.get('push_hour') or 11),
+                             minute=int(cfg.get('push_minute') or 0), second=0, microsecond=0)
+        target_date = date.today() - timedelta(days=1)
+        if cfg.get('enabled') == '1' and now > run_at and not _push_log_has_success(target_date):
+            print('[钉钉推送][补跑] 今日尚未推送成功，立即补跑一次')
+            _run_daily_report_push('auto')
+        else:
+            print('[钉钉推送][补跑] 无需补跑')
+    except Exception as e:
+        print('[钉钉推送][补跑] 异常: %s' % e)
+
+    # ---- 主循环 ----
+    last_fired = ''
+    while True:
+        try:
+            cfg = _push_config()
+            now = datetime.now()
+            hh = int(cfg.get('push_hour') or 11)
+            mm = int(cfg.get('push_minute') or 0)
+            stamp = '%s %02d:%02d' % (now.strftime('%Y-%m-%d'), hh, mm)
+            if cfg.get('enabled') == '1' and now.hour == hh and now.minute == mm and last_fired != stamp:
+                last_fired = stamp
+                print('[钉钉推送][定时] 触发每日报告生成与推送')
+                _run_daily_report_push('auto')
+        except Exception as e:
+            print('[钉钉推送][定时] 异常: %s' % e)
+        time.sleep(60)
+
+
+@app.route('/api/analysis/push/config', methods=['GET'])
+def push_config_get():
+    """读取钉钉推送配置 + 推送人 + 最近推送记录"""
+    try:
+        cfg = _push_config()
+        users = _push_users()
+        logs = db_execute(
+            'SELECT id, report_date, push_type, status, total, ok_count, detail, created_at '
+            'FROM dingtalk_push_logs ORDER BY id DESC LIMIT 10') or []
+        return success({
+            'appKey': cfg.get('app_key', ''),
+            'appSecret': _PUSH_SECRET_MASK if cfg.get('app_secret') else '',
+            'hasAppSecret': bool(cfg.get('app_secret')),
+            'robotCode': cfg.get('robot_code', ''),
+            'agentId': cfg.get('agent_id', ''),
+            'enabled': cfg.get('enabled') == '1',
+            'pushHour': int(cfg.get('push_hour') or 11),
+            'pushMinute': int(cfg.get('push_minute') or 0),
+            'users': [{
+                'id': u['id'], 'name': u['name'], 'mobile': u.get('mobile') or '',
+                'userId': u.get('user_id') or '', 'enabled': bool(u.get('enabled')),
+                'remark': u.get('remark') or '',
+            } for u in users],
+            'logs': [{
+                'id': l['id'],
+                'reportDate': str(l['report_date']) if l.get('report_date') else '',
+                'pushType': l.get('push_type') or '', 'status': l.get('status') or '',
+                'total': l.get('total') or 0, 'okCount': l.get('ok_count') or 0,
+                'detail': l.get('detail') or '', 'createdAt': str(l.get('created_at') or ''),
+            } for l in logs],
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return fail(str(e))
+
+
+@app.route('/api/analysis/push/config', methods=['POST'])
+def push_config_save():
+    """保存钉钉推送配置（AppSecret 回传掩码时保持原值不变）"""
+    try:
+        d = request.get_json(force=True) or {}
+        items = {}
+        if 'appKey' in d:
+            items['app_key'] = (d.get('appKey') or '').strip()
+        if 'appSecret' in d:
+            v = (d.get('appSecret') or '').strip()
+            if v and v != _PUSH_SECRET_MASK:
+                items['app_secret'] = v
+        if 'robotCode' in d:
+            items['robot_code'] = (d.get('robotCode') or '').strip()
+        if 'agentId' in d:
+            items['agent_id'] = (d.get('agentId') or '').strip()
+        if 'enabled' in d:
+            items['enabled'] = '1' if d.get('enabled') else '0'
+        if 'pushHour' in d:
+            items['push_hour'] = str(max(0, min(23, int(d.get('pushHour') or 0))))
+        if 'pushMinute' in d:
+            items['push_minute'] = str(max(0, min(59, int(d.get('pushMinute') or 0))))
+        ok, msg = _push_config_save(items)
+        if not ok:
+            return fail(msg)
+        return success(None, '设置已保存')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/analysis/push/users', methods=['POST'])
+def push_user_create():
+    """新增推送人（手机号或 userId 至少填一个）"""
+    try:
+        d = request.get_json(force=True) or {}
+        name = (d.get('name') or '').strip()
+        mobile = (d.get('mobile') or '').strip()
+        user_id = (d.get('userId') or '').strip()
+        if not name:
+            return fail('请填写成员姓名')
+        if not mobile and not user_id:
+            return fail('请填写手机号或钉钉 userId（至少一个）')
+        new_id = db_execute_insert(
+            'INSERT INTO dingtalk_push_users (name, mobile, user_id, enabled, remark) '
+            'VALUES (%s, %s, %s, %s, %s)',
+            [name, mobile, user_id, 1 if d.get('enabled', True) else 0,
+             (d.get('remark') or '').strip()])
+        return success({'id': new_id}, '已添加推送人')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/analysis/push/users/<int:uid>', methods=['PUT'])
+def push_user_update(uid):
+    """修改推送人（可改姓名/手机号/userId/启用状态/备注）"""
+    try:
+        d = request.get_json(force=True) or {}
+        sets, params = [], []
+        if 'name' in d:
+            name = (d.get('name') or '').strip()
+            if not name:
+                return fail('姓名不能为空')
+            sets.append('name = %s')
+            params.append(name)
+        if 'mobile' in d:
+            sets.append('mobile = %s')
+            params.append((d.get('mobile') or '').strip())
+        if 'userId' in d:
+            sets.append('user_id = %s')
+            params.append((d.get('userId') or '').strip())
+        if 'enabled' in d:
+            sets.append('enabled = %s')
+            params.append(1 if d.get('enabled') else 0)
+        if 'remark' in d:
+            sets.append('remark = %s')
+            params.append((d.get('remark') or '').strip())
+        if not sets:
+            return fail('没有需要更新的字段')
+        params.append(uid)
+        rows = db_execute('UPDATE dingtalk_push_users SET %s WHERE id = %%s' % ', '.join(sets),
+                          params, fetch=False)
+        if not rows:
+            return fail('推送人不存在')
+        return success(None, '已更新')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/analysis/push/users/<int:uid>', methods=['DELETE'])
+def push_user_delete(uid):
+    """删除推送人"""
+    try:
+        db_execute('DELETE FROM dingtalk_push_users WHERE id = %s', [uid], fetch=False)
+        return success(None, '已删除')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/analysis/push/resolve', methods=['POST'])
+def push_resolve():
+    """用手机号解析钉钉 userId（添加成员前可先验证是否匹配得到人）"""
+    try:
+        mobile = ((request.get_json(force=True) or {}).get('mobile') or '').strip()
+        if not mobile:
+            return fail('请输入手机号')
+        user_id = _push_client().get_userid_by_mobile(mobile)
+        return success({'mobile': mobile, 'userId': user_id}, '已匹配到成员')
+    except DingTalkError as e:
+        return fail(str(e))
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/analysis/push/test', methods=['POST'])
+def push_test():
+    """连通性测试：给所有启用成员发一条文本消息，验证凭证与可见范围"""
+    try:
+        users = _push_users(only_enabled=True)
+        if not users:
+            return fail('请先添加并启用推送人')
+        client = _push_client()
+        cfg = _push_config()
+        custom = ((request.get_json(silent=True) or {}).get('content') or '').strip()
+        ok_count, details = 0, []
+        test_text = custom or ('【测试】每日数据分析报告推送通道正常，每天 %02d:%02d 将自动推送昨日报告。'
+                               % (int(cfg.get('push_hour') or 11), int(cfg.get('push_minute') or 0)))
+        for u in users:
+            name = u.get('name') or ('id=%s' % u.get('id'))
+            uid, err = _push_resolve_userid(client, u)
+            if err:
+                details.append('%s：%s' % (name, err))
+                continue
+            try:
+                r = client.send_text([uid], test_text)
+                if (r or {}).get('invalidStaffIdList'):
+                    raise DingTalkError('该成员不在应用可见范围内')
+                _push_apply_robot_code(cfg, (r or {}).get('robotCode'))
+                ok_count += 1
+                details.append('%s：测试消息已发送' % name)
+            except Exception as e:
+                details.append('%s：%s' % (name, e))
+        detail = '；'.join(details)
+        if ok_count == 0:
+            _push_log_write(date.today(), 'test', 'fail', len(users), 0, detail)
+            return fail(detail)
+        status = 'success' if ok_count == len(users) else 'partial'
+        _push_log_write(date.today(), 'test', status, len(users), ok_count, detail)
+        return success({'okCount': ok_count, 'total': len(users), 'detail': detail, 'status': status},
+                       '测试完成（%d/%d）' % (ok_count, len(users)))
+    except DingTalkError as e:
+        return fail(str(e))
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/analysis/push/now', methods=['POST'])
+def push_now():
+    """立即生成并推送指定日期的报告（默认昨日），用于验证与临时补发"""
+    try:
+        d = request.get_json(silent=True) or {}
+        target_str = (d.get('date') or '').strip()
+        if target_str:
+            try:
+                target_date = datetime.strptime(target_str, '%Y-%m-%d').date()
+            except ValueError:
+                return fail('日期格式不正确，应为 YYYY-MM-DD')
+        else:
+            target_date = date.today() - timedelta(days=1)
+
+        if not _push_users(only_enabled=True):
+            return fail('请先添加并启用推送人')
+
+        try:
+            result = _generate_analysis_report(target_date)
+        except ReportNoData as e:
+            return fail(str(e), code=404)
+
+        status, detail = _push_daily_report(target_date, result, 'manual')
+        if status == 'fail':
+            return fail(detail)
+        return success({'status': status, 'detail': detail, 'reportDate': str(target_date)},
+                       '推送完成' if status == 'success' else '部分成员推送失败')
+    except DingTalkError as e:
+        return fail(str(e))
+    except Exception as e:
+        traceback.print_exc()
+        return fail(str(e))
+
+
 # ======================== 种草监测中台 ========================
 
 _SEEDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools')
@@ -2932,6 +3585,49 @@ _XHS_WORKS_FILE = os.path.join(_SEEDING_DIR, '_xhs_works.json')
 _SEEDING_STATE_FILE = os.path.join(_SEEDING_DIR, '_seeding_state.json')
 # 作品数据自动更新间隔（秒）：每半小时
 _SEEDING_AUTO_INTERVAL = 1800
+# 抓取日志单文件上限，超过滚动成 _scrape_<平台>.log.1（只留 1 份历史）
+_SEEDING_LOG_MAX_BYTES = 2 * 1024 * 1024
+# 抓取健康体检脚本：每轮自动更新前先体检上一轮，异常时它自己推钉钉（见 tools/seeding_health.py）
+_SEEDING_HEALTH_SCRIPT = os.path.join(_SEEDING_DIR, 'seeding_health.py')
+
+
+def _seeding_log_rotate(path, max_bytes=None):
+    """日志超过上限时滚动一份 .1 备份，避免长年追加把磁盘写满"""
+    max_bytes = max_bytes or _SEEDING_LOG_MAX_BYTES
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > max_bytes:
+            bak = path + '.1'
+            if os.path.exists(bak):
+                os.remove(bak)
+            os.rename(path, bak)
+    except Exception as e:
+        print('[种草] 日志滚动失败: %s' % e)
+
+
+def _seeding_health_check(dry_run=False):
+    """调 tools/seeding_health.py 体检上一轮抓取；异常时由该脚本推钉钉告警。
+
+    单独做成脚本（而不是写在 app.py 里）是为了能手动复跑：
+        python3 tools/seeding_health.py --dry-run
+    永不抛异常，返回 (退出码 or None, 输出文本)。
+    """
+    try:
+        if not os.path.exists(_SEEDING_HEALTH_SCRIPT):
+            return None, '未找到 %s' % _SEEDING_HEALTH_SCRIPT
+        import sys as _sys_hc
+        py = '/opt/ecom/venv/bin/python'
+        if not os.path.exists(py):
+            py = _sys_hc.executable
+        cmd = [py, _SEEDING_HEALTH_SCRIPT] + (['--dry-run'] if dry_run else [])
+        r = subprocess.run(cmd, cwd=_SEEDING_DIR, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, timeout=180)
+        out = (r.stdout or b'').decode('utf-8', 'replace').strip()
+        for line in out.splitlines():
+            print('[种草][体检] %s' % line)
+        return r.returncode, out
+    except Exception as e:
+        print('[种草][体检] 执行失败: %s' % e)
+        return None, str(e)
 
 
 def _seeding_progress_file(platform):
@@ -2948,8 +3644,13 @@ def _seeding_progress_write(platform, status, done, total, msg=''):
 
 
 def _seeding_progress_read(platform):
-    """读抓取进度：{status, done, total, ts, msg, progress, finished}"""
-    info = {'status': 'idle', 'done': 0, 'total': 0, 'ts': 0, 'msg': '', 'progress': 0, 'finished': False}
+    """读抓取进度：{status, done, total, ts, msg, ok, accounts, progress, finished}
+
+    ok/accounts = 本轮成功的账号数 / 账号总数（抓取脚本写入），
+    用于判断「本轮抓取是否完整」—— 不完整时不做被删作品对比，避免误报。
+    """
+    info = {'status': 'idle', 'done': 0, 'total': 0, 'ts': 0, 'msg': '',
+            'ok': None, 'accounts': None, 'progress': 0, 'finished': False}
     path = _seeding_progress_file(platform)
     if os.path.exists(path):
         try:
@@ -2960,6 +3661,10 @@ def _seeding_progress_read(platform):
             info['total'] = int(p.get('total', 0) or 0)
             info['ts'] = float(p.get('ts', 0) or 0)
             info['msg'] = p.get('msg', '') or ''
+            if p.get('ok') is not None:
+                info['ok'] = int(p.get('ok') or 0)
+            if p.get('accounts') is not None:
+                info['accounts'] = int(p.get('accounts') or 0)
         except Exception:
             pass
     if info['total']:
@@ -2970,8 +3675,33 @@ def _seeding_progress_read(platform):
     return info
 
 
+# 平台 -> 当前抓取子进程（进程内有效；与 _AUTH_TOKENS 同一约束：单 worker）
+# 只靠进度文件的 30 分钟时间窗判断「是否在跑」会误判（2026-09-17 当天误拦 3 次），
+# 抓到的 Popen 对象能直接问「进程还活着吗」。
+_SEEDING_PROCS = {}
+
+
 def _seeding_is_running(platform):
-    """判断指定平台是否仍在抓取；running 状态持续超过一个更新周期视为卡死，允许重触发"""
+    """判断指定平台是否仍在抓取。
+
+    ① 本轮由本进程拉起的 → 直接看子进程是否还活着（最准）；
+       进程已退出却仍停在 running（脚本静默退出没写状态）→ 补写终态并放行重触发。
+    ② 否则（进程重启后 / 手工触发）退回旧判据：running 且时间戳在一个更新周期内。
+    """
+    proc = _SEEDING_PROCS.get(platform)
+    if proc is not None:
+        if proc.poll() is None:
+            return True
+        _SEEDING_PROCS.pop(platform, None)
+        p = _seeding_progress_read(platform)
+        if p.get('status') == 'running':
+            rc = proc.returncode
+            msg = '抓取进程已退出（exit %s）但未写入进度' % rc
+            _seeding_progress_write(platform, 'done' if rc == 0 else 'error',
+                                    p.get('done', 0), p.get('total', 0), msg)
+            print('[种草] %s' % msg)
+        return False
+
     p = _seeding_progress_read(platform)
     if p.get('status') != 'running':
         return False
@@ -3158,11 +3888,12 @@ def seeding_list_works():
         if platform == 'xhs':
             works = _seeding_load_xhs_works()
             if os.path.exists(_XHS_WORKS_FILE):
-                _seeding_reconcile_deleted('xhs', works)
+                # 走 guard：本轮抓取不完整时不对比，避免误报「作品被删」
+                _seeding_reconcile_guard('xhs', works)
             return success(works)
         real = _seeding_load_works_csv()
         if real is not None:
-            _seeding_reconcile_deleted('douyin', real)
+            _seeding_reconcile_guard('douyin', real)
             return success(real)
         return success(_seeding_mock_works())
     except Exception as e:
@@ -3249,15 +3980,41 @@ def _seeding_launch(platform):
            not (os.path.exists(fallback_cookie) and os.path.getsize(fallback_cookie) > 0):
             return '小红书 Cookie 未配置，请先在「数据更新」面板保存 Cookie'
     _seeding_progress_write(platform, 'running', 0, 0)
-    log_file = open(os.path.join(_SEEDING_DIR, '_scrape_%s.log' % platform), 'w', encoding='utf-8')
+    log_path = os.path.join(_SEEDING_DIR, '_scrape_%s.log' % platform)
     try:
-        subprocess.Popen(
-            [_sys_scrape.executable, scraper],
+        _seeding_log_rotate(log_path)
+    except Exception:
+        pass
+    # ★ 追加而非覆盖（原来用 'w' 每次都清空，历史失败轨迹全丢，查不了原因）
+    log_file = open(log_path, 'a', encoding='utf-8')
+    try:
+        log_file.write('\n%s\n[%s] 触发抓取 platform=%s\n%s\n'
+                       % ('=' * 60, datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                          platform, '=' * 60))
+        log_file.flush()
+        # ★ 抖音改走 Playwright 真实浏览器（2026-09-17）：必须用 /opt/pw/venv 的解释器
+        #   （只有它装了 playwright）+ xvfb 虚拟屏（浏览器以 headless=False 启动，需要显示环境）。
+        #   与抖店抓取链路同源配置。其它平台（小红书等）仍用后端自身解释器。
+        cmd = [_sys_scrape.executable, scraper]
+        if platform == 'douyin':
+            _pw_py = '/opt/pw/venv/bin/python'
+            _xvfb = '/usr/bin/xvfb-run'
+            if os.path.exists(_pw_py) and os.path.exists(_xvfb):
+                cmd = [_xvfb, '-a', _pw_py, scraper]
+            else:
+                warn = ('[启动告警] 抖音需要 %s + %s（未找到），已回退后端解释器；'
+                        'Playwright 缺失会让本轮直接失败' % (_pw_py, _xvfb))
+                print(warn, flush=True)
+                log_file.write(warn + '\n')
+                log_file.flush()
+        proc = subprocess.Popen(
+            cmd,
             cwd=project_root,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
+        _SEEDING_PROCS[platform] = proc
     finally:
         log_file.close()
     return None
@@ -3292,13 +4049,286 @@ def seeding_scrape_status():
         return fail(str(e))
 
 
+@app.route('/api/seeding/health', methods=['GET'])
+def seeding_health_api():
+    """抓取体检（只读、不发消息）。
+
+    healthy=false 表示有平台抓取失败或作品数据停更。
+    真正的告警由定时线程每轮自动触发（tools/seeding_health.py → 钉钉）。
+    """
+    try:
+        code, out = _seeding_health_check(dry_run=True)
+        return success({'healthy': code == 0, 'exit': code, 'detail': out})
+    except Exception as e:
+        return fail(str(e))
+
+
+# ======================== 种草：部门配置 + 点赞阈值钉钉推送 ========================
+# 三份 JSON 配置（都在 tools/ 下，随 _SEEDING_DIR 走）：
+#   seeding_departments.json  部门列表  {"departments": ["三部", "四部", "五部"]}
+#   seeding_push_rules.json   推送规则  {"三部": {"userId": "...", "userName": "张三", "threshold": 1000, "enabled": true}}
+#   seeding_push_log.json     推送账本  {"pushed": {"link:https://...": {"ts": ..., "likes": ..., "dept": "三部"}}}
+# ★ 推送通道沿用「企业内部应用机器人单聊」（backend/dingtalk.py），与每日报告、抓取告警同一条链路；
+#   收件人候选直接读 dingtalk_push_users 表，不另建人员表（避免两处维护、两处不一致）。
+
+_SEEDING_DEPT_FILE = os.path.join(_SEEDING_DIR, 'seeding_departments.json')
+_SEEDING_PUSH_RULE_FILE = os.path.join(_SEEDING_DIR, 'seeding_push_rules.json')
+_SEEDING_PUSH_LOG_FILE = os.path.join(_SEEDING_DIR, 'seeding_push_log.json')
+_SEEDING_DEPT_DEFAULT = ['三部', '四部', '五部']   # 迁移兜底：文件缺失时页面不至于没有部门
+
+
+def _seeding_cfg_load(path, default):
+    """读 JSON 配置；缺失/损坏/类型不符一律回退默认值（配置文件不值得抛 500）"""
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, type(default)) else default
+    except Exception:
+        return default
+
+
+def _seeding_cfg_save(path, data):
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _seeding_dept_list():
+    """部门列表（去重 + 去空）"""
+    raw = _seeding_cfg_load(_SEEDING_DEPT_FILE, {})
+    depts = raw.get('departments') if isinstance(raw, dict) else None
+    if not isinstance(depts, list) or not depts:
+        depts = list(_SEEDING_DEPT_DEFAULT)
+    out, seen = [], set()
+    for d in depts:
+        d = str(d or '').strip()
+        if d and d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out
+
+
+def _seeding_push_rules():
+    raw = _seeding_cfg_load(_SEEDING_PUSH_RULE_FILE, {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def _seeding_push_log():
+    raw = _seeding_cfg_load(_SEEDING_PUSH_LOG_FILE, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    if not isinstance(raw.get('pushed'), dict):
+        raw['pushed'] = {}
+    return raw
+
+
+def _seeding_norm_rule(r):
+    """规则字段归一化：阈值转 int、启用转 bool（前端可能传字符串，直接比会出错）"""
+    r = r if isinstance(r, dict) else {}
+    try:
+        thr = int(r.get('threshold') or 0)
+    except Exception:
+        thr = 0
+    return {
+        'userId': str(r.get('userId') or '').strip(),
+        'userName': str(r.get('userName') or '').strip(),
+        'threshold': max(0, thr),
+        'enabled': bool(r.get('enabled')),
+    }
+
+
+@app.route('/api/seeding/dept-config', methods=['GET'])
+def seeding_dept_config_get():
+    """部门列表 + 推送规则 + 可选钉钉联系人（一次取全，前端弹窗直接用）"""
+    try:
+        depts = _seeding_dept_list()
+        rules = _seeding_push_rules()
+        merged = {}
+        for d in depts:
+            merged[d] = _seeding_norm_rule(rules.get(d))
+        cands = []
+        for u in (_push_users() or []):
+            cands.append({
+                'id': u.get('id'),
+                'name': u.get('name') or '',
+                'userId': (u.get('user_id') or '').strip(),
+                'mobile': (u.get('mobile') or '').strip(),
+                'enabled': 1 if u.get('enabled') in (1, '1', True) else 0,
+            })
+        return success({'departments': depts, 'rules': merged, 'candidates': cands})
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/dept-config', methods=['POST'])
+def seeding_dept_config_save():
+    """保存部门列表与推送规则（整份覆盖；前端一次提交，避免多次写文件互相踩）"""
+    try:
+        body = request.get_json(silent=True) or {}
+        depts, seen = [], set()
+        for d in (body.get('departments') or []):
+            d = str(d or '').strip()
+            if d and d not in seen:
+                seen.add(d)
+                depts.append(d)
+        if not depts:
+            return fail('至少保留一个部门')
+        rules_in = body.get('rules') or {}
+        rules = {}
+        for d in depts:
+            rules[d] = _seeding_norm_rule(rules_in.get(d))
+        _seeding_cfg_save(_SEEDING_DEPT_FILE, {'departments': depts})
+        _seeding_cfg_save(_SEEDING_PUSH_RULE_FILE, rules)
+        return success({'departments': depts, 'rules': rules})
+    except Exception as e:
+        return fail(str(e))
+
+
+def _seeding_all_works():
+    """两个平台的当前作品（抖音 CSV + 小红书 JSON），用于点赞阈值判定"""
+    out = []
+    try:
+        out.extend(_seeding_load_works_csv() or [])
+    except Exception as e:
+        print('[种草][点赞推送] 读抖音作品失败: %s' % e)
+    try:
+        out.extend(_seeding_load_xhs_works() or [])
+    except Exception as e:
+        print('[种草][点赞推送] 读小红书作品失败: %s' % e)
+    return out
+
+
+def _seeding_like_push_check(dry_run=False):
+    """按「部门 → 点赞阈值 N」把达标作品推给该部门的钉钉联系人。
+
+    规则
+    ----
+    · 每个部门各配一个 N（seeding_push_rules.json）；enabled=false 或没配联系人的跳过；
+    · 作品归属部门：作品里的账号名 → seeding_accounts.json 的 department 字段；
+    · ★ 同一作品**只推一次**：账本 seeding_push_log.json 按 _seeding_work_key 记账
+      （该 key 已剔除链接里的 query，小红书 xsec_token 每轮变化不会造成重复推送）；
+    · 一个部门本批多个达标作品合并成一条 markdown 发出，避免刷屏。
+
+    返回 (推送作品条数, 说明)。
+    """
+    rules = _seeding_push_rules()
+    active = {}
+    for d, r in rules.items():
+        nr = _seeding_norm_rule(r)
+        if nr['enabled'] and nr['userId'] and nr['threshold'] > 0:
+            active[d] = nr
+    if not active:
+        return 0, '没有已启用且配好联系人与阈值的部门'
+
+    dept_of = {}
+    for a in (_seeding_load_accounts() or []):
+        nm = (a.get('name') or '').strip()
+        if nm:
+            dept_of[nm] = (a.get('department') or '').strip()
+
+    log = _seeding_push_log()
+    pushed = log['pushed']
+
+    buckets = {}
+    for w in _seeding_all_works():
+        dept = dept_of.get((w.get('name') or '').strip(), '')
+        rule = active.get(dept)
+        if not rule:
+            continue
+        try:
+            likes = int(w.get('likes') or 0)
+        except Exception:
+            likes = 0
+        if likes < rule['threshold']:
+            continue
+        if _seeding_work_key(w) in pushed:
+            continue
+        buckets.setdefault(dept, []).append((likes, w))
+
+    if not buckets:
+        return 0, '没有新达标作品'
+    if dry_run:
+        cnt = sum(len(v) for v in buckets.values())
+        detail = '; '.join('%s %d 条(阈值%d)' % (d, len(v), active[d]['threshold'])
+                           for d, v in sorted(buckets.items()))
+        return cnt, '[dry-run] %s' % detail
+
+    try:
+        client = _push_client()
+    except DingTalkError as e:
+        return 0, '钉钉不可用：%s' % e
+
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    sent = 0
+    for dept, items in sorted(buckets.items()):
+        rule = active[dept]
+        items.sort(key=lambda x: -x[0])
+        lines = ['### 🔥 种草作品点赞达标 · %s' % dept, '',
+                 '阈值 **%d** 赞，本批 **%d** 条：' % (rule['threshold'], len(items)), '']
+        for likes, w in items[:20]:
+            title = (w.get('title') or '(无标题)').strip()
+            link = (w.get('link') or w.get('url') or '').strip()
+            acct = (w.get('account') or w.get('name') or '').strip()
+            lines.append('- [%s](%s) — %s · 点赞 **%s**'
+                         % (title[:40], link, acct, format(likes, ',')))
+        if len(items) > 20:
+            lines.append('- ……另有 %d 条（详见种草监测中台）' % (len(items) - 20))
+        lines += ['', '> %s' % now_str]
+        try:
+            client.send_markdown([rule['userId']],
+                                 '🔥 种草点赞达标 · %s' % dept, '\n'.join(lines))
+        except DingTalkError as e:
+            print('[种草][点赞推送] %s 发送失败: %s' % (dept, e))
+            continue
+        for likes, w in items:
+            pushed[_seeding_work_key(w)] = {
+                'ts': int(time.time()), 'likes': likes,
+                'dept': dept, 'title': (w.get('title') or '')[:60],
+            }
+        sent += len(items)
+        print('[种草][点赞推送] %s → %s，已推送 %d 条'
+              % (dept, rule['userName'] or rule['userId'], len(items)), flush=True)
+
+    if sent:
+        # 账本只留最近 5000 条，避免文件无限膨胀
+        if len(pushed) > 5000:
+            for k in sorted(pushed, key=lambda x: pushed[x].get('ts', 0))[:len(pushed) - 5000]:
+                pushed.pop(k, None)
+        _seeding_cfg_save(_SEEDING_PUSH_LOG_FILE, log)
+    return sent, '已推送 %d 条' % sent
+
+
 # ======================== 被删作品检测 ========================
 
+def _seeding_normalize_link(link):
+    """作品链接归一化：去掉 query 与 fragment，只保留 scheme://host/path。
+
+    ★ 为什么必须做（2026-09-17 实测的误报根因）：
+    小红书作品链接形如
+        https://www.xiaohongshu.com/explore/<note_id>?xsec_token=<一次性令牌>
+    这个 `xsec_token` **每次抓取都不一样**。若直接用整条 link 当作品唯一键，
+    同一个作品在快照对比时会被判成「旧的没了 + 来个新的」→ 整批作品被误报为
+    「已删除」（实测一次刷出 59 条假记录）。去掉 query 后 note_id 稳定，比较才成立。
+    """
+    s = (link or '').strip()
+    if not s:
+        return ''
+    try:
+        from urllib.parse import urlsplit
+        p = urlsplit(s)
+        if p.scheme and p.netloc:
+            return '%s://%s%s' % (p.scheme, p.netloc, p.path.rstrip('/'))
+    except Exception:
+        pass
+    return s.split('?')[0].split('#')[0].rstrip('/')
+
+
 def _seeding_work_key(w):
-    """作品唯一键：优先用链接，无链接退回 账号+标题"""
+    """作品唯一键：优先用「去掉一次性参数」的链接，无链接退回 账号+标题"""
     link = (w.get('link') or w.get('url') or '').strip()
     if link:
-        return 'link:' + link
+        return 'link:' + _seeding_normalize_link(link)
     return 't:' + (w.get('account') or '').strip() + '|' + (w.get('title') or '').strip()
 
 
@@ -3325,6 +4355,24 @@ def _seeding_save_state(state):
             json.dump(state, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f'[种草] 保存被删作品状态失败: {e}')
+
+
+def _seeding_reconcile_guard(platform, current_works):
+    """只在「本轮抓取完整」时才做被删作品对比，否则跳过。
+
+    抓取失败 / 部分失败时数据文件天然缺内容，直接对比会把大批作品误判成
+    「已删除」（2026-09-17 出现过 61 条误报）。返回 (是否已对比, 原因)。
+    """
+    if not current_works:
+        return False, '本轮作品数为 0'
+    p = _seeding_progress_read(platform)
+    if p.get('status') != 'done':
+        return False, '本轮抓取未成功（status=%s）' % p.get('status')
+    accounts, ok = p.get('accounts'), p.get('ok')
+    if accounts and ok is not None and ok < accounts:
+        return False, '本轮 %d/%d 个账号成功，数据不完整' % (ok, accounts)
+    _seeding_reconcile_deleted(platform, current_works)
+    return True, ''
 
 
 def _seeding_reconcile_deleted(platform, current_works):
@@ -4904,25 +5952,58 @@ _SELECTION_RESULT_FILE = os.path.join(_SEEDING_DIR, '_selection_result.json')
 # ======================== 表结构保障 ========================
 
 def _ensure_aisou_columns():
-    """确保「爱搜数据表」具备智能体写入所需的列，并让旧字段（非主键）允许 NULL，
-    否则只写新字段会因旧字段 NOT NULL 无默认值而报错。"""
+    """「爱搜数据表」结构保障（窄表：一行一个词）。
+
+    历史遗留：该表原本是宽表——主键 (日期, 电商词关键词, 下拉词关键词, 相关词关联词)，
+    且下拉词/相关词的月覆盖人次、七日搜索人次都是 NOT NULL 无默认值，
+    智能体只插业务字段会直接报 1364。2026-09-17 已把线上表改成窄表，
+    这里保留一段自愈逻辑，保证其它库（内网库等）第一次跑也不会挂。
+    """
     info = {r['Field']: r for r in db_execute("SHOW COLUMNS FROM `爱搜数据表`")}
     specs = {
-        '来源词': "VARCHAR(255) NULL",
-        '词类型': "VARCHAR(20) NULL",
-        '词名称': "VARCHAR(255) NULL",
+        '来源词': "VARCHAR(255) NOT NULL DEFAULT ''",
+        '词类型': "VARCHAR(20) NOT NULL DEFAULT ''",
+        '词名称': "VARCHAR(255) NOT NULL DEFAULT ''",
         '月覆盖人次': "VARCHAR(50) NULL",
         '七日搜索人次': "VARCHAR(50) NULL",
     }
     for col, ddl in specs.items():
         if col not in info:
             db_execute(f"ALTER TABLE `爱搜数据表` ADD COLUMN `{col}` {ddl}", fetch=False)
-    # 旧字段（非主键）改成允许 NULL，避免只插新字段时报 1364
-    for col in ('搜索词关键词', '搜索词月覆盖人次', '搜索词七日搜索人次',
-                '电商词月覆盖人次', '电商词七日搜索人次'):
+    # 遗留宽表列（NOT NULL 且无默认值）放宽为 NULL，避免插入时报 1364
+    legacy = ('搜索词关键词', '搜索词月覆盖人次', '搜索词七日搜索人次',
+              '电商词关键词', '电商词月覆盖人次', '电商词七日搜索人次',
+              '下拉词关键词', '下拉词月覆盖人次', '下拉词七日搜索人次',
+              '相关词关联词', '相关词月覆盖人次', '相关词七日搜索人次')
+    for col in legacy:
         r = info.get(col)
-        if r and r.get('Null') == 'NO' and r.get('Key') != 'PRI':
-            db_execute(f"ALTER TABLE `爱搜数据表` MODIFY COLUMN `{col}` VARCHAR(255) NULL", fetch=False)
+        if r and r.get('Null') == 'NO' and r.get('Key') != 'PRI' and r.get('Default') is None:
+            try:
+                db_execute(f"ALTER TABLE `爱搜数据表` MODIFY COLUMN `{col}` VARCHAR(255) NULL", fetch=False)
+            except Exception:
+                pass
+    # 主键对齐为 (日期, 来源词, 词类型, 词名称)：空表自动迁移，有数据则打日志提示人工处理
+    idx = sorted((r for r in db_execute("SHOW INDEX FROM `爱搜数据表`") if r.get('Key_name') == 'PRIMARY'),
+                 key=lambda r: r.get('Seq_in_index') or 0)
+    pk = [r['Column_name'] for r in idx]
+    if pk != ['日期', '来源词', '词类型', '词名称']:
+        cnt_row = (db_execute("SELECT COUNT(*) AS c FROM `爱搜数据表`") or [{}])[0]
+        if (cnt_row.get('c') or 0) > 0:
+            print('[爱搜] 警告：爱搜数据表主键仍是旧结构且表内有数据，需人工迁移')
+        else:
+            try:
+                for col, typ in (('来源词', 'VARCHAR(255)'), ('词类型', 'VARCHAR(20)'),
+                                 ('词名称', 'VARCHAR(255)')):
+                    db_execute(
+                        f"ALTER TABLE `爱搜数据表` MODIFY COLUMN `{col}` {typ} NOT NULL DEFAULT ''",
+                        fetch=False)
+                if pk:
+                    db_execute("ALTER TABLE `爱搜数据表` DROP PRIMARY KEY", fetch=False)
+                db_execute(
+                    "ALTER TABLE `爱搜数据表` ADD PRIMARY KEY (`日期`, `来源词`, `词类型`, `词名称`)",
+                    fetch=False)
+            except Exception as e:
+                print('[爱搜] 主键自动迁移失败：', e)
 
 
 def _ensure_selection_record_table():
@@ -5526,12 +6607,14 @@ def _aisou_enrich(products):
             if not name:
                 continue
             wtype = w.get('type') or ''
-            # 电商词关键词 是复合主键的一部分（NOT NULL），填「类型_词名」保证唯一
-            ek = f"{wtype}_{name}"
+            # 主键 = (日期, 来源词, 词类型, 词名称)；同一来源词下爱搜可能返回重复词，
+            # 用 ON DUPLICATE KEY UPDATE 保证重复抓取幂等（否则报 1062）
             db_execute(
-                "INSERT INTO `爱搜数据表` (`日期`, `电商词关键词`, `来源词`, `词类型`, `词名称`, `月覆盖人次`, `七日搜索人次`) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                [today, ek, src, wtype, name, w.get('month') or '', w.get('seven') or ''], fetch=False)
+                "INSERT INTO `爱搜数据表` (`日期`, `来源词`, `词类型`, `词名称`, `月覆盖人次`, `七日搜索人次`) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE `月覆盖人次` = VALUES(`月覆盖人次`), "
+                "`七日搜索人次` = VALUES(`七日搜索人次`)",
+                [today, src, wtype, name, w.get('month') or '', w.get('seven') or ''], fetch=False)
             inserted += 1
     return inserted
 
@@ -5830,6 +6913,30 @@ _douyin_hot_auto_thread.start()
 
 # ======================== 启动 ========================
 
+def _seeding_reconcile_now():
+    """主动对账：把「上一轮抓取后消失的作品」记入被删列表。
+
+    为什么不能只靠前端 GET 触发（`/api/seeding/works` 里也调了 guard）：
+    没人打开种草页面时对账永远不发生 → 明明作品删了/隐藏了，被删列表却一直是空的。
+    用户口径是「删除的或隐藏的都放到被删作品里」，所以每轮抓取后由定时线程主动跑一次。
+    幂等：同一个 key 入列后不会重复（`_seeding_reconcile_deleted` 里有 existing 去重）。
+    """
+    for platform, loader in (('douyin', _seeding_load_works_csv),
+                             ('xhs', _seeding_load_xhs_works)):
+        try:
+            works = loader() or []
+            if not works:
+                print(f'[种草][对账] {platform}: 无数据文件，跳过', flush=True)
+                continue
+            done, reason = _seeding_reconcile_guard(platform, works)
+            if done:
+                print(f'[种草][对账] {platform}: 已对比快照（当前 {len(works)} 条）', flush=True)
+            else:
+                print(f'[种草][对账] {platform}: 跳过（{reason}）', flush=True)
+        except Exception as e:
+            print(f'[种草][对账] {platform}: 异常 {e}', flush=True)
+
+
 def _seeding_auto_update_loop():
     """后台线程：每半小时自动触发一次作品抓取（抖音 + 小红书），随进程存活。
 
@@ -5837,8 +6944,34 @@ def _seeding_auto_update_loop():
     - 任一平台仍在抓取（含卡死判定）时自动跳过，避免任务堆积。
     """
     time.sleep(10)  # 等服务完成初始化，避免与启动过程竞争
+
+    # ★ 启动自愈：服务重启时 systemd 会把正在跑的抓取子进程一起清掉，
+    #   但进度文件会停在 running —— 旧的「30 分钟时间窗」判据会因此误拦一整轮
+    #   （2026-09-17 实测：重启后 xhs 被误判为「正在进行中」）。
+    #   此刻不可能真有抓取在跑（cgroup 已清空），直接把残留的 running 重置为 idle。
+    for _p in ('douyin', 'xhs'):
+        _st = _seeding_progress_read(_p)
+        if _st.get('status') == 'running':
+            _seeding_progress_write(_p, 'idle', _st.get('done', 0), _st.get('total', 0),
+                                    '服务重启中断了本轮抓取')
+            print('[种草] %s: 上次抓取被服务重启中断，已重置进度（下一轮可正常触发）' % _p,
+                  flush=True)
+
     while True:
         try:
+            # ★ 先体检「上一轮」再触发新一轮（顺序不能反：触发会把进度覆写成 running）
+            #   异常时 tools/seeding_health.py 会推钉钉给李自豪，见该文件头部说明
+            _seeding_health_check()
+            # ★ 体检之后、触发之前对账：此时上一轮数据文件刚写完、status=done，时机正确。
+            #   顺序反了会因为新进度还是 running 而被 guard 跳过。
+            _seeding_reconcile_now()
+            # ★ 点赞阈值推送与对账共用同一个时间窗（上一轮数据刚落盘），
+            #   单独 try 包住：推送失败不能连累本轮抓取触发。
+            try:
+                n, why = _seeding_like_push_check()
+                print('[种草][点赞推送] %s' % why, flush=True)
+            except Exception as e:
+                print('[种草][点赞推送] 检查异常: %s' % e)
             for platform in ('douyin', 'xhs'):
                 err = _seeding_launch(platform)
                 if err:
@@ -5854,6 +6987,17 @@ def _seeding_auto_update_loop():
 # daemon 线程，gunicorn 单 worker 下只启动一次；随进程退出自动结束
 _seeding_auto_thread = threading.Thread(target=_seeding_auto_update_loop, daemon=True, name='seeding-auto-update')
 _seeding_auto_thread.start()
+
+
+# ======================== 每日分析报告 → 钉钉推送 ========================
+# 建表放这里（模块导入即执行）：线上用 gunicorn 启动不会跑 __main__ 里的建表逻辑
+_push_ensure_tables()
+
+# daemon 线程：默认每天 11:00 生成昨日报告并推送到钉钉
+_daily_report_push_thread = threading.Thread(target=_daily_report_push_loop, daemon=True,
+                                             name='daily-report-push')
+_daily_report_push_thread.start()
+print('[钉钉推送] 每日报告推送线程已启动（时间与开关可在「每日数据分析」页配置）')
 
 
 # ======================== 店铺账号管理 API（千牛/抖店/抖店邮箱/京东） ========================
@@ -5986,6 +7130,351 @@ for _prefix, _cfg in _ACCOUNT_CFG.items():
     app.add_url_rule(_base + '/<int:acct_id>/toggle', 'acct_%s_toggle' % _ep, _tv, methods=['PUT'])
 
 print('[账号API] 店铺账号管理路由已注册（千牛/抖店/抖店邮箱/京东）')
+
+
+# ==================== 抓取任务 API（店铺账号管理「更新数据」） ====================
+# 站点与抓取程序同机（/opt/pw），gunicorn 以 root 运行 → 可直接 subprocess 唤起抓取。
+# 平台映射与 tools/fetch_reconcile.py 严格一致：
+#   千牛账号表 → 平台「千牛」 / 抖店账号表 → 平台「抖音」 / 京东账号表 → 平台「京东」
+# 账号列表来源就是店铺账号管理在编辑的那三张表，`是否运营=1` 即「运营中」。
+import threading  # noqa: E402  （下文线程用；模块前面只 import 了 Lock/RLock）
+
+_FETCH_PW = '/opt/pw'
+_FETCH_PY = '/opt/pw/venv/bin/python'
+_FETCH_XVFB = '/usr/bin/xvfb-run'
+_FETCH_CFG = {
+    'qianniu': {
+        'label': '千牛', 'db_platform': '千牛', 'table': '千牛账号表',
+        'cli_col': '账号', 'script': '/opt/pw/fetch_daily.py',
+        'style': 'per_shop', 'timeout': 1800,
+    },
+    'doudian': {
+        'label': '抖店', 'db_platform': '抖音', 'table': '抖店账号表',
+        'cli_col': '店铺名', 'script': '/opt/pw/doudian/login_fetch_all.py',
+        'style': 'batch', 'batch_size': 4, 'timeout': 3600,
+    },
+    'jd': {
+        'label': '京东', 'db_platform': '京东', 'table': '京东账号表',
+        'cli_col': '店铺名', 'script': '/opt/pw/jd/fetch_main.py',
+        'style': 'whole', 'timeout': 1800,
+    },
+}
+_FETCH_READY = os.path.isdir(_FETCH_PW) and os.path.isfile(_FETCH_PY)
+_FETCH_LOG_MAX = 600
+_fetch_jobs = {}
+_fetch_seq = [0]
+_fetch_lock = threading.Lock()
+
+
+def _fetch_now():
+    return datetime.now().strftime('%F %T')
+
+
+def _fetch_log(job, line):
+    line = (line or '').rstrip()
+    if not line:
+        return
+    log = job['log']
+    log.append(line)
+    if len(log) > _FETCH_LOG_MAX:
+        del log[:len(log) - _FETCH_LOG_MAX]
+
+
+def _fetch_parse_dates(start, end):
+    """起止日期 → ['YYYY-MM-DD', ...]（缺 end 视为单日；上限 31 天）"""
+    def _d(s):
+        return datetime.strptime(str(s).strip(), '%Y-%m-%d').date()
+    s = _d(start)
+    e = _d(end) if (end or '').strip() else s
+    if e < s:
+        raise ValueError('结束日期不能早于开始日期')
+    out, cur = [], s
+    while cur <= e:
+        out.append(cur.strftime('%Y-%m-%d'))
+        cur += timedelta(days=1)
+    if len(out) > 31:
+        raise ValueError('单次最多抓取 31 天')
+    return out
+
+
+def _fetch_shops(cfg, ids=None):
+    """该平台待抓店铺（是否运营=1）。ids 为账号表 id 列表，None/空 = 全部运营中。"""
+    sql = 'SELECT id, `店铺ID`, `%s` AS cli_value FROM `%s` WHERE `是否运营` = 1' % (
+        cfg['cli_col'], cfg['table'])
+    params = []
+    if ids:
+        sql += ' AND id IN (%s)' % ', '.join(['%s'] * len(ids))
+        params = list(ids)
+    rows = db_execute(sql + ' ORDER BY id', params) or []
+    return [{'id': r['id'], 'shop_id': str(r.get('店铺ID') or '').strip(),
+             'cli_value': (r.get('cli_value') or '').strip()} for r in rows]
+
+
+def _fetch_build_cmds(platforms, dates, sel_ids):
+    """展开成待执行命令：[{platform,label,date,target,argv,shops:[...]}]"""
+    cmds = []
+    for pkey in platforms:
+        cfg = _FETCH_CFG.get(pkey)
+        if not cfg:
+            continue
+        shops = _fetch_shops(cfg, sel_ids.get(pkey))
+        if not shops:
+            continue
+        for d in dates:
+            if cfg['style'] == 'per_shop':
+                for s in shops:
+                    cmds.append({
+                        'platform': pkey, 'label': cfg['label'], 'date': d,
+                        'target': s['cli_value'],
+                        'argv': [_FETCH_PY, cfg['script'], s['cli_value'], d],
+                        'shops': [s],
+                    })
+            elif cfg['style'] == 'batch':
+                size = cfg.get('batch_size') or 4
+                for i in range(0, len(shops), size):
+                    chunk = shops[i:i + size]
+                    cmds.append({
+                        'platform': pkey, 'label': cfg['label'], 'date': d,
+                        'target': '、'.join(s['cli_value'] for s in chunk),
+                        'argv': [_FETCH_PY, cfg['script'], d,
+                                 ','.join(s['cli_value'] for s in chunk)],
+                        'shops': chunk,
+                    })
+            else:  # whole：单店平台，全量重跑
+                cmds.append({
+                    'platform': pkey, 'label': cfg['label'], 'date': d,
+                    'target': '、'.join(s['cli_value'] for s in shops),
+                    'argv': [_FETCH_PY, cfg['script'], '--date', d],
+                    'shops': shops,
+                })
+    return cmds
+
+
+def _fetch_exec(argv, job, timeout):
+    """执行单条抓取命令，stdout 实时灌进 job['log']。返回退出码。"""
+    cmd = ([_FETCH_XVFB, '-a'] + argv) if os.path.isfile(_FETCH_XVFB) else argv
+    _fetch_log(job, '$ ' + ' '.join(cmd))
+    try:
+        proc = subprocess.Popen(cmd, cwd=_FETCH_PW, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                encoding='utf-8', errors='replace', bufsize=1)
+    except Exception as e:
+        _fetch_log(job, '[err] 启动失败: %s' % e)
+        return -1
+    killer = threading.Timer(timeout, lambda: proc.kill())
+    killer.start()
+    try:
+        for line in proc.stdout:
+            _fetch_log(job, line)
+        proc.wait()
+    finally:
+        killer.cancel()
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+    return proc.returncode
+
+
+def _fetch_verify(cmds, job):
+    """抓完对账：所选店铺是否已写进「店铺营销数据」。返回缺失清单文案行。"""
+    seen = {}
+    for c in cmds:
+        for s in c['shops']:
+            if not s['shop_id']:
+                continue
+            seen[(c['platform'], c['date'], s['shop_id'], s['cli_value'])] = True
+    lines, miss_n = [], 0
+    for (pkey, d, shop_id, label) in seen:
+        cfg = _FETCH_CFG[pkey]
+        row = db_execute(
+            'SELECT COUNT(*) AS n FROM `店铺营销数据` WHERE `平台`=%s AND `日期`=%s AND `店铺ID`=%s',
+            [cfg['db_platform'], d, shop_id])
+        n = (row[0]['n'] if row else 0) or 0
+        if n:
+            lines.append('  ✅ %s %s %s' % (d, cfg['label'], label))
+        else:
+            miss_n += 1
+            lines.append('  ❌ %s %s %s（未落库）' % (d, cfg['label'], label))
+    return lines, miss_n
+
+
+def _fetch_job_thread(job_id):
+    job = _fetch_jobs.get(job_id)
+    if not job:
+        return
+    cmds = job['_cmds']
+    ok = fail = 0
+    try:
+        for i, c in enumerate(cmds, 1):
+            if job.get('_stop'):
+                _fetch_log(job, '[stop] 已请求停止，中断剩余任务')
+                break
+            job['current'] = '%s / %s / %s' % (c['date'], c['label'], c['target'])
+            job['index'] = i
+            _fetch_log(job, '\n===== [%d/%d] %s %s · %s ====='
+                       % (i, len(cmds), c['date'], c['label'], c['target']))
+            rc = _fetch_exec(c['argv'], job, _FETCH_CFG[c['platform']]['timeout'])
+            _fetch_log(job, '  → rc=%s' % rc)
+            if rc in (0, 3):
+                # 0 = 全部落库；3 = 有店铺未落库（明细交给下面的对账段判断）
+                ok += 1
+            else:
+                fail += 1
+        job['done'] = len(cmds) if not job.get('_stop') else job.get('index', 0)
+
+        _fetch_log(job, '\n===== 对账：所选店铺是否落库 =====')
+        try:
+            lines, miss_n = _fetch_verify(cmds, job)
+            for ln in lines:
+                _fetch_log(job, ln)
+            job['missing'] = miss_n
+            _fetch_log(job, '对账结论：%s' % ('全部落库 ✅' if not miss_n
+                                        else '有 %d 项未落库 ⚠️' % miss_n))
+        except Exception as e:
+            _fetch_log(job, '[warn] 对账失败: %s' % e)
+
+        job['ok'], job['fail'] = ok, fail
+        job['status'] = 'done'
+    except Exception as e:
+        _fetch_log(job, '[err] 任务异常: %s' % e)
+        job['status'] = 'fail'
+    finally:
+        job['current'] = ''
+        job['finishedAt'] = _fetch_now()
+        job.pop('_cmds', None)
+
+
+@app.route('/api/fetch/status')
+def api_fetch_status():
+    """抓取环境是否就绪 + 当前是否有任务在跑"""
+    with _fetch_lock:
+        running = next((j for j in _fetch_jobs.values() if j['status'] == 'running'), None)
+    return success({
+        'ready': _FETCH_READY,
+        'running': bool(running),
+        'jobId': running['id'] if running else '',
+        'platforms': [{'key': k, 'label': v['label'], 'style': v['style']}
+                      for k, v in _FETCH_CFG.items()],
+    })
+
+
+@app.route('/api/fetch/trigger', methods=['POST'])
+def api_fetch_trigger():
+    """触发抓取：{platforms:[], itemKeys:['qianniu:3'], start:'', end:''}"""
+    if not _FETCH_READY:
+        return fail('本机未找到抓取程序（%s），无法触发' % _FETCH_PW)
+    try:
+        data = request.get_json(force=True) or {}
+        platforms = [p for p in (data.get('platforms') or []) if p in _FETCH_CFG]
+        if not platforms:
+            return fail('请先选择要抓取的平台')
+        dates = _fetch_parse_dates(data.get('start'), data.get('end'))
+        sel_ids = {}
+        for k in (data.get('itemKeys') or []):
+            s = str(k)
+            if ':' in s:
+                pkey, _, sid = s.partition(':')
+                if pkey in _FETCH_CFG and sid.isdigit():
+                    sel_ids.setdefault(pkey, []).append(int(sid))
+        cmds = _fetch_build_cmds(platforms, dates, sel_ids)
+        if not cmds:
+            return fail('所选平台下没有「运营中」的店铺')
+    except ValueError as e:
+        return fail(str(e))
+    except Exception as e:
+        return fail('参数错误：%s' % e)
+
+    with _fetch_lock:
+        if any(j['status'] == 'running' for j in _fetch_jobs.values()):
+            return fail('已有抓取任务在执行，请等它跑完')
+        _fetch_seq[0] += 1
+        job_id = 'f%d' % _fetch_seq[0]
+        _fetch_jobs[job_id] = {
+            'id': job_id, 'status': 'running', 'total': len(cmds), 'done': 0,
+            'index': 0, 'current': '', 'ok': 0, 'fail': 0, 'missing': 0,
+            'log': [], 'startedAt': _fetch_now(), 'finishedAt': '',
+            'dates': dates, 'platforms': platforms, 'shopCount': sum(len(c['shops']) for c in cmds),
+            'cmdCount': len(cmds), '_cmds': cmds, '_stop': False,
+        }
+    threading.Thread(target=_fetch_job_thread, args=(job_id,), daemon=True,
+                     name='fetch-job-%s' % job_id).start()
+    print('[抓取任务] %s 已启动：%d 条命令 / %d 个日期'
+          % (job_id, len(cmds), len(dates)))
+    return success({'jobId': job_id, 'total': len(cmds)}, '抓取任务已启动')
+
+
+def _fetch_job_view(job):
+    return {
+        'jobId': job['id'], 'status': job['status'],
+        'total': job['total'], 'done': job['done'], 'index': job.get('index', 0),
+        'current': job.get('current', ''),
+        'okCount': job.get('ok', 0), 'failCount': job.get('fail', 0),
+        'missing': job.get('missing', 0),
+        'dates': job.get('dates', []), 'platforms': job.get('platforms', []),
+        'shopCount': job.get('shopCount', 0),
+        'startedAt': job['startedAt'], 'finishedAt': job['finishedAt'],
+        'log': job['log'][-200:],
+    }
+
+
+@app.route('/api/fetch/job/<job_id>')
+def api_fetch_job(job_id):
+    job = _fetch_jobs.get(job_id)
+    if not job:
+        return fail('任务不存在或已过期')
+    return success(_fetch_job_view(job))
+
+
+@app.route('/api/fetch/job/latest')
+def api_fetch_job_latest():
+    """最近一次任务（刷新页面后仍可拿回进度）"""
+    if not _fetch_jobs:
+        return success(None)
+    job = sorted(_fetch_jobs.values(), key=lambda j: j['startedAt'])[-1]
+    return success(_fetch_job_view(job))
+
+
+@app.route('/api/fetch/stop', methods=['POST'])
+def api_fetch_stop():
+    """请求停止：当前命令跑完后不再执行后续命令"""
+    data = request.get_json(force=True) or {}
+    job = _fetch_jobs.get(str(data.get('jobId') or ''))
+    if not job or job['status'] != 'running':
+        return fail('没有正在执行的抓取任务')
+    job['_stop'] = True
+    return success(None, '已请求停止，当前步骤跑完后中断')
+
+
+@app.route('/api/fetch/reconcile')
+def api_fetch_reconcile():
+    """每日对账结果（fetch_reconcile_logs 最近记录，按日期倒序）"""
+    try:
+        limit = min(int(request.args.get('limit') or 60), 300)
+    except Exception:
+        limit = 60
+    try:
+        rows = db_execute(
+            'SELECT target_date, round_no, platform, active_count, ok_count, '
+            'missing_shops, action, final_status, alert_status, created_at '
+            'FROM fetch_reconcile_logs ORDER BY id DESC LIMIT %s', [limit]) or []
+        out = []
+        for r in rows:
+            # 库里抖店落在「抖音」平台（沿用早期影刀口径），界面上仍叫抖店
+            plat = r.get('platform')
+            out.append({
+                'date': str(r.get('target_date') or ''),
+                'round': r.get('round_no'),
+                'platform': '抖店' if plat == '抖音' else plat,
+                'activeCount': r.get('active_count'), 'okCount': r.get('ok_count'),
+                'missingShops': r.get('missing_shops') or '',
+                'action': r.get('action'), 'status': r.get('final_status'),
+                'alertStatus': r.get('alert_status'),
+                'createdAt': str(r.get('created_at') or ''),
+            })
+        return success(out)
+    except Exception as e:
+        return fail('对账记录读取失败：%s' % e)
 
 
 if __name__ == '__main__':

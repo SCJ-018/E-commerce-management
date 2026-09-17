@@ -29,8 +29,15 @@ FILES = {
     'css/style.css': REMOTE_ROOT + '/css/style.css',
     'css/hr.css': REMOTE_ROOT + '/css/hr.css',
     'backend/app.py': REMOTE_ROOT + '/backend/app.py',
+    'backend/dingtalk.py': REMOTE_ROOT + '/backend/dingtalk.py',
     'backend/hr_api.py': REMOTE_ROOT + '/backend/hr_api.py',
     'backend/seeding_agent_prompt.txt': REMOTE_ROOT + '/backend/seeding_agent_prompt.txt',
+    # 种草抓取链路：backend/app.py 用 subprocess 唤起这些脚本，改动必须随部署上线。
+    # （2026-09-17 教训：tools/ 不在清单里，脚本只能手工 sftp，线上/本地长期不一致）
+    'tools/seeding_health.py': REMOTE_ROOT + '/tools/seeding_health.py',
+    'tools/seeding_xhs.py': REMOTE_ROOT + '/tools/seeding_xhs.py',
+    'tools/douyin_video_scraper.py': REMOTE_ROOT + '/tools/douyin_video_scraper.py',
+    'tools/xhs_crawler.py': REMOTE_ROOT + '/tools/xhs_crawler.py',
 }
 
 # 目录：本地目录 -> 远程目录（递归上传，自动建远程子目录）

@@ -55,6 +55,21 @@
     agent: { busy: false, input: '', analysis: '', cards: [], meta: null, error: '', analyzedDate: '' },
     dateModal: { open: false, base: null, start: null, end: null, pickStart: true },
     pendingQuestion: '',
+    // 钉钉推送设置（弹窗）
+    push: {
+      open: false,
+      loading: false,
+      saving: false,
+      testing: false,
+      pushing: false,
+      hasSecret: false,
+      hint: '',
+      hintType: 'info',
+      users: [],
+      logs: [],
+      form: { appKey: '', appSecret: '', robotCode: '', agentId: '', enabled: true, pushHour: 11, pushMinute: 0 },
+      newUser: { name: '', mobile: '', userId: '', remark: '' },
+    },
   });
 
   // ==================== 组件 ====================
@@ -280,6 +295,170 @@
         return _da.dateModal.pickStart ? '请选择开始日期' : '请选择结束日期';
       });
 
+      // ---- 钉钉推送设置 ----
+      var hourOptions = [];
+      for (var _h = 0; _h < 24; _h++) hourOptions.push(_h);
+      var minuteOptions = [0, 15, 30, 45];
+
+      function pad2(n) { return (n < 10 ? '0' : '') + n; }
+      function setHint(text, type) {
+        _da.push.hint = text || '';
+        _da.push.hintType = type || 'info';
+      }
+      function logText(s) {
+        return { success: '成功', partial: '部分成功', fail: '失败', skipped: '已跳过' }[s] || (s || '未知');
+      }
+      function logClass(s) {
+        return { success: 'dt-ok', partial: 'dt-warn', fail: 'dt-bad', skipped: 'dt-off' }[s] || 'dt-off';
+      }
+      // ---- 弹窗顶部状态概览 ----
+      var enabledUserCount = Vue.computed(function () {
+        return _da.push.users.filter(function (u) { return u.enabled; }).length;
+      });
+      var credReady = Vue.computed(function () {
+        var key = String(_da.push.form.appKey || '').trim();
+        var secret = _da.push.hasSecret || !!String(_da.push.form.appSecret || '').trim();
+        return !!(key && secret);
+      });
+      var lastLogText = Vue.computed(function () {
+        var l = _da.push.logs[0];
+        if (!l) return '暂无记录';
+        // '2026-09-17 11:00:12' → '09-17 11:00'，概览卡一行放不下完整时间
+        var t = String(l.createdAt || '');
+        t = t.length >= 16 ? t.slice(5, 16) : t;
+        return logText(l.status) + (t ? ' · ' + t : '');
+      });
+      var hintIcon = Vue.computed(function () {
+        return { error: 'fa-circle-exclamation', ok: 'fa-circle-check' }[_da.push.hintType] || 'fa-circle-info';
+      });
+      function openPush() {
+        _da.push.open = true;
+        setHint('');
+        loadPush();
+      }
+      function closePush() { _da.push.open = false; }
+
+      async function loadPush() {
+        _da.push.loading = true;
+        var cfg = await ApiService.getPushConfig();
+        _da.push.loading = false;
+        if (!cfg) { setHint('读取推送设置失败，请检查后端服务是否正常', 'error'); return; }
+        var f = _da.push.form;
+        f.appKey = cfg.appKey || '';
+        f.appSecret = cfg.appSecret || '';
+        f.robotCode = cfg.robotCode || '';
+        f.agentId = cfg.agentId || '';
+        f.enabled = !!cfg.enabled;
+        f.pushHour = typeof cfg.pushHour === 'number' ? cfg.pushHour : 11;
+        f.pushMinute = typeof cfg.pushMinute === 'number' ? cfg.pushMinute : 0;
+        _da.push.hasSecret = !!cfg.hasAppSecret;
+        _da.push.users = cfg.users || [];
+        _da.push.logs = cfg.logs || [];
+      }
+
+      async function savePush() {
+        if (_da.push.saving) return;
+        _da.push.saving = true;
+        var r = await ApiService.savePushConfig(_da.push.form);
+        _da.push.saving = false;
+        if (r.ok) {
+          App.showToast(r.msg || '设置已保存', 'success');
+          setHint('设置已保存' + (_da.push.form.enabled
+            ? '，将于每天 ' + pad2(_da.push.form.pushHour) + ':' + pad2(_da.push.form.pushMinute) + ' 自动推送'
+            : '（自动推送当前为关闭状态）'), 'ok');
+          loadPush();
+        } else {
+          App.showToast(r.msg || '保存失败', 'error');
+          setHint(r.msg || '保存失败', 'error');
+        }
+      }
+
+      async function addUser() {
+        var u = _da.push.newUser;
+        if (!u.name.trim()) { App.showToast('请填写成员姓名', 'error'); return; }
+        if (!u.mobile.trim() && !u.userId.trim()) { App.showToast('请填写手机号或钉钉 userId', 'error'); return; }
+        var r = await ApiService.addPushUser({
+          name: u.name.trim(), mobile: u.mobile.trim(), userId: u.userId.trim(),
+          remark: u.remark.trim(), enabled: true,
+        });
+        if (r.ok) {
+          _da.push.newUser = { name: '', mobile: '', userId: '', remark: '' };
+          App.showToast('已添加推送人', 'success');
+          loadPush();
+        } else {
+          App.showToast(r.msg || '添加失败', 'error');
+          setHint(r.msg || '添加失败', 'error');
+        }
+      }
+
+      async function toggleUser(u) {
+        var r = await ApiService.updatePushUser(u.id, { enabled: !u.enabled });
+        if (r.ok) {
+          u.enabled = !u.enabled;
+          App.showToast(u.enabled ? '已启用该成员' : '已停用该成员', 'success');
+        } else {
+          App.showToast(r.msg || '操作失败', 'error');
+        }
+      }
+
+      async function delUser(u) {
+        if (!confirm('确定删除推送人「' + u.name + '」？')) return;
+        var r = await ApiService.deletePushUser(u.id);
+        if (r.ok) {
+          App.showToast('已删除', 'success');
+          loadPush();
+        } else {
+          App.showToast(r.msg || '删除失败', 'error');
+        }
+      }
+
+      async function resolveUser(u) {
+        if (!u.mobile) { App.showToast('该成员没有填手机号，请手动填写 userId', 'error'); return; }
+        var r = await ApiService.resolvePushUser(u.mobile);
+        if (r.ok) {
+          await ApiService.updatePushUser(u.id, { userId: r.data.userId });
+          App.showToast('已匹配到 userId', 'success');
+          setHint('手机号 ' + u.mobile + ' 匹配到 userId：' + r.data.userId, 'ok');
+          loadPush();
+        } else {
+          App.showToast(r.msg || '匹配失败', 'error');
+          setHint(r.msg || '匹配失败', 'error');
+        }
+      }
+
+      async function testPush() {
+        if (_da.push.testing) return;
+        _da.push.testing = true;
+        setHint('正在发送测试消息...', 'info');
+        var r = await ApiService.testPush();
+        _da.push.testing = false;
+        if (r.ok) {
+          App.showToast(r.msg || '测试完成', 'success');
+          setHint('测试结果：' + ((r.data && r.data.detail) || r.msg || '已完成'), 'ok');
+        } else {
+          App.showToast(r.msg || '测试失败', 'error');
+          setHint('测试失败：' + (r.msg || '未知错误'), 'error');
+        }
+        loadPush();
+      }
+
+      async function pushNow() {
+        if (_da.push.pushing) return;
+        _da.push.pushing = true;
+        setHint('正在生成昨日报告并推送（约需 20-60 秒）...', 'info');
+        var r = await ApiService.pushNow('');
+        _da.push.pushing = false;
+        if (r.ok) {
+          App.showToast('已推送昨日报告', 'success');
+          setHint('推送完成（' + ((r.data && r.data.reportDate) || '') + '）：'
+            + ((r.data && r.data.detail) || ''), 'ok');
+        } else {
+          App.showToast(r.msg || '推送失败', 'error');
+          setHint('推送失败：' + (r.msg || '未知错误'), 'error');
+        }
+        loadPush();
+      }
+
       Vue.onMounted(function () { init(); });
 
       return {
@@ -291,6 +470,14 @@
         agentAsk: agentAsk, agentSend: agentSend, closeDateModal: closeDateModal, confirmDateModal: confirmDateModal,
         modalCalMonths: modalCalMonths, modalCalPick: modalCalPick, modalCalNav: modalCalNav, modalCalClear: modalCalClear, modalCalToday: modalCalToday,
         modalDateLabel: modalDateLabel,
+        // 钉钉推送
+        hourOptions: hourOptions, minuteOptions: minuteOptions, pad2: pad2,
+        logText: logText, logClass: logClass,
+        enabledUserCount: enabledUserCount, credReady: credReady,
+        lastLogText: lastLogText, hintIcon: hintIcon,
+        openPush: openPush, closePush: closePush, savePush: savePush,
+        addUser: addUser, toggleUser: toggleUser, delUser: delUser, resolveUser: resolveUser,
+        testPush: testPush, pushNow: pushNow,
       };
     },
 
@@ -313,6 +500,7 @@
             <i v-if="da.loading" class="fa-solid fa-spinner fa-spin"></i><i v-else class="fa-solid fa-wand-magic-sparkles"></i> {{ generateBtnLabel() }}
           </button>
           <button v-show="da.downloadDate" @click="downloadReport" style="background:#fff;color:#0d9488;border:1.5px solid #0d9488;padding:8px 20px;border-radius:10px;font-weight:600;cursor:pointer;font-family:inherit;font-size:0.88rem;margin-left:10px"><i class="fa-solid fa-file-pdf"></i> 下载PDF</button>
+          <button @click="openPush" style="background:#fff;color:#1e80ff;border:1.5px solid #1e80ff;padding:8px 20px;border-radius:10px;font-weight:600;cursor:pointer;font-family:inherit;font-size:0.88rem;margin-left:10px"><i class="fa-solid fa-paper-plane"></i> 钉钉推送</button>
         </div>
       </div>
 
@@ -403,6 +591,195 @@
         <button type="button" @click="modalCalClear" style="border:none;background:none;color:#94a3b8;font-size:12px;cursor:pointer">清除</button>
         <button type="button" @click="modalCalToday" style="border:none;background:none;color:#6366f1;font-size:12px;cursor:pointer;font-weight:600">今天</button>
       </div>
+    </div>
+  </ecom-modal>
+
+  <!-- ====== 钉钉推送设置弹窗 ====== -->
+  <ecom-modal :visible="da.push.open" title="钉钉推送设置" width="880px" save-text="保存设置" @close="closePush" @save="savePush">
+    <div class="dt-push">
+      <div v-if="da.push.hint" class="dt-hint" :class="'dt-hint-' + da.push.hintType">
+        <i class="fa-solid" :class="hintIcon"></i><span>{{ da.push.hint }}</span>
+      </div>
+      <div v-if="da.push.loading" class="dt-loading"><i class="fa-solid fa-spinner fa-spin"></i> 正在读取设置…</div>
+
+      <!-- 状态概览 -->
+      <div v-if="!da.push.loading" class="dt-ov">
+        <div class="dt-ov-item">
+          <span class="dt-ov-k">自动推送</span>
+          <b class="dt-ov-v" :class="da.push.form.enabled ? 'dt-v-on' : 'dt-v-off'">{{ da.push.form.enabled ? '已开启' : '已关闭' }}</b>
+        </div>
+        <div class="dt-ov-item">
+          <span class="dt-ov-k">推送时间</span>
+          <b class="dt-ov-v">每天 {{ pad2(da.push.form.pushHour) }}:{{ pad2(da.push.form.pushMinute) }}</b>
+        </div>
+        <div class="dt-ov-item">
+          <span class="dt-ov-k">收件人</span>
+          <b class="dt-ov-v">{{ enabledUserCount }} / {{ da.push.users.length }} 人启用</b>
+        </div>
+        <div class="dt-ov-item">
+          <span class="dt-ov-k">最近一次推送</span>
+          <b class="dt-ov-v">{{ lastLogText }}</b>
+        </div>
+      </div>
+
+      <!-- 推送计划 + 应用凭证 -->
+      <div class="dt-cols">
+        <section class="dt-sec">
+          <div class="dt-sec-head">
+            <span class="dt-sec-ico"><i class="fa-solid fa-clock"></i></span>
+            <h4>推送计划</h4>
+          </div>
+          <div class="dt-sec-body">
+            <label class="dt-switch">
+              <input type="checkbox" v-model="da.push.form.enabled">
+              <span>每天自动生成<b>昨日</b>报告并推送</span>
+            </label>
+            <div class="dt-time-row">
+              <span class="dt-time-k">推送时间</span>
+              <div class="dt-time">
+                <select v-model.number="da.push.form.pushHour" class="dt-input dt-input-sm">
+                  <option v-for="h in hourOptions" :key="h" :value="h">{{ pad2(h) }}</option>
+                </select>
+                <span class="dt-colon">:</span>
+                <select v-model.number="da.push.form.pushMinute" class="dt-input dt-input-sm">
+                  <option v-for="m in minuteOptions" :key="m" :value="m">{{ pad2(m) }}</option>
+                </select>
+              </div>
+            </div>
+            <p class="dt-note"><i class="fa-solid fa-circle-info"></i><span>数据未就绪时每 15 分钟重试，最晚 12:30；服务重启当天未成功会自动补跑。</span></p>
+          </div>
+        </section>
+
+        <section class="dt-sec">
+          <div class="dt-sec-head">
+            <span class="dt-sec-ico"><i class="fa-solid fa-key"></i></span>
+            <h4>应用凭证</h4>
+            <span class="dt-badge" :class="credReady ? 'dt-ok' : 'dt-warn'">
+              <i class="fa-solid" :class="credReady ? 'fa-check' : 'fa-triangle-exclamation'"></i>{{ credReady ? '已配置' : '待配置' }}
+            </span>
+          </div>
+          <div class="dt-sec-body">
+            <div class="dt-grid">
+              <label class="dt-field">
+                <span>Client ID（原 AppKey）*</span>
+                <input v-model="da.push.form.appKey" class="dt-input" placeholder="ding 开头，非 App ID">
+              </label>
+              <label class="dt-field">
+                <span>Client Secret（原 AppSecret）*</span>
+                <input v-model="da.push.form.appSecret" type="password" class="dt-input" :placeholder="da.push.hasSecret ? '已保存（留空不变）' : '请输入 Client Secret'">
+              </label>
+              <label class="dt-field">
+                <span>App ID / AgentId（可选）</span>
+                <input v-model="da.push.form.agentId" class="dt-input" placeholder="UUID 格式">
+              </label>
+              <label class="dt-field">
+                <span>robotCode（可选）</span>
+                <input v-model="da.push.form.robotCode" class="dt-input" placeholder="留空自动尝试">
+              </label>
+            </div>
+            <details class="dt-faq">
+              <summary>这些凭证去哪儿复制？</summary>
+              <p>钉钉开放平台 → 应用开发 → 企业内部应用「小钉」→ 基础信息 → 凭证与基础信息。</p>
+              <p>该页有三个值：<b>Client ID</b>（ding 开头，旧称 AppKey）与 <b>Client Secret</b> 用于换取 accessToken；<b>App ID</b>（UUID 格式，即旧版 AgentId）只是标识，填进第三格即可。填错会提示「无效的 clientId 或 clientSecret」。</p>
+              <p>Client Secret 保存在服务器数据库、不回传页面；收件人必须在应用的「可见范围」内。</p>
+            </details>
+          </div>
+        </section>
+      </div>
+
+      <!-- 推送人 -->
+      <section class="dt-sec">
+        <div class="dt-sec-head">
+          <span class="dt-sec-ico"><i class="fa-solid fa-users"></i></span>
+          <h4>推送人</h4>
+          <span class="dt-sec-sub">{{ enabledUserCount }} / {{ da.push.users.length }} 人启用</span>
+        </div>
+        <div class="dt-sec-body">
+          <div class="dt-table-wrap">
+            <table class="dt-table">
+              <thead>
+                <tr><th>姓名</th><th>手机号</th><th>userId</th><th class="c" style="width:92px">状态</th><th class="r" style="width:180px">操作</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="u in da.push.users" :key="u.id">
+                  <td class="dt-name">{{ u.name }}</td>
+                  <td class="dt-mono">{{ u.mobile || '—' }}</td>
+                  <td class="dt-mono">{{ u.userId || '—' }}</td>
+                  <td class="c">
+                    <span class="dt-badge" :class="u.enabled ? 'dt-ok' : 'dt-off'">
+                      <i class="fa-solid" :class="u.enabled ? 'fa-check' : 'fa-minus'"></i>{{ u.enabled ? '已启用' : '已停用' }}
+                    </span>
+                  </td>
+                  <td class="r">
+                    <button type="button" class="dt-mini" @click="toggleUser(u)">{{ u.enabled ? '停用' : '启用' }}</button>
+                    <button type="button" class="dt-mini" @click="resolveUser(u)">匹配ID</button>
+                    <button type="button" class="dt-mini dt-mini-danger" @click="delUser(u)">删除</button>
+                  </td>
+                </tr>
+                <tr v-if="!da.push.users.length"><td colspan="5" class="dt-empty">还没有推送人，在下方添加</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="dt-add">
+            <input v-model="da.push.newUser.name" class="dt-input" placeholder="姓名，如「乐心」">
+            <input v-model="da.push.newUser.mobile" class="dt-input" placeholder="手机号（可选）">
+            <input v-model="da.push.newUser.userId" class="dt-input" placeholder="userId（可选）">
+            <button type="button" class="dt-btn dt-btn-primary" @click="addUser"><i class="fa-solid fa-plus"></i> 添加</button>
+          </div>
+          <details class="dt-faq">
+            <summary>手机号和 userId 该填哪个？</summary>
+            <p>两者二选一即可。<b>只填 userId 最省事</b>，不依赖任何通讯录权限。</p>
+            <p>只填手机号时，首次推送会调钉钉接口换取并缓存 userId，要求应用已开通「手机号获取成员信息」权限（qyapi_get_member_by_mobile）。</p>
+            <p>不论填哪种，成员都必须在该应用的「可见范围」内，否则会返回「不在可见范围」。</p>
+          </details>
+        </div>
+      </section>
+
+      <!-- 测试与推送 -->
+      <section class="dt-sec">
+        <div class="dt-sec-head">
+          <span class="dt-sec-ico"><i class="fa-solid fa-paper-plane"></i></span>
+          <h4>测试与手动推送</h4>
+        </div>
+        <div class="dt-sec-body">
+          <div class="dt-actions">
+            <button type="button" class="dt-btn" :disabled="da.push.testing" @click="testPush">
+              <i class="fa-solid fa-vial"></i> {{ da.push.testing ? '发送中…' : '发送测试消息' }}
+            </button>
+            <button type="button" class="dt-btn dt-btn-primary" :disabled="da.push.pushing" @click="pushNow">
+              <i class="fa-solid fa-bolt"></i> {{ da.push.pushing ? '推送中…' : '立即推送昨日报告' }}
+            </button>
+            <span class="dt-tip">会重新生成昨日报告，发送「指标摘要 + PDF 附件」</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 推送记录 -->
+      <section class="dt-sec">
+        <div class="dt-sec-head">
+          <span class="dt-sec-ico"><i class="fa-solid fa-clock-rotate-left"></i></span>
+          <h4>最近推送记录</h4>
+          <span class="dt-sec-sub">共 {{ da.push.logs.length }} 条</span>
+        </div>
+        <div class="dt-sec-body">
+          <div class="dt-table-wrap">
+            <table class="dt-table">
+              <thead>
+                <tr><th style="width:150px">推送时间</th><th style="width:100px">报告日期</th><th style="width:96px">结果</th><th>详情</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="l in da.push.logs" :key="l.id">
+                  <td class="dt-mono">{{ l.createdAt }}</td>
+                  <td>{{ l.reportDate }}</td>
+                  <td><span class="dt-badge" :class="logClass(l.status)">{{ logText(l.status) }}</span></td>
+                  <td class="dt-detail">{{ l.detail }}</td>
+                </tr>
+                <tr v-if="!da.push.logs.length"><td colspan="4" class="dt-empty">暂无推送记录</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
     </div>
   </ecom-modal>
 </div>

@@ -345,3 +345,8 @@ body {
 }
 .empty-state .empty-icon { font-size: 3rem; margin-bottom: 12px; }
 .empty-state p { font-size: 0.95rem; }
+
+/* ========== 每日数据分析 · 钉钉推送设置弹窗 ==========
+   ⚠️ 样式不在这里！index.html 只加载 css/hr.css 与本文件之外的「内联 <style>」，
+   本文件没有被任何页面引用（历史遗留）。钉钉推送弹窗（.dt-*）与弹窗外壳（.modal-*）
+   的样式统一写在 index.html 的全局 <style> 块里，改样式请改那边。 */

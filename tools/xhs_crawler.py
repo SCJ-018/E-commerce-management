@@ -95,7 +95,8 @@ def _qrcode_login_save_png():
 
     success, user_info, cookies = login_api.get_user_info(cookies)
     if not success or user_info.get('guest') is not False:
-        raise SystemExit('登录会话验证失败')
+        raise SystemExit('登录会话验证失败: success=%s guest=%s info=%s'
+                         % (success, (user_info or {}).get('guest'), str(user_info)[:220]))
     cookie_str = '; '.join(f'{k}={v}' for k, v in cookies.items())
     with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
         f.write(cookie_str)

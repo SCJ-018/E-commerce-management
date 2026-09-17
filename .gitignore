@@ -101,3 +101,15 @@ tools/category_mapper/_*
 
 # === 服务器环境侦查脚本（一次性）===
 .deploy/_probe_*.py
+
+# === .deploy 本地调试产物（一次性探测脚本 / 截图 / 预览件，勿提交）===
+.deploy/_*
+.deploy/*.png
+.deploy/*.pdf
+
+# === tools 下一次性探测脚本与运行产物（下划线开头 = 临时，勿提交）===
+tools/_*
+
+# === 登录态 / cookie 备份（含凭据，勿提交）===
+tools/*cookie*.bak*
+tools/*.bak_*

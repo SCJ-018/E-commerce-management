@@ -558,12 +558,13 @@ def run(date_str, dry=False, headless=False, no_map=False):
     shop_list = shops.get_active_shops()
     if not shop_list:
         L('没有运营中的京东店铺，退出')
-        return
+        return False
     shop = shop_list[0]
     L('店铺: %s (ID %s)' % (shop['店铺名'], shop['店铺ID']))
 
     conn = None if dry else shops.get_conn()
     pw = browser = page = None
+    ok = False
     try:
         pw, browser, ctx, page = launch(headless=headless)
 
@@ -612,7 +613,7 @@ def run(date_str, dry=False, headless=False, no_map=False):
             L('[dry] 不写库。明细 %d 行' % len(rows))
             if rows:
                 L('[dry] 首行全字段: %s' % json.dumps(rows[0], ensure_ascii=False))
-            return
+            return True
 
         n = save_detail(conn, rows)
         conn.commit()
@@ -621,6 +622,10 @@ def run(date_str, dry=False, headless=False, no_map=False):
             save_shop_row(conn, shop_row)
             conn.commit()
             L('[库] 店铺营销数据 upsert 1 行')
+            ok = True
+        else:
+            # 没写进「店铺营销数据」= 对账口径上的失败，必须让退出码体现出来
+            L('[库] ⚠️ 店铺营销数据未写入（交易概况取数失败）')
     finally:
         try:
             if conn:
@@ -642,6 +647,7 @@ def run(date_str, dry=False, headless=False, no_map=False):
     #   注意：dry-run 在上面已 return，不会触发映射。
     if not no_map:
         auto_category_map('京东')
+    return ok
 
 
 if __name__ == '__main__':
@@ -652,4 +658,5 @@ if __name__ == '__main__':
     ap.add_argument('--headless', action='store_true', help='无头（服务器请用 xvfb-run 包裹）')
     ap.add_argument('--no-map', action='store_true', help='抓完不自动跑品类增量映射')
     a = ap.parse_args()
-    run(a.date, dry=a.dry, headless=a.headless, no_map=a.no_map)
+    # 退出码：0=已落库，3=未落库（让 cron / fetch_reconcile 能感知失败）
+    sys.exit(0 if run(a.date, dry=a.dry, headless=a.headless, no_map=a.no_map) else 3)

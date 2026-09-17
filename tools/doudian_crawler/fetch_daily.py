@@ -93,6 +93,15 @@ PRODUCT_LIST_URL = ('https://compass.jinritemai.com/shop/commodity/product-list'
                     '?from_page=%2Fshop%2Fsettlement-analysis')
 API = 'https://compass.jinritemai.com/compass_api/shop/product/product/product_list'
 
+# ── 限流（st=11001 请求过于频繁）退避参数 ────────────────────────────────────
+# ⚠️ 2026-09-17 修复：fetch_products() 一直在引用 LIMIT_RETRY / LIMIT_BACKOFF，
+#   但这两个常量**从未定义** → 一撞限流就抛 NameError，被调用方当「取数异常」吞掉，
+#   真因（st=什么、msg 是什么）全被 `name 'LIMIT_RETRY' is not defined` 盖住，
+#   排查时看到的是代码错误而不是限流，白绕一圈。现补上定义。
+# 口径：只重试 1 次、退避 90s 就放弃本店。重试本身也是新请求，会续期限流窗口。
+LIMIT_RETRY = 1
+LIMIT_BACKOFF = 90
+
 # 44 指标编码（与影刀 §5 的 44 项一一对应；后 2 项混资落库表无列，仍抓取备用）
 INDEX_44 = ('trans_amt,receive_amt,pay_amt,pay_cnt,pay_ucnt,pay_combo_cnt,per_user_price,'
             'settle_amt,real_commission,net_trans_amt,net_pay_cnt,pay_refund_receive_amt,'
@@ -207,7 +216,16 @@ def _cell_text(ci, key):
 
 
 def fetch_products(page, date_str):
-    """页面内 fetch 翻页抓全商品列表。返回 list[dict原始行]。"""
+    """页面内 fetch 翻页抓全商品列表。返回 list[dict原始行]。
+
+    限流（st=11001 请求过于频繁）退避策略见文件顶部 LIMIT_RETRY / LIMIT_BACKOFF。
+    ★ 核心认知（2026-09-17 实测，别再改回去）：重试本身**也是一次新请求**，
+      会不断续期抖店罗盘的滑动窗口 —— 越是死磕退避，窗口越不恢复。
+      当天证据链：10:19 连抓 7 家后第 8 家限流 → 10:43（+24min）仍限流 →
+      11:00 勉强抓 3 家又限流 → 11:07 **换本机网络+本机有头 Chrome 依然限流**。
+      → 既不是服务器机房 IP 被风控，也不是浏览器环境问题，就是账号级接口配额。
+      策略：重试 1 次后立即抛异常，把「等窗口清空」交给上层分钟级处理。
+    """
     d = datetime.datetime.strptime(date_str, '%Y-%m-%d')
     bd = '%d/%02d/%02d 00:00:00' % (d.year, d.month, d.day)
     ed = bd
@@ -232,13 +250,14 @@ def fetch_products(page, date_str):
         total = pr.get('total') or 0
         if st != 0 or not isinstance(data, list) or not data:
             if st != 0:
-                if retry < 10:
-                    # ⚠️ 限流（st=11001 请求过于频繁）必须退避重试，不能当「无更多数据」终止。
-                    # 账号级限流窗口可达数十秒，退避 15s 起步、最多 10 次（2026-09-16 踩坑）
+                if retry < LIMIT_RETRY:
+                    # 只重试 LIMIT_RETRY 次（默认 1 次、退避 90s）就放弃本店。
+                    # 旧版是 4 次（30/60/90/120s，共 5 分钟）—— 但每次重试都是新请求，
+                    # 实测反而把限流窗口续得更久（10:19 触发后 45 分钟不恢复）。
                     retry += 1
-                    wait = 15 * retry
-                    print('  第 %d 页 st=%s %r，退避 %ds 重试 %d/10...'
-                          % (page_no, st, b.get('msg', ''), wait, retry))
+                    wait = LIMIT_BACKOFF
+                    print('  第 %d 页 st=%s %r，退避 %ds 后重试 %d/%d...'
+                          % (page_no, st, b.get('msg', ''), wait, retry, LIMIT_RETRY))
                     time.sleep(wait)
                     continue
                 # ⚠️ 重试耗尽仍失败 → 必须抛异常！
@@ -253,7 +272,10 @@ def fetch_products(page, date_str):
         if len(rows) >= total or len(data) < 10:
             break
         page_no += 1
-        time.sleep(2.5)
+        # ⚠️ 翻页间隔 2.5s 太密：抖店罗盘对单账号「单位时间请求数」限流很敏感，
+        #    2026-09-17 实测连抓 7 家店后第 8 家第 1 页即 st=11001，
+        #    退避 13 分钟仍未恢复，导致剩余店铺全废。放到 4.5s 拉长请求间隔。
+        time.sleep(4.5)
     return rows
 
 

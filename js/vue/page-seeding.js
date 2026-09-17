@@ -8,7 +8,7 @@
   var _st = Vue.reactive({
     tab: 'works',                 // works | accounts
     platform: 'douyin',           // douyin | xhs | deleted
-    deptFilter: '',               // '' | 三部 | 四部 | 五部
+    deptFilter: '',               // '' | 部门名（可选部门见 deptConfig.departments，已动态化）
     accounts: [],                 // 种草账号列表
     works: [],                    // 作品列表
     deleted: [],                  // 被删作品列表
@@ -27,6 +27,10 @@
     progressText: '抓取中...',
     updateTime: '--',             // 数据更新时间
     accountModal: { open: false, isEdit: false, id: null, platform: 'douyin', name: '', douyinId: '', redId: '', department: '', homepage: '' },
+    deptConfig: { departments: [], rules: {}, candidates: [] },  // 部门列表 + 部门→钉钉推送规则 + 联系人候选
+    deptPanelOpen: false,         // 部门「+」浮层
+    deptNewName: '',              // 待新增的部门名
+    pushModal: { open: false, saving: false },   // 「钉钉推送」配置悬浮窗
     confirm: { open: false, msg: '', action: null },
     cal: { open: false, base: null, start: null, end: null, pickStart: true },   // 双月日历
     agent: { busy: false, input: '', result: '', meta: '', error: '' },          // 种草智能体
@@ -88,6 +92,109 @@
         else { loadWorks(); loadMeta(); }
       }
       function filterDept(dept) { _st.deptFilter = dept || ''; }
+
+      // ---------- 部门管理（动态列表；新增/删除都立即落盘） ----------
+      async function loadDeptConfig() {
+        var d = await ApiService.getSeedingDeptConfig();
+        if (d && Array.isArray(d.departments)) {
+          _st.deptConfig.departments = d.departments;
+          _st.deptConfig.rules = d.rules || {};
+          _st.deptConfig.candidates = d.candidates || [];
+        }
+      }
+      function toggleDeptPanel() {
+        _st.deptPanelOpen = !_st.deptPanelOpen;
+        if (_st.deptPanelOpen) _st.deptNewName = '';
+      }
+      /** 部门列表变化后同步规则表：保留同名部门的已有配置，丢弃已删部门 */
+      function _syncDeptRules(depts) {
+        var old = _st.deptConfig.rules || {};
+        var nr = {};
+        depts.forEach(function (d) {
+          nr[d] = old[d] || { userId: '', userName: '', threshold: 0, enabled: false };
+        });
+        _st.deptConfig.rules = nr;
+      }
+      function _saveDeptConfig() {
+        return ApiService.saveSeedingDeptConfig({
+          departments: _st.deptConfig.departments,
+          rules: _st.deptConfig.rules
+        });
+      }
+      async function addDept() {
+        var name = (_st.deptNewName || '').trim();
+        if (!name) { App.showToast('请输入部门名称', 'error'); return; }
+        if (_st.deptConfig.departments.indexOf(name) >= 0) {
+          App.showToast('部门「' + name + '」已存在', 'error'); return;
+        }
+        var next = _st.deptConfig.departments.concat([name]);
+        _st.deptConfig.departments = next;
+        _syncDeptRules(next);
+        var r = await _saveDeptConfig();
+        if (r === null) {                       // request() 失败一律返回 null
+          _st.deptConfig.departments = next.filter(function (x) { return x !== name; });
+          _syncDeptRules(_st.deptConfig.departments);
+          App.showToast('添加失败，请重试', 'error');
+          return;
+        }
+        _st.deptNewName = '';
+        App.showToast('已添加部门「' + name + '」');
+      }
+      async function removeDept(d) {
+        if (_st.deptConfig.departments.length <= 1) {
+          App.showToast('至少保留一个部门', 'error'); return;
+        }
+        var next = _st.deptConfig.departments.filter(function (x) { return x !== d; });
+        _st.deptConfig.departments = next;
+        _syncDeptRules(next);
+        if (_st.deptFilter === d) _st.deptFilter = '';
+        var r = await _saveDeptConfig();
+        if (r === null) { App.showToast('删除失败，请重试', 'error'); }
+        else { App.showToast('已删除部门「' + d + '」'); }
+      }
+
+      // ---------- 钉钉推送配置（部门 → 联系人 + 点赞阈值 N） ----------
+      function openPushModal() { _st.pushModal.open = true; }
+      function closePushModal() { _st.pushModal.open = false; }
+      function _ruleOf(dept) {
+        var r = _st.deptConfig.rules[dept];
+        if (!r) {
+          r = { userId: '', userName: '', threshold: 0, enabled: false };
+          _st.deptConfig.rules[dept] = r;
+        }
+        return r;
+      }
+      function setPushContact(dept, userId) {
+        var r = _ruleOf(dept);
+        var hit = (_st.deptConfig.candidates || []).find(function (c) { return c.userId === userId; });
+        r.userId = userId || '';
+        r.userName = hit ? (hit.name || '') : '';
+      }
+      function setPushThreshold(dept, v) {
+        _ruleOf(dept).threshold = Math.max(0, parseInt(v, 10) || 0);
+      }
+      function togglePushEnabled(dept) {
+        var r = _ruleOf(dept);
+        r.enabled = !r.enabled;
+      }
+      async function savePushModal() {
+        var depts = _st.deptConfig.departments;
+        for (var i = 0; i < depts.length; i++) {
+          var r = _ruleOf(depts[i]);
+          if (r.enabled && !r.userId) {
+            App.showToast('「' + depts[i] + '」已启用，但还没选钉钉联系人', 'error'); return;
+          }
+          if (r.enabled && !(parseInt(r.threshold, 10) > 0)) {
+            App.showToast('「' + depts[i] + '」已启用，但还没填点赞阈值', 'error'); return;
+          }
+        }
+        _st.pushModal.saving = true;
+        var res = await _saveDeptConfig();
+        _st.pushModal.saving = false;
+        if (res === null) { App.showToast('保存失败，请重试', 'error'); return; }
+        _st.pushModal.open = false;
+        App.showToast('钉钉推送配置已保存');
+      }
 
       // 搜索框防浏览器自动填充：初始 readonly，浏览器不会填充只读框；首次聚焦时解除
       var worksSearchLocked = Vue.ref(true);
@@ -460,6 +567,7 @@
       loadMeta();
       loadCookie();
       loadDeleted();
+      loadDeptConfig();
 
       return {
         state: _st,
@@ -476,6 +584,11 @@
         toggleUpdatePanel: toggleUpdatePanel, saveCookie: saveCookie, triggerScrape: triggerScrape,
         calToggle: calToggle, calPick: calPick, calNav: calNav, calClear: calClear, calToday: calToday,
         agentAsk: agentAsk, closeInfoModal: closeInfoModal, infoSubmit: infoSubmit, agentSend: agentSend,
+        // 部门管理 + 钉钉推送配置
+        loadDeptConfig: loadDeptConfig, toggleDeptPanel: toggleDeptPanel, addDept: addDept, removeDept: removeDept,
+        openPushModal: openPushModal, closePushModal: closePushModal,
+        setPushContact: setPushContact, setPushThreshold: setPushThreshold,
+        togglePushEnabled: togglePushEnabled, savePushModal: savePushModal,
       };
     },
     template: `
@@ -497,6 +610,7 @@
           <div class="dh-chip"><span class="dh-chip-label">作品数</span><span class="dh-chip-value" style="color:#6366f1">{{ state.works.length }}</span></div>
         </div>
         <div class="sd-header-actions">
+          <button class="btn btn-sm btn-outline" @click="openPushModal"><i class="fa-solid fa-bell"></i> 钉钉推送</button>
           <button class="btn btn-sm btn-outline" @click="toggleUpdatePanel"><i class="fa-solid fa-rotate"></i> 数据更新</button>
           <div class="sd-update-panel" :class="{ hidden: !state.updatePanelOpen }">
             <div class="sd-cookie-label"><i class="fa-solid fa-cookie-bite" style="color:#16a34a"></i>抖音 Cookie</div>
@@ -534,12 +648,27 @@
           <button class="sd-plat-btn" :class="{ active: state.platform === 'xhs' }" @click="switchPlatform('xhs')">小红书</button>
           <button class="sd-plat-btn" :class="{ active: state.platform === 'deleted' }" @click="switchPlatform('deleted')">🗑 被删作品</button>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;position:relative">
           <span style="font-size:0.82rem;color:#64748b;font-weight:500">部门筛选</span>
           <button class="sd-dept-btn" :class="{ active: state.deptFilter === '' }" @click="filterDept('')">全部</button>
-          <button class="sd-dept-btn" :class="{ active: state.deptFilter === '三部' }" @click="filterDept('三部')">三部</button>
-          <button class="sd-dept-btn" :class="{ active: state.deptFilter === '四部' }" @click="filterDept('四部')">四部</button>
-          <button class="sd-dept-btn" :class="{ active: state.deptFilter === '五部' }" @click="filterDept('五部')">五部</button>
+          <button class="sd-dept-btn" v-for="d in state.deptConfig.departments" :key="d" :class="{ active: state.deptFilter === d }" @click="filterDept(d)">{{ d }}</button>
+          <button class="sd-dept-btn" style="font-weight:700;padding:0 10px" title="添加部门" @click="toggleDeptPanel">+</button>
+          <!-- 「+」浮层：新增部门 / 删除已有部门 -->
+          <div v-show="state.deptPanelOpen" style="position:absolute;top:36px;left:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:14px;min-width:250px">
+            <div style="font-size:12px;color:#64748b;margin-bottom:8px;font-weight:600">添加部门</div>
+            <div style="display:flex;gap:6px">
+              <input class="ap-form-input" v-model="state.deptNewName" autocomplete="off" placeholder="例如：六部" style="height:32px" @keyup.enter="addDept">
+              <button class="btn btn-primary btn-sm" @click="addDept">添加</button>
+            </div>
+            <div style="height:1px;background:#f1f5f9;margin:12px 0"></div>
+            <div style="font-size:12px;color:#64748b;margin-bottom:6px;font-weight:600">已有部门（点 × 删除）</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px">
+              <span v-for="d in state.deptConfig.departments" :key="d" style="display:inline-flex;align-items:center;gap:6px;background:#f1f5f9;border-radius:6px;padding:3px 8px;font-size:12px;color:#334155">
+                {{ d }}
+                <i class="fa-solid fa-xmark" style="cursor:pointer;color:#94a3b8" @click="removeDept(d)"></i>
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -730,6 +859,51 @@
   <div class="ap-form-group"><label>部门</label><input class="ap-form-input" v-model="state.accountModal.department" autocomplete="off" placeholder="例如：三部 / 四部 / 五部"></div>
   <div v-show="state.accountModal.platform === 'douyin'" class="ap-form-group"><label>主页链接</label><input class="ap-form-input" v-model="state.accountModal.homepage" autocomplete="off" placeholder="https://www.douyin.com/user/MS4wLjAB..."></div>
   <div style="font-size:11px;color:#94a3b8">抖音需填写主页链接（自动解析 sec_user_id）；小红书无需主页链接，抓取时按小红书号解析。</div>
+</ecom-modal>
+
+<!-- 钉钉推送配置弹窗：部门 → 钉钉联系人 + 点赞阈值 N -->
+<ecom-modal :visible="state.pushModal.open" title="钉钉推送设置" width="780px" saveText="保存配置" @close="closePushModal" @save="savePushModal">
+  <div style="font-size:12px;color:#475569;line-height:1.75;margin-bottom:12px;background:#f8fafc;border-radius:8px;padding:10px 12px">
+    为每个部门指定一位钉钉联系人并设置点赞阈值 <b>N</b>。<br>
+    抓取完成后自动检查：作品点赞达到 N 时，把<b>作品链接</b>推送给该部门对应的联系人（同一作品只推一次）。<br>
+    <span style="color:#94a3b8">联系人名单取自「钉钉推送」页已添加的成员；推送走企业内部应用机器人单聊。</span>
+  </div>
+  <div class="ap-table-wrap" v-if="state.deptConfig.departments.length">
+    <table class="ap-table">
+      <thead><tr>
+        <th style="width:100px">部门</th>
+        <th>钉钉联系人</th>
+        <th style="width:140px">点赞阈值 N</th>
+        <th style="width:70px">启用</th>
+      </tr></thead>
+      <tbody>
+        <tr v-for="d in state.deptConfig.departments" :key="d">
+          <td><strong>{{ d }}</strong></td>
+          <td>
+            <select class="ap-form-input" :value="(state.deptConfig.rules[d] || {}).userId || ''" @change="setPushContact(d, $event.target.value)">
+              <option value="">— 未指定 —</option>
+              <option v-for="c in state.deptConfig.candidates" :key="c.id" :value="c.userId">
+                {{ c.name }}<template v-if="!c.userId">（缺 userId）</template>
+              </option>
+            </select>
+          </td>
+          <td>
+            <input class="ap-form-input" type="number" min="0" step="100" style="height:32px"
+                   :value="(state.deptConfig.rules[d] || {}).threshold || 0"
+                   placeholder="如 1000" @input="setPushThreshold(d, $event.target.value)">
+          </td>
+          <td style="text-align:center">
+            <input type="checkbox" style="width:16px;height:16px;cursor:pointer"
+                   :checked="!!(state.deptConfig.rules[d] || {}).enabled" @change="togglePushEnabled(d)">
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div v-else style="font-size:12px;color:#94a3b8;padding:10px 0">还没有部门，请先在「部门筛选」处点 + 添加部门。</div>
+  <div style="font-size:11px;color:#94a3b8;margin-top:10px">
+    未勾选「启用」的部门不推送；下拉里看不到人，请先到「钉钉推送」页添加成员并填好 userId。
+  </div>
 </ecom-modal>
 
 <!-- 删除确认弹窗 -->
