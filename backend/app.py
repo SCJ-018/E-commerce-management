@@ -166,13 +166,26 @@ def _dev_alert(title, detail='', signature=None, source='', force=False):
         return False
 
 
-def _dev_alert_exc(source, exc, extra='', signature=None):
+def _dev_alert_exc(title, exc, extra='', signature=None, source=None):
+    """异常告警。
+
+    title  : 异常标题（如「接口未捕获异常」），传给 notify_dev_exception 当 source
+    source : 子系统标签（如「种草定时任务」），可选，拼进标题便于在钉钉里归堆
+
+    ★ 2026-09-17 修：原签名是 (source, exc, extra, signature)，但调用方有 9 处按
+      _dev_alert() 的习惯传了 source= 关键字 → 参数绑定阶段即抛
+      TypeError: _dev_alert_exc() got multiple values for argument 'source'。
+      该异常发生在**进入函数体之前**，函数内 try/except 拦不住，于是这些告警路径
+      （后台线程/主线程兜底、每日报告 ×2、脚本调度、抖音热点、种草 ×3）全部是哑弹、
+      从未真正发出。现把 source 收成合法关键字参数并与 title 合并。
+    """
     try:
+        label = ('%s / %s' % (source, title)) if source else title
         fn = globals().get('notify_dev_exception')
         if fn is None:
-            print('[开发告警][未加载] %s: %s' % (source, exc))
+            print('[开发告警][未加载] %s: %s' % (label, exc))
             return False
-        return fn(source, exc, extra=extra, signature=signature)
+        return fn(label, exc, extra=extra, signature=signature)
     except Exception:
         return False
 
@@ -3771,6 +3784,30 @@ def _seeding_progress_read(platform):
 _SEEDING_PROCS = {}
 
 
+def _seeding_reap(platform, proc, log_path):
+    """后台回收种草抓取子进程，避免 xvfb-run 包装进程变 <defunct> 僵尸（2026-09-17 补）。
+
+    原先只把 Popen 存进 _SEEDING_PROCS，靠 _seeding_is_running() 里的 poll()
+    顺手回收 → 进程退出后到下一次被 poll 之间的空窗期始终是僵尸。
+    线上实测每轮抖音抓取都会留下一个僵尸 xvfb-run（PPID = gunicorn worker），
+    因为 _seeding_is_running() 只在有人点按钮/轮询该平台时才会被调用。
+
+    这里单独起线程 wait()，进程一退出立即回收，顺带把退出码落进抓取日志。
+    不影响 _seeding_is_running()：wait() 与 poll() 设置的是同一个 returncode，
+    已退出的 proc 仍能被它 poll() 到并补写终态，故这里**不**从 _SEEDING_PROCS 摘除。
+    """
+    try:
+        rc = proc.wait()
+    except Exception:
+        return
+    try:
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write('[%s] 进程已退出 exit=%s\n'
+                    % (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), rc))
+    except Exception:
+        pass
+
+
 def _seeding_is_running(platform):
     """判断指定平台是否仍在抓取。
 
@@ -4103,8 +4140,15 @@ def _seeding_launch(platform):
             stdout=log_file,
             stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            # ★ 独立会话：让 xvfb-run → Xvfb / python / Chrome 落在同一进程组，
+            #   需要时可整组清理（与抓取链路 _fetch_kill_tree 同一口径）。
+            #   systemd 按 cgroup 停服务，不受 setsid 影响，重启 ecom 仍能带走子进程。
+            start_new_session=True,
         )
         _SEEDING_PROCS[platform] = proc
+        # ★ 单独线程 wait()：进程退出即回收，杜绝 xvfb-run 僵尸
+        threading.Thread(target=_seeding_reap, args=(platform, proc, log_path),
+                         daemon=True).start()
     finally:
         log_file.close()
     return None
