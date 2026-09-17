@@ -3688,6 +3688,13 @@ _XHS_WORKS_FILE = os.path.join(_SEEDING_DIR, '_xhs_works.json')
 _SEEDING_STATE_FILE = os.path.join(_SEEDING_DIR, '_seeding_state.json')
 # 作品数据自动更新间隔（秒）：每半小时
 _SEEDING_AUTO_INTERVAL = 1800
+# ★ 两次「成功抓取」之间的最小间隔（秒）：自动循环触发前检查，不够就跳过本轮。
+#   为什么需要（2026-09-17 17:36 那次告警的根因）：循环末尾是固定 sleep(1800)，
+#   但服务每次重启都会把节拍从 0 重排 —— 当天 ecom 重启 26 次，导致同一账号
+#   在 17:04 / 17:06 / 17:36 / 17:44 被连抓 4 轮（最短间隔只有 105 秒），
+#   小红书随即对主页作品接口限流、返回 0 条作品 → 误报「登录态可能已失效」。
+#   只作用于自动循环；「数据更新」按钮的手工触发不受此限制。
+_SEEDING_MIN_GAP = 20 * 60
 # 抓取日志单文件上限，超过滚动成 _scrape_<平台>.log.1（只留 1 份历史）
 _SEEDING_LOG_MAX_BYTES = 2 * 1024 * 1024
 # 抓取健康体检脚本：每轮自动更新前先体检上一轮，异常时它自己推钉钉（见 tools/seeding_health.py）
@@ -7238,6 +7245,15 @@ def _seeding_auto_update_loop():
                 _dev_alert_exc('种草点赞推送检查异常', e, signature='seeding:like-push',
                                source='种草定时任务')
             for platform in ('douyin', 'xhs'):
+                # ★ 距上次「成功抓取」不足 _SEEDING_MIN_GAP 就跳过本轮：
+                #   服务重启会把循环节拍归零（说明见 _SEEDING_MIN_GAP 定义处）
+                _st = _seeding_progress_read(platform)
+                _gap = time.time() - float(_st.get('ts') or 0)
+                if _st.get('status') == 'done' and _st.get('ts') and _gap < _SEEDING_MIN_GAP:
+                    print('[种草][自动更新] %s: 距上次成功抓取仅 %.1f 分钟（< %d 分钟），'
+                          '本轮跳过，避免平台限流' % (platform, _gap / 60.0, _SEEDING_MIN_GAP // 60))
+                    time.sleep(5)
+                    continue
                 err = _seeding_launch(platform)
                 if err:
                     print(f'[种草][自动更新] {platform}: {err}')
@@ -7518,6 +7534,39 @@ def _fetch_build_cmds(platforms, dates, sel_ids):
     return cmds
 
 
+# 抖店登录态时效预检阈值（分钟）。
+# 抖店 state 是**账号级**（14 家店共用一个邮箱）且寿命很短：实测 10:05 刷新 →
+# 10:11 可用 → 10:44 已失效，约 40 分钟。一旦过期，login_fetch_all.py 会退到邮箱登录，
+# 而服务器（IDC IP + xvfb 虚拟屏）既过不了拼图滑块、也没有任何窗口可供人工拖拽 ——
+# 结果是每条命令干等 240s 后失败。batch(4家/条) × N 天会把这笔账乘上去，
+# 用户在前端只会看到「卡住」。
+# 取 25 分钟：给「启动 → 抓完 14 家店」留余量（一轮实测 20~30 分钟）。
+_FETCH_DD_STATE_MAX_MIN = 25
+
+
+def _fetch_dd_state_check():
+    """抖店登录态时效预检。返回 None = 可用；否则返回给前端的中文拒绝理由。"""
+    rows = db_execute(
+        'SELECT `邮箱`, `状态更新时间`, '
+        'TIMESTAMPDIFF(MINUTE, `状态更新时间`, NOW()) AS mins '
+        'FROM `抖店邮箱账号表` WHERE `是否运营` = 1 ORDER BY `id` LIMIT 1') or []
+    if not rows:
+        return '抖店邮箱账号表里没有「运营中」的邮箱账号，无法抓取'
+    r = rows[0]
+    email = r.get('邮箱') or '?'
+    if not r.get('状态更新时间'):
+        return ('抖店（%s）从未保存过登录态，抓取必然失败。\n'
+                '请在本机双击「启动抖店登录.bat」登录一次后重试。' % email)
+    mins = int(r.get('mins') or 0)
+    if mins > _FETCH_DD_STATE_MAX_MIN:
+        return ('抖店登录态已过期：%s 最后一次有效在 %d 分钟前（实测寿命约 40 分钟）。\n'
+                '服务器上没有窗口、也没人能帮它过拼图滑块，本次抓取必然失败，'
+                '已提前拦下以免白等。\n'
+                '请先在本机双击「启动抖店登录.bat」恢复登录态，再重新触发抓取。'
+                % (email, mins))
+    return None
+
+
 def _fetch_kill_tree(proc, grace=3):
     """超时强杀：连**整个进程组**一起清，不要只杀最外层。
 
@@ -7564,11 +7613,15 @@ def _fetch_exec(argv, job, timeout):
     cmd = ([_FETCH_XVFB, '-a'] + argv) if os.path.isfile(_FETCH_XVFB) else argv
     _fetch_log(job, '$ ' + ' '.join(cmd))
     try:
+        # PW_UNATTENDED=1：告诉抓取脚本「本机是 xvfb 虚拟屏，没人能拖滑块」，
+        # 让它遇到拼图验证立刻失败退出（否则会干等 240s，见 login_fetch_all.UNATTENDED）
+        env = dict(os.environ)
+        env['PW_UNATTENDED'] = '1'
         # start_new_session=True：子进程自成进程组，超时才杀得干净（见 _fetch_kill_tree）
         proc = subprocess.Popen(cmd, cwd=_FETCH_PW, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True,
                                 encoding='utf-8', errors='replace', bufsize=1,
-                                start_new_session=True)
+                                start_new_session=True, env=env)
     except Exception as e:
         _fetch_log(job, '[err] 启动失败: %s' % e)
         return -1
@@ -7691,6 +7744,12 @@ def api_fetch_trigger():
         cmds = _fetch_build_cmds(platforms, dates, sel_ids)
         if not cmds:
             return fail('所选平台下没有「运营中」的店铺')
+        # 抖店这条链路依赖「抖店邮箱账号表.登录状态」免登录，而该 state 只有约 40 分钟
+        # 寿命、且服务器无法自助登录（见 _fetch_dd_state_check）。过期就别启动了。
+        if 'doudian' in platforms:
+            why = _fetch_dd_state_check()
+            if why:
+                return fail(why)
     except ValueError as e:
         return fail(str(e))
     except Exception as e:

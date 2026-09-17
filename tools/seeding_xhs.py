@@ -25,6 +25,13 @@ XHS_COOKIE_FILE = os.path.join(BASE_DIR, 'xhs_cookie.txt')
 OUTPUT_FILE = os.path.join(BASE_DIR, '_xhs_works.json')
 PROGRESS_FILE = os.path.join(BASE_DIR, '_seeding_progress_xhs.json')
 
+# ★ 主页作品列表返回 0 条时的重试策略（2026-09-17 补）。
+#   小红书限流时表现为「success=True 但 notes 为空」，与「登录态失效」不是一回事：
+#   登录态真失效会在 bootstrap(user/me) 或 search_user 阶段直接抛错。
+#   不加这个重试，一次瞬时限流就会把整轮判成失败并推钉钉告警。
+EMPTY_RETRIES = 2
+EMPTY_RETRY_WAITS = (20, 45)   # 秒，按重试次序递增
+
 
 def write_progress(status, done, total, msg='', accounts=None, ok=None):
     """写进度文件。accounts/ok = 账号总数/成功数，供后端判断「本轮是否完整」，
@@ -71,6 +78,26 @@ def _to_int(v):
         return 0
 
 
+def _crawl_notes_with_retry(crawler, api, info, label):
+    """拉该账号的作品列表；连续拿到 0 条时重试，仍为空才返回 []。
+
+    ★ 为什么需要：2026-09-17 17:36 那轮，resolve_user 正常、bootstrap 正常，
+      但 get_user_note_info 第一批就返回空 → 整轮被判「登录态可能已失效」并告警，
+      而 8 分钟后的下一轮又完整抓回 59 条 —— 纯属瞬时限流误报。
+    """
+    for attempt in range(EMPTY_RETRIES + 1):
+        if attempt:
+            wait = EMPTY_RETRY_WAITS[min(attempt - 1, len(EMPTY_RETRY_WAITS) - 1)]
+            print('[xhs_batch] %s 作品列表返回 0 条，%d 秒后重试（第 %d/%d 次）'
+                  % (label, wait, attempt, EMPTY_RETRIES), flush=True)
+            time.sleep(wait)
+        notes = crawler.crawl_user_notes(api, info['user_id'], info.get('xsec_token', ''),
+                                         limit=0, fast=False)
+        if notes:
+            return notes
+    return []
+
+
 def main():
     if not os.path.isdir(SPIDER_DIR):
         print('[xhs_batch] 缺少依赖：未找到 ' + SPIDER_DIR)
@@ -107,7 +134,7 @@ def main():
             name = (acc.get('name') or '').strip() or red_id
             try:
                 info = crawler.resolve_user(api, red_id)
-                notes = crawler.crawl_user_notes(api, info['user_id'], info.get('xsec_token', ''), limit=0, fast=False)
+                notes = _crawl_notes_with_retry(crawler, api, info, name)
             except Exception as e:
                 print(f'[xhs_batch] 账号 {name}({red_id}) 抓取失败: {e}')
                 failed.append(name)
@@ -135,8 +162,9 @@ def main():
         #    登录态失效时若写出空数组，后端会把上一版全部作品判为「已删除」，
         #    生成一批假的「被删作品」记录（2026-09-17 就发生过）。
         if not all_rows:
-            msg = ('小红书抓取失败：%d 个账号全部未取到作品（登录态可能已失效），'
-                   '已保留上次的数据文件' % len(accounts))
+            msg = ('小红书抓取失败：%d 个账号重试后仍未取到作品（作品列表接口返回空，'
+                   '多为平台限流；连续两轮以上才需要重新导出 cookie），已保留上次的数据文件'
+                   % len(accounts))
             print('[xhs_batch] ' + msg)
             write_progress('error', 0, len(accounts), msg)
             sys.exit(3)
