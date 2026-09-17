@@ -7098,6 +7098,10 @@ def ps_history():
                 return fail('运行记录 id 非法')
             rows = list(db_execute(cols + " WHERE `id` = %s LIMIT 1", [rid]))
         elif d:
+            # 先校验格式：垃圾日期直接进 SQL 会抛 1525，被 db_execute 当成 DB 异常
+            # 触发一条误报开发告警（实测过一次），这里挡在库前面。
+            if not re.match(r'^\d{4}-\d{2}-\d{2}$', d):
+                return fail('日期格式应为 YYYY-MM-DD')
             rows = list(db_execute(cols + " WHERE `日期` = %s ORDER BY `创建时间` DESC, `id` DESC LIMIT 1", [d]))
         else:
             rows = list(db_execute(cols + " ORDER BY `创建时间` DESC, `id` DESC LIMIT 1"))
