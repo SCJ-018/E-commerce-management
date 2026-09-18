@@ -182,6 +182,19 @@
         _st.deptPanelOpen = !_st.deptPanelOpen;
         if (_st.deptPanelOpen) _st.deptNewName = '';
       }
+      // ---------- 「+」浮层：点页面任意别处即关（2026-09-18 修） ----------
+      //   原来只有一个 toggle，点哪儿都关不掉，必须回头再点一次「+」→ 很反直觉。
+      //   这里对齐 page-order-details / page-category-marketing 的既有做法：
+      //   document 级 click + wrap.contains 判定 —— 点在「+ 按钮 + 浮层」这个容器之外就关。
+      //   ⚠ 容器必须同时含「+ 按钮」，否则按钮自身的 click 冒泡到 document 会立刻把刚打开的浮层关掉。
+      var deptWrap = Vue.ref(null);
+      function onDocClickDept(e) {
+        if (!_st.deptPanelOpen) return;                                    // 没开就什么都不做
+        if (deptWrap.value && deptWrap.value.contains(e.target)) return;  // 点在 + 或浮层内部
+        _st.deptPanelOpen = false;
+      }
+      Vue.onMounted(function () { document.addEventListener('click', onDocClickDept); });
+      Vue.onUnmounted(function () { document.removeEventListener('click', onDocClickDept); });
       /** 部门列表变化后同步规则表：保留同名部门的已有配置，丢弃已删部门 */
       function _syncDeptRules(depts) {
         var old = _st.deptConfig.rules || {};
@@ -843,6 +856,7 @@
         calToggle: calToggle, calPick: calPick, calNav: calNav, calClear: calClear, calToday: calToday,
         agentAsk: agentAsk, closeInfoModal: closeInfoModal, infoSubmit: infoSubmit, agentSend: agentSend,
         // 部门管理 + 钉钉推送配置
+        deptWrap: deptWrap,
         loadDeptConfig: loadDeptConfig, toggleDeptPanel: toggleDeptPanel, addDept: addDept, removeDept: removeDept,
         deptDragStart: deptDragStart, deptDragOver: deptDragOver, deptDragEnd: deptDragEnd, deptDrop: deptDrop,
         openPushModal: openPushModal, closePushModal: closePushModal,
@@ -941,8 +955,11 @@
           <span style="font-size:0.82rem;color:#64748b;font-weight:500">部门筛选</span>
           <button class="sd-dept-btn" :class="{ active: state.deptFilter === '' }" @click="filterDept('')">全部</button>
           <button class="sd-dept-btn" v-for="d in state.deptConfig.departments" :key="d" :class="{ active: state.deptFilter === d }" @click="filterDept(d)">{{ d }}</button>
+          <!-- ★ 「+」按钮与浮层同在 deptWrap 内：document click 靠这个容器判定「点在不在外面」。
+               容器必须把「+」按钮一起包进来，否则按钮自身的 click 冒泡到 document 会把刚打开的浮层立刻关掉。 -->
+          <span ref="deptWrap" style="position:relative;display:inline-flex">
           <button class="sd-dept-btn" style="font-weight:700;padding:0 10px" title="添加部门" @click="toggleDeptPanel">+</button>
-          <!-- 「+」浮层：新增部门 / 删除已有部门 -->
+          <!-- 「+」浮层：新增部门 / 删除已有部门（点页面别处自动关闭） -->
           <div v-show="state.deptPanelOpen" style="position:absolute;top:36px;left:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:14px;min-width:250px">
             <div style="font-size:12px;color:#64748b;margin-bottom:8px;font-weight:600">添加部门</div>
             <div style="display:flex;gap:6px">
@@ -973,6 +990,7 @@
             </div>
             <div style="font-size:11px;color:#94a3b8;margin-top:8px;line-height:1.6">顺序 = 「部门筛选」按钮顺序与推送配置的行序，松手即自动保存。</div>
           </div>
+          </span>
         </div>
       </div>
 
