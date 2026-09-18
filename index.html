@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>聚浪网络科技 · 电商后台管理系统</title>
+  <!-- 全局关闭浏览器自动填充/历史输入记忆/密码弹窗，必须早于输入框解析 -->
+  <script src="js/no-autofill.js?v=20260918e"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config={theme:{extend:{colors:{brand:'#1677ff','brand-dark':'#0958d9','brand-light':'#e6f4ff','bg-gray':'#f5f7fa'},borderRadius:{'8':'8px'},boxShadow:{card:'0 2px 8px rgba(0,0,0,0.06),0 1px 4px rgba(0,0,0,0.04)','card-hover':'0 4px 16px rgba(0,0,0,0.08),0 2px 8px rgba(0,0,0,0.06)',login:'0 4px 24px rgba(0,0,0,0.08)'}}}}</script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -862,10 +864,10 @@
     </div>
     <div class="login-card-form-panel">
       <h2>欢迎回来</h2><p class="form-subtitle">登录您的管理员账号</p>
-      <form id="loginForm">
-        <div class="form-group"><label for="username">账号</label><input class="form-input" id="username" name="username" placeholder="请输入手机号" autocomplete="username" aria-label="账号"></div>
-        <div class="form-group"><label for="password">密码</label><div class="form-input-wrap"><input class="form-input" id="password" name="password" type="password" placeholder="默认密码为身份证生日（年月日）8位数字" autocomplete="current-password" aria-label="密码"><button type="button" class="pwd-toggle" onclick="var p=document.getElementById('password');p.type=p.type==='password'?'text':'password'" aria-label="切换密码显示"><i class="fa-regular fa-eye"></i></button></div></div>
-        <div class="form-options"><label><input type="checkbox" id="remember"> 记住密码</label><a href="#">忘记密码？</a></div>
+      <form id="loginForm" autocomplete="off">
+        <div class="form-group"><label for="username">账号</label><input class="form-input" id="username" name="username" placeholder="请输入手机号" autocomplete="off" aria-label="账号"></div>
+        <div class="form-group"><label for="password">密码</label><div class="form-input-wrap"><input class="form-input" id="password" name="password" type="password" placeholder="默认密码为身份证生日（年月日）8位数字" autocomplete="off" aria-label="密码"><button type="button" class="pwd-toggle" onclick="var p=document.getElementById('password');p.type=p.type==='password'?'text':'password'" aria-label="切换密码显示"><i class="fa-regular fa-eye"></i></button></div></div>
+        <div class="form-options"><a href="#" style="margin-left:auto">忘记密码？</a></div>
         <button type="submit" class="btn btn-primary">登 录</button>
         <div class="login-error" id="loginError"></div>
       </form>
@@ -960,8 +962,8 @@
               <span id="mktDateLabel" style="white-space:nowrap">选择日期</span>
               <i class="fa-solid fa-chevron-down" style="color:oklch(65% 0.02 245);font-size:0.7rem"></i>
             </button>
-            <input type="date" id="mktDateStart" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
-            <input type="date" id="mktDateEnd" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+            <input autocomplete="off" type="date" id="mktDateStart" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+            <input autocomplete="off" type="date" id="mktDateEnd" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
             <div id="mktDatePanel" style="display:none;position:absolute;top:40px;right:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:14px;user-select:none"></div>
           </div>
         </div>
@@ -1016,9 +1018,9 @@
             <button class="cat-ds-btn" data-range="30" onclick="App.setCatRange('30')">近30天</button>
           </div>
           <div style="display:flex;align-items:center;gap:6px;margin-left:10px">
-            <input type="date" id="catDateStart" onchange="App.setCatCustomDate()" style="border:1px solid #e2e8f0;border-radius:8px;padding:4px 10px;height:33px;font-size:0.82rem;color:#475569;font-family:inherit;background:#fff">
+            <input autocomplete="off" type="date" id="catDateStart" onchange="App.setCatCustomDate()" style="border:1px solid #e2e8f0;border-radius:8px;padding:4px 10px;height:33px;font-size:0.82rem;color:#475569;font-family:inherit;background:#fff">
             <span style="font-size:0.82rem;color:#94a3b8">至</span>
-            <input type="date" id="catDateEnd" onchange="App.setCatCustomDate()" style="border:1px solid #e2e8f0;border-radius:8px;padding:4px 10px;height:33px;font-size:0.82rem;color:#475569;font-family:inherit;background:#fff">
+            <input autocomplete="off" type="date" id="catDateEnd" onchange="App.setCatCustomDate()" style="border:1px solid #e2e8f0;border-radius:8px;padding:4px 10px;height:33px;font-size:0.82rem;color:#475569;font-family:inherit;background:#fff">
           </div>
         </div>
       </div>
@@ -1100,8 +1102,8 @@
 	              <span id="psDateLabel" style="white-space:nowrap">选择日期</span>
 	              <i class="fa-solid fa-chevron-down" style="color:#94a3b8;font-size:0.7rem"></i>
 	            </button>
-	            <input type="date" id="psDateStart" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
-	            <input type="date" id="psDateEnd" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+	            <input autocomplete="off" type="date" id="psDateStart" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+	            <input autocomplete="off" type="date" id="psDateEnd" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
 	            <div id="psDatePanel" style="display:none;position:absolute;top:40px;right:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:14px;user-select:none"></div>
 	          </div>
 	        </div>
@@ -1142,7 +1144,7 @@
 	          <div class="ps-table-tools">
 	            <div class="ps-search-wrap">
 	              <i class="fa-solid fa-search"></i>
-	              <input type="text" class="ps-search-input" id="psStoreSearch" placeholder="搜索店铺或品牌...">
+	              <input autocomplete="off" type="text" class="ps-search-input" id="psStoreSearch" placeholder="搜索店铺或品牌...">
 	            </div>
 	            <select id="psSortBy" class="ps-select-sm">
 	              <option value="netPayment">按净支付排序</option>
@@ -1269,7 +1271,7 @@
             </div>
           </div>
           <div class="da-agent-input">
-            <textarea id="daAgentInput" class="da-agent-textarea" placeholder="例如：今天的退款率为什么偏高..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();App.daAgentSend();}"></textarea>
+            <textarea autocomplete="off" id="daAgentInput" class="da-agent-textarea" placeholder="例如：今天的退款率为什么偏高..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();App.daAgentSend();}"></textarea>
             <button class="da-agent-send" id="daAgentSendBtn" onclick="App.daAgentSend()"><i class="fa-solid fa-paper-plane"></i></button>
           </div>
         </div>
@@ -1416,10 +1418,10 @@
             <div class="ps-table-tools">
               <div style="display:flex;align-items:center;gap:6px">
                 <span style="font-size:0.82rem;color:#94a3b8">价格区间</span>
-                <input type="number" id="tmallMinPrice" min="0" step="0.01" placeholder="最低价"
+                <input autocomplete="off" type="number" id="tmallMinPrice" min="0" step="0.01" placeholder="最低价"
                        style="border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;height:33px;font-size:0.82rem;color:#334155;font-family:inherit;outline:none;width:90px">
                 <span style="font-size:0.82rem;color:#94a3b8">-</span>
-                <input type="number" id="tmallMaxPrice" min="0" step="0.01" placeholder="最高价"
+                <input autocomplete="off" type="number" id="tmallMaxPrice" min="0" step="0.01" placeholder="最高价"
                        style="border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;height:33px;font-size:0.82rem;color:#334155;font-family:inherit;outline:none;width:90px">
                 <button class="ap-btn-primary" onclick="App.filterTmall()" style="height:33px"><i class="fa-solid fa-filter"></i> 筛选</button>
                 <button class="ap-btn-sm" onclick="App.resetTmall()" style="height:33px;background:#fff">重置</button>
@@ -1462,7 +1464,7 @@
                   <button class="ap-btn-sm" onclick="App.dyHotToggleCookiePanel()" style="height:34px;background:#fff"><i class="fa-solid fa-cookie-bite" style="color:#ef4444"></i> 抖音 Cookie</button>
                   <div id="dyHotCookiePanel" class="hidden" style="position:absolute;top:calc(100% + 8px);right:0;z-index:90;width:460px;max-width:90vw;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:16px 18px">
                     <div style="font-size:13px;font-weight:600;color:#1e293b;margin-bottom:8px;display:flex;align-items:center;gap:6px"><i class="fa-solid fa-cookie-bite" style="color:#ef4444"></i>抖音热点宝 Cookie</div>
-                    <textarea id="dyHotCookie" placeholder="粘贴抖音网页版登录态 Cookie（用于热点宝热搜抓取）..." style="width:100%;min-height:60px;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;outline:none;color:#334155;line-height:1.6;box-sizing:border-box"></textarea>
+                    <textarea autocomplete="off" id="dyHotCookie" placeholder="粘贴抖音网页版登录态 Cookie（用于热点宝热搜抓取）..." style="width:100%;min-height:60px;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;outline:none;color:#334155;line-height:1.6;box-sizing:border-box"></textarea>
                     <div style="display:flex;gap:10px;margin-top:12px">
                       <button class="btn btn-primary btn-sm" onclick="App.dyHotSaveCookie()"><i class="fa-solid fa-floppy-disk"></i> 保存 Cookie</button>
                     </div>
@@ -1497,7 +1499,7 @@
                 <select id="aisouDate" class="ps-select-sm" onchange="App.filterAisou()" style="height:34px;min-width:150px">
                   <option value="" disabled selected>加载中...</option>
                 </select>
-                <div class="ps-search-wrap"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="aisouKeyword" placeholder="词名称 / 来源词..."></div>
+                <div class="ps-search-wrap"><i class="fa-solid fa-search"></i><input autocomplete="off" type="text" class="ps-search-input" id="aisouKeyword" placeholder="词名称 / 来源词..."></div>
                 <button class="ap-btn-primary" onclick="App.filterAisou()" style="height:34px"><i class="fa-solid fa-filter"></i> 筛选</button>
                 <button class="ap-btn-sm" onclick="App.resetAisou()" style="height:34px;background:#fff">重置</button>
               </div>
@@ -1505,7 +1507,7 @@
                 <button class="ap-btn-sm" onclick="App.aisouToggleCookiePanel()" style="height:34px;background:#fff"><i class="fa-solid fa-cookie-bite" style="color:#8b5cf6"></i> 爱搜 Cookie</button>
                 <div id="aisouCookiePanel" class="hidden" style="position:absolute;top:calc(100% + 8px);right:0;z-index:90;width:460px;max-width:90vw;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:16px 18px">
                   <div style="font-size:13px;font-weight:600;color:#1e293b;margin-bottom:8px;display:flex;align-items:center;gap:6px"><i class="fa-solid fa-key" style="color:#8b5cf6"></i>爱搜登录态</div>
-                  <textarea id="aisouCookie" placeholder="登录 dso.aidso.com 后，在浏览器控制台执行 JSON.stringify(localStorage)，把输出整段粘贴到这里..." style="width:100%;min-height:60px;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;outline:none;color:#334155;line-height:1.6;box-sizing:border-box"></textarea>
+                  <textarea autocomplete="off" id="aisouCookie" placeholder="登录 dso.aidso.com 后，在浏览器控制台执行 JSON.stringify(localStorage)，把输出整段粘贴到这里..." style="width:100%;min-height:60px;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;outline:none;color:#334155;line-height:1.6;box-sizing:border-box"></textarea>
                   <div style="font-size:11px;color:#94a3b8;margin-top:6px">爱搜登录态存在 localStorage（token），非 cookie。粘贴 JSON.stringify(localStorage) 的整段输出即可。</div>
                   <div style="display:flex;gap:10px;margin-top:12px">
                     <button class="btn btn-primary btn-sm" onclick="App.aisouSaveCookie()"><i class="fa-solid fa-floppy-disk"></i> 保存登录态</button>
@@ -1537,7 +1539,7 @@
             <div class="ps-table-tools">
               <div style="display:flex;align-items:center;gap:6px">
                 <span style="font-size:0.82rem;color:#94a3b8">关键词</span>
-                <input type="text" id="tmallMarketKeyword" placeholder="输入要抓取的商品关键词，如 拼豆智能板"
+                <input autocomplete="off" type="text" id="tmallMarketKeyword" placeholder="输入要抓取的商品关键词，如 拼豆智能板"
                        style="border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;height:33px;font-size:0.82rem;color:#334155;font-family:inherit;outline:none;width:230px">
                 <button class="ap-btn-primary" id="tmallMarketScrapeBtn" onclick="App.triggerTmallMarketScrape()" style="height:33px"><i class="fa-solid fa-bolt"></i> 抓取销量前50</button>
                 <button class="ap-btn-sm" onclick="App.loadTmallMarket()" style="height:33px;background:#fff">刷新</button>
@@ -1546,7 +1548,7 @@
                 <button class="ap-btn-sm" onclick="App.tmToggleCookiePanel()" style="height:33px;background:#fff"><i class="fa-solid fa-cookie-bite" style="color:#f97316"></i> Cookie</button>
                 <div id="tmCookiePanel" class="hidden" style="position:absolute;top:calc(100% + 8px);right:0;z-index:90;width:440px;max-width:90vw;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:16px 18px">
                   <div style="font-size:13px;font-weight:600;color:#1e293b;margin-bottom:8px;display:flex;align-items:center;gap:6px"><i class="fa-solid fa-cookie-bite" style="color:#f97316"></i>淘宝 Cookie</div>
-                  <textarea id="tmTaobaoCookie" placeholder="粘贴淘宝网页版登录态 Cookie（留空则抓取时改用扫码登录）..." style="width:100%;min-height:60px;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;outline:none;color:#334155;line-height:1.6;box-sizing:border-box"></textarea>
+                  <textarea autocomplete="off" id="tmTaobaoCookie" placeholder="粘贴淘宝网页版登录态 Cookie（留空则抓取时改用扫码登录）..." style="width:100%;min-height:60px;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;outline:none;color:#334155;line-height:1.6;box-sizing:border-box"></textarea>
                   <div style="font-size:11px;color:#94a3b8;margin-top:6px">留空时，抓取会弹出 Chrome 扫码登录；填写后优先用 Cookie 登录。</div>
                   <div style="display:flex;gap:10px;margin-top:12px">
                     <button class="btn btn-primary btn-sm" onclick="App.tmSaveCookie()"><i class="fa-solid fa-floppy-disk"></i> 保存淘宝 Cookie</button>
@@ -1583,7 +1585,7 @@
             <div class="ps-table-tools">
               <div style="display:flex;align-items:center;gap:6px">
                 <span style="font-size:0.82rem;color:#94a3b8">关键词</span>
-                <input type="text" id="douyinMarketKeyword" placeholder="输入要抓取的商品关键词，如 汽车脚垫"
+                <input autocomplete="off" type="text" id="douyinMarketKeyword" placeholder="输入要抓取的商品关键词，如 汽车脚垫"
                        style="border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;height:33px;font-size:0.82rem;color:#334155;font-family:inherit;outline:none;width:230px">
                 <button class="ap-btn-primary" id="douyinMarketScrapeBtn" onclick="App.triggerDouyinMarketScrape()" style="height:33px"><i class="fa-solid fa-bolt"></i> 抓取销量前50</button>
                 <button class="ap-btn-sm" onclick="App.loadDouyinMarket()" style="height:33px;background:#fff">刷新</button>
@@ -1618,7 +1620,7 @@
             <div class="ps-table-tools">
               <div style="display:flex;align-items:center;gap:6px">
                 <span style="font-size:0.82rem;color:#94a3b8">关键词</span>
-                <input type="text" id="m1688MarketKeyword" placeholder="输入要抓取的商品关键词，如 汽车脚垫"
+                <input autocomplete="off" type="text" id="m1688MarketKeyword" placeholder="输入要抓取的商品关键词，如 汽车脚垫"
                        style="border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;height:33px;font-size:0.82rem;color:#334155;font-family:inherit;outline:none;width:230px">
                 <button class="ap-btn-primary" id="m1688MarketScrapeBtn" onclick="App.trigger1688MarketScrape()" style="height:33px"><i class="fa-solid fa-bolt"></i> 抓取前10页</button>
                 <button class="ap-btn-sm" onclick="App.load1688Market()" style="height:33px;background:#fff">刷新</button>
@@ -1627,7 +1629,7 @@
                 <button class="ap-btn-sm" onclick="App.m1688ToggleCookiePanel()" style="height:33px;background:#fff"><i class="fa-solid fa-cookie-bite" style="color:#0f766e"></i> Cookie</button>
                 <div id="m1688CookiePanel" class="hidden" style="position:absolute;top:calc(100% + 8px);right:0;z-index:90;width:440px;max-width:90vw;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:16px 18px">
                   <div style="font-size:13px;font-weight:600;color:#1e293b;margin-bottom:8px;display:flex;align-items:center;gap:6px"><i class="fa-solid fa-cookie-bite" style="color:#0f766e"></i>1688 Cookie</div>
-                  <textarea id="m1688Cookie" placeholder="粘贴 1688 登录态 Cookie（k1=v1; k2=v2 ...）..." style="width:100%;min-height:60px;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;outline:none;color:#334155;line-height:1.6;box-sizing:border-box"></textarea>
+                  <textarea autocomplete="off" id="m1688Cookie" placeholder="粘贴 1688 登录态 Cookie（k1=v1; k2=v2 ...）..." style="width:100%;min-height:60px;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;outline:none;color:#334155;line-height:1.6;box-sizing:border-box"></textarea>
                   <div style="font-size:11px;color:#94a3b8;margin-top:6px">Cookie 需包含 _m_h5_tk 等 1688 登录态字段，否则抓取会失败。</div>
                   <div style="display:flex;gap:10px;margin-top:12px">
                     <button class="btn btn-primary btn-sm" onclick="App.m1688SaveCookie()"><i class="fa-solid fa-floppy-disk"></i> 保存 1688 Cookie</button>
@@ -1751,7 +1753,7 @@
               <!-- Cookie 与抓取触发（悬浮面板） -->
               <div class="sd-update-panel hidden" id="sdUpdatePanel">
                 <div class="sd-cookie-label"><i class="fa-solid fa-cookie-bite" style="color:#16a34a"></i>抖音 Cookie</div>
-                <textarea id="sdDouyinCookie" class="sd-cookie-textarea" placeholder="粘贴抖音网页版登录态 Cookie..."></textarea>
+                <textarea autocomplete="off" id="sdDouyinCookie" class="sd-cookie-textarea" placeholder="粘贴抖音网页版登录态 Cookie..."></textarea>
                 <div class="sd-cookie-actions">
                   <button class="btn btn-primary btn-sm" onclick="App.sdSaveCookie('douyin')"><i class="fa-solid fa-floppy-disk"></i> 保存抖音 Cookie</button>
                 </div>
@@ -1759,7 +1761,7 @@
                 <div style="height:1px;background:#f1f5f9;margin:14px 0"></div>
 
                 <div class="sd-cookie-label"><i class="fa-solid fa-cookie-bite" style="color:#e11d48"></i>小红书 Cookie</div>
-                <textarea id="sdXhsCookie" class="sd-cookie-textarea" placeholder="粘贴小红书网页版 Cookie（a1=...; web_session=...）..."></textarea>
+                <textarea autocomplete="off" id="sdXhsCookie" class="sd-cookie-textarea" placeholder="粘贴小红书网页版 Cookie（a1=...; web_session=...）..."></textarea>
                 <div class="sd-cookie-actions">
                   <button class="btn btn-primary btn-sm" onclick="App.sdSaveCookie('xhs')"><i class="fa-solid fa-floppy-disk"></i> 保存小红书 Cookie</button>
                 </div>
@@ -1807,8 +1809,8 @@
                     <span id="sdDateLabel" style="white-space:nowrap">选择日期</span>
                     <i class="fa-solid fa-chevron-down" style="color:oklch(65% 0.02 245);font-size:0.7rem"></i>
                   </button>
-                  <input type="date" id="sdDateStart" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
-                  <input type="date" id="sdDateEnd" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+                  <input autocomplete="off" type="date" id="sdDateStart" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+                  <input autocomplete="off" type="date" id="sdDateEnd" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
                   <div id="sdDatePanel" style="display:none;position:absolute;top:40px;right:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:14px;user-select:none"></div>
                 </div>
               </div>
@@ -1893,7 +1895,7 @@
             </div>
           </div>
           <div class="sd-agent-input">
-            <textarea id="sdAgentInput" class="sd-agent-textarea" placeholder="例如：防晒霜 / 美妆 / 清爽不油腻、油皮可用 / 小红书 / 种草正文+口播脚本..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();App.sdAgentSend();}"></textarea>
+            <textarea autocomplete="off" id="sdAgentInput" class="sd-agent-textarea" placeholder="例如：防晒霜 / 美妆 / 清爽不油腻、油皮可用 / 小红书 / 种草正文+口播脚本..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();App.sdAgentSend();}"></textarea>
             <button class="sd-agent-send" id="sdAgentSendBtn" onclick="App.sdAgentSend()"><i class="fa-solid fa-paper-plane"></i></button>
           </div>
         </div>
@@ -1952,7 +1954,7 @@
             <div class="vd-drop-icon"><i class="fa-solid fa-cloud-arrow-up"></i></div>
             <div class="vd-drop-text">拖拽图片到此处，或<span class="vd-drop-link">点击选择</span></div>
             <div class="vd-drop-sub">支持选择多张图片或整个文件夹</div>
-            <input type="file" id="vdFileInput" accept="image/*" multiple style="display:none" onchange="App.vdHandleFiles(this.files)">
+            <input autocomplete="off" type="file" id="vdFileInput" accept="image/*" multiple style="display:none" onchange="App.vdHandleFiles(this.files)">
           </div>
           <!-- 缩略图画廊 -->
           <div class="vd-thumb-gallery" id="vdThumbGallery">
@@ -2057,8 +2059,8 @@
               <span id="odDateLabel" style="white-space:nowrap">选择日期</span>
               <i class="fa-solid fa-chevron-down" style="color:oklch(65% 0.02 245);font-size:0.7rem"></i>
             </button>
-            <input type="date" id="odDateStart" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
-            <input type="date" id="odDateEnd" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+            <input autocomplete="off" type="date" id="odDateStart" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
+            <input autocomplete="off" type="date" id="odDateEnd" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;pointer-events:none">
             <div id="odDatePanel" style="display:none;position:absolute;top:40px;right:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);padding:14px;user-select:none"></div>
           </div>
         </div>
@@ -2098,7 +2100,7 @@
 
       <!-- 搜索栏 -->
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center">
-        <div class="ps-search-wrap" style="flex:1;max-width:360px"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" id="odSearch" placeholder="搜索商品名称 / 链接ID..."></div>
+        <div class="ps-search-wrap" style="flex:1;max-width:360px"><i class="fa-solid fa-search"></i><input autocomplete="off" type="text" class="ps-search-input" id="odSearch" placeholder="搜索商品名称 / 链接ID..."></div>
         <div style="position:relative">
           <button id="odColBtn" onclick="App.toggleOdColPanel()" style="display:flex;align-items:center;gap:6px;border:1px solid #e2e8f0;background:#fff;border-radius:8px;padding:6px 12px;font-size:13px;color:#475569;cursor:pointer">选择字段 <i class="fa-solid fa-chevron-down"></i></button>
           <div id="odColPanel" style="display:none;position:absolute;top:38px;right:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.14);padding:10px;min-width:210px;max-height:340px;overflow:auto"></div>
@@ -2136,7 +2138,7 @@
         <div class="ap-toolbar">
           <div class="ap-search-wrap">
             <i class="fa-solid fa-search"></i>
-            <input class="ap-search-input" id="adminSearch" placeholder="搜索管理员姓名或账号..." oninput="App.filterAdminTable()">
+            <input autocomplete="off" class="ap-search-input" id="adminSearch" placeholder="搜索管理员姓名或账号..." oninput="App.filterAdminTable()">
           </div>
           <button class="ap-btn-primary" onclick="App.openAdminModal()"><i class="fa-solid fa-plus"></i> 新增管理员</button>
         </div>
@@ -2199,12 +2201,12 @@
           <div style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;padding:24px">
             <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:20px">基本资料</h3>
             <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-              <div class="form-group"><label>姓名</label><input class="form-input" id="pfName" placeholder="请输入姓名" value="张经理"></div>
-              <div class="form-group"><label>手机号</label><input class="form-input" id="pfPhone" placeholder="请输入手机号" value="13800138001"></div>
+              <div class="form-group"><label>姓名</label><input autocomplete="off" class="form-input" id="pfName" placeholder="请输入姓名" value="张经理"></div>
+              <div class="form-group"><label>手机号</label><input autocomplete="off" class="form-input" id="pfPhone" placeholder="请输入手机号" value="13800138001"></div>
             </div>
             <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-              <div class="form-group"><label>邮箱</label><input class="form-input" id="pfEmail" placeholder="请输入邮箱" value="zhangjl@julang.com"></div>
-              <div class="form-group"><label>微信号</label><input class="form-input" id="pfWechat" placeholder="请输入微信号" value="zhang_manager"></div>
+              <div class="form-group"><label>邮箱</label><input autocomplete="off" class="form-input" id="pfEmail" placeholder="请输入邮箱" value="zhangjl@julang.com"></div>
+              <div class="form-group"><label>微信号</label><input autocomplete="off" class="form-input" id="pfWechat" placeholder="请输入微信号" value="zhang_manager"></div>
             </div>
             <div class="form-group"><label>性别</label><select class="form-select" id="pfGender"><option value="male" selected>男</option><option value="female">女</option></select></div>
             <div style="display:flex;gap:12px;margin-top:24px"><button class="btn btn-primary" onclick="App.saveProfile()">保存修改</button><button class="btn btn-outline" onclick="App.resetProfile()">重置</button></div>
@@ -2215,9 +2217,9 @@
       <div class="ap-panel" id="pf-panel-profile-security">
         <div style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;padding:24px;max-width:600px">
           <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:20px">修改密码</h3>
-          <div class="form-group"><label>当前密码</label><div class="form-input-wrap"><input class="form-input" type="password" id="pfCurPwd" placeholder="请输入当前密码"></div></div>
-          <div class="form-group"><label>新密码</label><div class="form-input-wrap"><input class="form-input" type="password" id="pfNewPwd" placeholder="8-20位，包含字母和数字"></div></div>
-          <div class="form-group"><label>确认新密码</label><div class="form-input-wrap"><input class="form-input" type="password" id="pfNewPwd2" placeholder="再次输入新密码"></div></div>
+          <div class="form-group"><label>当前密码</label><div class="form-input-wrap"><input autocomplete="off" class="form-input" type="password" id="pfCurPwd" placeholder="请输入当前密码"></div></div>
+          <div class="form-group"><label>新密码</label><div class="form-input-wrap"><input autocomplete="off" class="form-input" type="password" id="pfNewPwd" placeholder="8-20位，包含字母和数字"></div></div>
+          <div class="form-group"><label>确认新密码</label><div class="form-input-wrap"><input autocomplete="off" class="form-input" type="password" id="pfNewPwd2" placeholder="再次输入新密码"></div></div>
           <button class="btn btn-primary" onclick="App.changePassword()">修改密码</button>
           <hr style="margin:28px 0;border-color:#f1f5f9">
           <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:16px">安全设置</h3>
@@ -2242,11 +2244,11 @@
         <div style="background:#fff;border-radius:12px;border:1px solid #f1f5f9;padding:24px;max-width:600px">
           <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:20px">通知偏好</h3>
           <div style="display:flex;flex-direction:column;gap:12px" id="pfNotifyList">
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">退款预警通知</div><div style="font-size:12px;color:#94a3b8">退款率超过阈值时发送告警</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" checked style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">差评实时推送</div><div style="font-size:12px;color:#94a3b8">收到差评时立即通知</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" checked style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">每日数据报告</div><div style="font-size:12px;color:#94a3b8">每天早上9点推送昨日数据摘要</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" checked style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">系统更新通知</div><div style="font-size:12px;color:#94a3b8">系统功能更新和维护通知</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">营销活动提醒</div><div style="font-size:12px;color:#94a3b8">大促活动开始/结束前的提醒</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" checked style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">退款预警通知</div><div style="font-size:12px;color:#94a3b8">退款率超过阈值时发送告警</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input autocomplete="off" type="checkbox" checked style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">差评实时推送</div><div style="font-size:12px;color:#94a3b8">收到差评时立即通知</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input autocomplete="off" type="checkbox" checked style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">每日数据报告</div><div style="font-size:12px;color:#94a3b8">每天早上9点推送昨日数据摘要</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input autocomplete="off" type="checkbox" checked style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">系统更新通知</div><div style="font-size:12px;color:#94a3b8">系统功能更新和维护通知</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input autocomplete="off" type="checkbox" style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f8fafc;border-radius:10px"><div><div style="font-weight:600;color:#1e293b;font-size:14px">营销活动提醒</div><div style="font-size:12px;color:#94a3b8">大促活动开始/结束前的提醒</div></div><label style="position:relative;display:inline-block;width:44px;height:24px"><input autocomplete="off" type="checkbox" checked style="opacity:0;width:0;height:0" onchange="this.parentElement.classList.toggle('pf-toggle-on')"><span style="position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:24px;transition:.3s"></span><span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.15)"></span></label></div>
           </div>
           <button class="btn btn-primary" style="margin-top:20px" onclick="App.showToast('通知设置已保存','success')">保存设置</button>
         </div>
@@ -2286,9 +2288,9 @@
     <div class="ps-modal-body">
       <p style="font-size:13px;color:#64748b;margin-bottom:14px;line-height:1.7">请输入目标客单价区间（大众能接受的价格区间）。智能体将对比抖音热搜品类与天猫榜单价格、市场客单价，返回约 50 个潜力商品。</p>
       <div class="ps-price-inputs">
-        <input type="number" id="psPriceMin" min="0" placeholder="最低价（可留空）">
+        <input autocomplete="off" type="number" id="psPriceMin" min="0" placeholder="最低价（可留空）">
         <span style="color:#94a3b8">~</span>
-        <input type="number" id="psPriceMax" min="0" placeholder="最高价（可留空）">
+        <input autocomplete="off" type="number" id="psPriceMax" min="0" placeholder="最高价（可留空）">
       </div>
     </div>
     <div class="ps-modal-foot">
@@ -2352,28 +2354,28 @@
     <div class="modal-header" style="font-size:17px">种草信息填写</div>
     <div class="modal-body">
       <div class="sd-info-row">
-        <div class="sd-info-field"><label class="sd-info-label">产品名称 <span class="req">*</span></label><input id="sdInfoName" class="sd-info-input" placeholder="例如：XX清爽防晒霜"></div>
-        <div class="sd-info-field"><label class="sd-info-label">产品品类</label><input id="sdInfoCategory" class="sd-info-input" placeholder="美妆/食品/家居/数码/服饰"></div>
+        <div class="sd-info-field"><label class="sd-info-label">产品名称 <span class="req">*</span></label><input autocomplete="off" id="sdInfoName" class="sd-info-input" placeholder="例如：XX清爽防晒霜"></div>
+        <div class="sd-info-field"><label class="sd-info-label">产品品类</label><input autocomplete="off" id="sdInfoCategory" class="sd-info-input" placeholder="美妆/食品/家居/数码/服饰"></div>
       </div>
-      <div class="sd-info-field"><label class="sd-info-label">核心卖点 <span class="muted">（最多3个，用大白话说）</span></label><textarea id="sdInfoSelling" class="sd-info-textarea" placeholder="例如：清爽不油腻、油皮也能用、平价"></textarea></div>
+      <div class="sd-info-field"><label class="sd-info-label">核心卖点 <span class="muted">（最多3个，用大白话说）</span></label><textarea autocomplete="off" id="sdInfoSelling" class="sd-info-textarea" placeholder="例如：清爽不油腻、油皮也能用、平价"></textarea></div>
       <div class="sd-info-row">
-        <div class="sd-info-field"><label class="sd-info-label">目标人群</label><input id="sdInfoAudience" class="sd-info-input" placeholder="宝妈/学生党/上班族/成分党"></div>
-        <div class="sd-info-field"><label class="sd-info-label">价格区间</label><input id="sdInfoPrice" class="sd-info-input" placeholder="例如：99-149元"></div>
+        <div class="sd-info-field"><label class="sd-info-label">目标人群</label><input autocomplete="off" id="sdInfoAudience" class="sd-info-input" placeholder="宝妈/学生党/上班族/成分党"></div>
+        <div class="sd-info-field"><label class="sd-info-label">价格区间</label><input autocomplete="off" id="sdInfoPrice" class="sd-info-input" placeholder="例如：99-149元"></div>
       </div>
       <div class="sd-info-row">
         <div class="sd-info-field"><label class="sd-info-label">投放平台</label><select id="sdInfoPlatform" class="sd-info-select"><option value="">请选择</option><option>抖音</option><option>小红书</option></select></div>
-        <div class="sd-info-field"><label class="sd-info-label">风格偏好</label><input id="sdInfoStyle" class="sd-info-input" placeholder="碎碎念型/激动安利型/冷静吐槽型/搞笑整活型"></div>
+        <div class="sd-info-field"><label class="sd-info-label">风格偏好</label><input autocomplete="off" id="sdInfoStyle" class="sd-info-input" placeholder="碎碎念型/激动安利型/冷静吐槽型/搞笑整活型"></div>
       </div>
-      <div class="sd-info-field"><label class="sd-info-label">使用场景 / 痛点</label><textarea id="sdInfoScene" class="sd-info-textarea" placeholder="用户在什么情况下会用到这个产品，有什么痛点"></textarea></div>
+      <div class="sd-info-field"><label class="sd-info-label">使用场景 / 痛点</label><textarea autocomplete="off" id="sdInfoScene" class="sd-info-textarea" placeholder="用户在什么情况下会用到这个产品，有什么痛点"></textarea></div>
       <div class="sd-info-field">
         <label class="sd-info-label">内容类型 <span class="req">*</span></label>
         <div class="sd-info-check">
-          <label><input type="checkbox" name="sdInfoType" value="种草正文">种草正文</label>
-          <label><input type="checkbox" name="sdInfoType" value="评论区文案">评论区文案</label>
-          <label><input type="checkbox" name="sdInfoType" value="口播文案">口播文案</label>
+          <label><input autocomplete="off" type="checkbox" name="sdInfoType" value="种草正文">种草正文</label>
+          <label><input autocomplete="off" type="checkbox" name="sdInfoType" value="评论区文案">评论区文案</label>
+          <label><input autocomplete="off" type="checkbox" name="sdInfoType" value="口播文案">口播文案</label>
         </div>
       </div>
-      <div class="sd-info-field"><label class="sd-info-label">补充说明 <span class="muted">（可选）</span></label><textarea id="sdInfoNote" class="sd-info-textarea" placeholder="任何你想强调的点"></textarea></div>
+      <div class="sd-info-field"><label class="sd-info-label">补充说明 <span class="muted">（可选）</span></label><textarea autocomplete="off" id="sdInfoNote" class="sd-info-textarea" placeholder="任何你想强调的点"></textarea></div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="App.closeSdInfoModal()">取消</button>
@@ -2408,13 +2410,13 @@
     </div>
   </div>
   <div class="ai-chat-input-wrap">
-    <input class="ai-chat-input" id="aiChatInput" placeholder="输入问题，Enter 发送..." onkeydown="if(event.key==='Enter')App.aiSendMessage()">
+    <input autocomplete="off" class="ai-chat-input" id="aiChatInput" placeholder="输入问题，Enter 发送..." onkeydown="if(event.key==='Enter')App.aiSendMessage()">
     <button class="ai-chat-send" id="aiChatSendBtn" onclick="App.aiSendMessage()"><i class="fa-solid fa-paper-plane"></i></button>
   </div>
   <div class="ai-chat-footer">聚浪网络科技 · AI 服务可能产生误差，请以实际数据为准</div>
 </div>
 
-<script src="js/app.js?v=20260918d"></script>
+<script src="js/app.js?v=20260918e"></script>
 <script src="js/vue/components.js?v=20260917d"></script>
 <script src="js/vue/page-profile.js?v=20260918c"></script>
 <script src="js/vue/page-hr-common.js"></script>

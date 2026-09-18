@@ -687,13 +687,11 @@ const App = (() => {
     state.currentAccount = username;
     state.currentPermissions = adminData.permissions || [];
 
-    if (document.getElementById('remember').checked) {
-      localStorage.setItem('admin_user', username);
-      localStorage.setItem('admin_pass', password);
-    } else {
+    // 「记住密码」已全局下线：不再留存任何账号密码；顺手清掉历史遗留的明文凭据
+    try {
       localStorage.removeItem('admin_user');
       localStorage.removeItem('admin_pass');
-    }
+    } catch (e) {}
     sessionStorage.setItem('admin_logged_in', 'true');
     sessionStorage.setItem('admin_current_user', state.currentUser);
     sessionStorage.setItem('admin_current_account', username);
@@ -701,6 +699,15 @@ const App = (() => {
     if (state.currentPermissions && state.currentPermissions.length) {
       sessionStorage.setItem('admin_permissions', JSON.stringify(state.currentPermissions));
     }
+
+    // 阻止浏览器「保存密码」弹窗：登录成功后 Chrome 会在此刻采样密码值，先行清空
+    try {
+      var __nafPwdEl = document.getElementById('password');
+      if (__nafPwdEl) {
+        __nafPwdEl.value = '';
+        __nafPwdEl.setAttribute('autocomplete', 'off');
+      }
+    } catch (e) {}
 
     document.getElementById('loginPage').classList.add('hidden');
     document.getElementById('appPage').classList.remove('hidden');
@@ -712,6 +719,7 @@ const App = (() => {
     // 通知后端清除 token 会话（fire-and-forget）
     fetch('/api/auth/logout', { method: 'POST' }).catch(function() {});
     localStorage.removeItem('admin_user');
+    localStorage.removeItem('admin_pass');
     sessionStorage.removeItem('admin_logged_in');
     sessionStorage.removeItem('admin_permissions');
     sessionStorage.removeItem('admin_current_user');
@@ -3281,16 +3289,15 @@ const App = (() => {
     document.getElementById('loginForm').addEventListener('submit', handleLogin);
     document.getElementById('logoutBtn').addEventListener('click', handleLogout);
 
-    // Auto-fill remembered user
-    const remembered = localStorage.getItem('admin_user');
-    const rememberedPwd = localStorage.getItem('admin_pass');
-    if (remembered) {
-      document.getElementById('username').value = remembered;
-      document.getElementById('remember').checked = true;
-    }
-    if (rememberedPwd) {
-      document.getElementById('password').value = rememberedPwd;
-    }
+    // 「记住密码」已下线：一次性清空历史遗留的明文账号密码，输入框始终保持空白
+    try {
+      localStorage.removeItem('admin_user');
+      localStorage.removeItem('admin_pass');
+    } catch (e) {}
+    var __nafU = document.getElementById('username');
+    var __nafP = document.getElementById('password');
+    if (__nafU) __nafU.value = '';
+    if (__nafP) __nafP.value = '';
 
     // 刷新后自动恢复登录状态
     if (sessionStorage.getItem('admin_logged_in') === 'true') {
