@@ -59,7 +59,7 @@ POLL_INTERVAL = 2
 #   而非布尔值/数据对象 —— 必须 unwrap 到 `. _value`（或 `._rawValue`）。
 #   userInfo 解包后形如：
 #     {userId:'6901...', redId:'27730175439', nickname:'小红薯', guest:false}
-#   → 判据：loggedIn === true 且 guest === false 且取到 userId（非空字符串）。
+#   → 判据（满足任一即可）：loggedIn === true，或（guest === false 且 userId 非空）。
 #   ⚠️ 同一份 __INITIAL_STATE__ 里有**循环引用**，绝不能用 JSON.stringify(整体)
 #      （会抛 "Converting circular structure to JSON"）→ 只按字段名逐个取值。
 PROBE_JS = r"""
