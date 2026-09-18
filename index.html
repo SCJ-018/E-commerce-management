@@ -1365,8 +1365,12 @@
         .ps-v-sum{font-size:12px;color:#64748b;line-height:1.5}
         .ps-advice{margin-top:14px;background:linear-gradient(135deg,#faf5ff,#f5f3ff);border:1px solid #e9d5ff;border-radius:12px;padding:14px 16px;font-size:13px;color:#334155;line-height:1.8;white-space:pre-wrap}
         .ps-advice-title{font-size:13px;font-weight:700;color:#7c3aed;margin-bottom:6px;display:flex;align-items:center;gap:6px}
-        /* 历史选品记录：一页 = 一次运行 */
+        /* 历史选品记录：先选日期，再翻该日的 N 次运行（一页 = 一次运行） */
         .ps-hist-bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:12px;color:#94a3b8;margin-bottom:14px;padding-bottom:10px;border-bottom:1px dashed #eef2f7}
+        .ps-hist-left{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+        .ps-hist-label{display:flex;align-items:center;gap:4px;font-size:12px;color:#94a3b8}
+        .ps-hist-label i{color:#a78bfa}
+        .ps-hist-date{height:34px;min-width:180px;color:#475569}
         .ps-hist-total{font-weight:600;color:#64748b}
         .ps-hist-pos{font-weight:600;color:#7c3aed}
         .ps-run-head{background:linear-gradient(135deg,#faf5ff,#f5f3ff);border:1px solid #e9d5ff;border-radius:12px;padding:12px 14px;margin-bottom:14px}

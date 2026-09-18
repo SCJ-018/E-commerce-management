@@ -73,11 +73,15 @@
     },
     priceModal: { open: false, min: '', max: '' },
     cardsPanel: { open: false },
-    // 历史选品记录：累计的次数一行一条，前端一页展示一次运行
+    // 历史选品记录：先选日期，再看该日期当日的 N 次运行（一页 = 一次运行）
     historyPanel: {
       open: false,
-      runs: 0,        // 累计运行次数（后端 total）
-      page: 1,        // 当前第几次运行（= 第几页）
+      dates: [],      // 有记录的日期（倒序）
+      date: '',       // 当前选中日期
+      dateCounts: {}, // { 日期: 当日运行次数 }
+      datesLoading: false,
+      runs: 0,        // 当前选中日期的运行次数（后端 total = 当日可翻页数）
+      page: 1,        // 当前第几页（当日第几次运行）
       totalPages: 1,
       meta: null,     // 当前这次运行的摘要（时间 / 价格区间 / 入选商品）
       body: null,     // 当前这次运行的完整结果（selection-final 用）
@@ -366,6 +370,8 @@
               if (epoch !== _agentEpoch) return;
               _st.agent.final = final;
               _st.agent.mode = 'final';
+              // 新运行已入库：历史面板开着就刷新日期/次数，否则下次打开才看到
+              if (_st.historyPanel.open) openHistory();
               return;
             }
             if (st && st.status === 'error') {
@@ -407,22 +413,52 @@
         }
       }
 
-      // ============ 历史选品记录（一页 = 一次运行，只累计不覆盖） ============
+      // ============ 历史选品记录（先选日期 → 该日 N 次运行，一页 = 一次运行） ============
       function historyToggle() {
         if (_st.historyPanel.open) { _st.historyPanel.open = false; return; }
         _st.historyPanel.open = true;
-        loadHistoryPage(_st.historyPanel.page || 1);
+        openHistory();
       }
       function closeHistory() { _st.historyPanel.open = false; }
 
-      // 翻页：始终请求「每页 1 条」，页号即第几次运行
+      // 打开面板：拉日期列表 → 默认选中最新有记录的日期 → 拉该日第 1 页
+      async function openHistory() {
+        var hp = _st.historyPanel;
+        var seq = ++_histSeq;                  // 开面板也算一次「换上下文」，作废在途请求
+        hp.datesLoading = true;
+        hp.error = '';
+        var data = await ApiService.getHistoryDates();
+        if (seq !== _histSeq) return;
+        hp.datesLoading = false;
+        hp.dates = (data && data.dates) || [];
+        hp.dateCounts = (data && data.counts) || {};
+        if (!hp.dates.length) {
+          hp.date = ''; hp.runs = 0; hp.page = 1; hp.totalPages = 1;
+          hp.meta = null; hp.body = null;
+          return;
+        }
+        if (hp.dates.indexOf(hp.date) < 0) { hp.date = hp.dates[0]; hp.page = 1; }
+        loadHistoryPage(hp.page || 1);
+      }
+
+      // 切换日期：回到该日第 1 页
+      function changeHistoryDate(d) {
+        var hp = _st.historyPanel;
+        if (!d || d === hp.date) return;
+        hp.date = d;
+        hp.page = 1;
+        hp.meta = null; hp.body = null;
+        loadHistoryPage(1);
+      }
+
+      // 翻页：始终请求「每页 1 条」+ 当前日期，页号即该日第几次运行
       async function loadHistoryPage(page) {
         var seq = ++_histSeq;
         var hp = _st.historyPanel;
         hp.loading = true;
         hp.error = '';
-        var data = await ApiService.getHistoryRuns(page, 1);
-        if (seq !== _histSeq) return;          // 已连点翻到别页 → 丢弃过期响应
+        var data = await ApiService.getHistoryRuns(page, 1, hp.date);
+        if (seq !== _histSeq) return;          // 已连点翻页 / 换日期 → 丢弃过期响应
         hp.loading = false;
         if (!data || !Array.isArray(data.items)) {
           hp.runs = 0; hp.page = 1; hp.totalPages = 1; hp.meta = null; hp.body = null;
@@ -437,7 +473,7 @@
         hp.meta = {
           id: run.id,
           seq: run.seq || hp.page,
-          date: run.date || '',
+          date: run.date || hp.date || '',
           createdAt: run.createdAt || run.date || '',
           priceLabel: run.priceLabel || '',
           productCount: run.productCount || 0,
@@ -449,6 +485,18 @@
         var tp = _st.historyPanel.totalPages || 1;
         if (!p || p < 1 || p > tp || p === _st.historyPanel.page) return;
         loadHistoryPage(p);
+      }
+      // 下拉里每个日期的文案：2026-09-18（3 次运行）
+      function histDateLabel(d) {
+        var n = _st.historyPanel.dateCounts[d];
+        return n ? (d + '（' + n + ' 次运行）') : d;
+      }
+      // 该日一次都没有 / 该日这次没结果时的提示文案
+      function histEmptyText() {
+        var hp = _st.historyPanel;
+        if (!hp.dates.length) return '暂无选品记录';
+        if (!hp.runs) return hp.date + ' 当天没有选品记录';
+        return '该次运行未取到选品结果';
       }
       // 入选商品摘要（模板里不裸访问嵌套属性）
       function runProductsText(meta) {
@@ -483,6 +531,7 @@
         openPriceModal, closePriceModal, confirmPrice,
         expandCards, closeCardsPanel, submitCards, checkedCount,
         rising, historyToggle, closeHistory, loadHistoryPage, historyGoPage,
+        changeHistoryDate, histDateLabel, histEmptyText,
         runProductsText, runTimeText,
       };
     },
@@ -907,7 +956,7 @@
   </div>
 </teleport>
 
-<!-- ====== 弹窗 3：历史选品记录（一页 = 一次运行） ====== -->
+<!-- ====== 弹窗 3：历史选品记录（选日期 → 该日 N 次运行，一页 = 一次运行） ====== -->
 <teleport to="body">
   <div v-if="state.historyPanel.open" class="ps-overlay">
     <div class="ps-modal" style="width:780px;height:88vh">
@@ -917,18 +966,29 @@
       </div>
       <div class="ps-modal-body" style="padding-top:14px">
         <div class="ps-hist-bar">
-          <span class="ps-hist-total">累计 {{ state.historyPanel.runs }} 次选品运行（每次运行独立存档，不会覆盖）</span>
-          <span v-if="state.historyPanel.runs" class="ps-hist-pos">第 {{ state.historyPanel.page }} / {{ state.historyPanel.totalPages }} 次</span>
+          <div class="ps-hist-left">
+            <span class="ps-hist-label"><i class="fa-regular fa-calendar"></i> 日期</span>
+            <select class="ps-select-sm ps-hist-date" :value="state.historyPanel.date"
+                    :disabled="state.historyPanel.datesLoading || !state.historyPanel.dates.length"
+                    @change="changeHistoryDate($event.target.value)">
+              <option v-for="d in state.historyPanel.dates" :key="d" :value="d">{{ histDateLabel(d) }}</option>
+              <option v-if="!state.historyPanel.dates.length" value="" disabled selected>
+                {{ state.historyPanel.datesLoading ? '加载中...' : '暂无记录' }}
+              </option>
+            </select>
+            <span class="ps-hist-total">当日 {{ state.historyPanel.runs }} 次选品运行（最新在前，每次运行独立存档）</span>
+          </div>
+          <span v-if="state.historyPanel.runs" class="ps-hist-pos">第 {{ state.historyPanel.page }} / {{ state.historyPanel.totalPages }} 页</span>
         </div>
         <div v-if="state.historyPanel.loading" class="sa-loading"><i class="fa-solid fa-spinner"></i> 正在加载历史记录...</div>
         <div v-else-if="state.historyPanel.error" class="sa-analysis" style="color:#dc2626">{{ state.historyPanel.error }}</div>
         <div v-else-if="!state.historyPanel.meta" style="color:#94a3b8;padding:24px;text-align:center">
-          {{ state.historyPanel.runs ? '该次运行未取到选品结果' : '暂无选品记录' }}
+          {{ histEmptyText() }}
         </div>
         <template v-else>
           <div class="ps-run-head">
             <div class="ps-run-line">
-              <span class="ps-run-tag">第 {{ state.historyPanel.meta.seq }} 次运行</span>
+              <span class="ps-run-tag">{{ state.historyPanel.meta.date || state.historyPanel.date }} 第 {{ state.historyPanel.meta.seq }} 次运行</span>
               <span class="ps-run-time"><i class="fa-regular fa-clock"></i> {{ runTimeText(state.historyPanel.meta) }}</span>
               <span v-if="state.historyPanel.meta.priceLabel" class="ps-run-price">价格区间 {{ state.historyPanel.meta.priceLabel }}</span>
             </div>
@@ -936,7 +996,7 @@
               入选：{{ runProductsText(state.historyPanel.meta) }}
             </div>
           </div>
-          <selection-final v-if="state.historyPanel.body" :final="state.historyPanel.body" :title="'第 ' + state.historyPanel.meta.seq + ' 次运行结果'"></selection-final>
+          <selection-final v-if="state.historyPanel.body" :final="state.historyPanel.body" :title="(state.historyPanel.meta.date || state.historyPanel.date) + ' 第 ' + state.historyPanel.meta.seq + ' 次运行结果'"></selection-final>
           <div v-else class="sa-analysis">该次运行存档里没有选品结果（可能当时分析失败）。</div>
         </template>
       </div>

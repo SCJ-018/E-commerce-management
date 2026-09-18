@@ -7592,10 +7592,20 @@ def ps_rising():
 
 @app.route('/api/product-selection/history/dates', methods=['GET'])
 def ps_history_dates():
+    """有选品记录的日期列表（倒序）+ 每个日期当日的运行次数（= 该日可翻的页数）。
+
+    dates 保持为字符串数组（旧前端兼容）；次数额外放在 counts 里。
+    """
     try:
         _ensure_selection_record_table()
-        rows = db_execute("SELECT DISTINCT `日期` FROM `选品记录表` ORDER BY `日期` DESC")
-        return success({'dates': [str(r['日期']) for r in rows]})
+        rows = db_execute(
+            "SELECT `日期`, COUNT(*) AS c FROM `选品记录表` GROUP BY `日期` ORDER BY `日期` DESC")
+        dates, counts = [], {}
+        for r in rows:
+            d = str(r['日期'])
+            dates.append(d)
+            counts[d] = int(r['c'] or 0)
+        return success({'dates': dates, 'counts': counts})
     except Exception as e:
         return fail(str(e))
 
@@ -7605,7 +7615,9 @@ def ps_history_runs():
     """历史选品记录（分页）：**每次选品运行 = 一条记录 = 前端一页**。
 
     - page / page_size（page_size 默认 1，最大 10）——前端按「一页一次运行」翻页。
-    - 返回 total = 累计运行次数（永不因同一天多次运行而丢失），items 按时间倒序。
+    - date（可选 YYYY-MM-DD）：只看该日期的记录，此时 total / totalPages / seq
+      全部按「当日」口径算 —— 即每个日期对应自己那 N 页（N = 当日运行次数）。
+    - 返回 total = 运行次数（不传 date 时为累计次数），items 按时间倒序。
     - 每条 item 直接带完整 result，避免前端「翻页 + 取详情」两次请求错配。
     """
     try:
@@ -7621,7 +7633,16 @@ def ps_history_runs():
         page = max(1, page)
         page_size = min(max(page_size, 1), 10)
 
-        cnt = list(db_execute("SELECT COUNT(*) AS c FROM `选品记录表`"))
+        d = (request.args.get('date') or '').strip()
+        where, args = '', []
+        if d:
+            # 非法日期直接进 SQL 会抛 1525 被当成 DB 异常，这里挡在库前面
+            if not re.match(r'^\d{4}-\d{2}-\d{2}$', d):
+                return fail('日期格式应为 YYYY-MM-DD')
+            where = " WHERE `日期` = %s"
+            args.append(d)
+
+        cnt = list(db_execute("SELECT COUNT(*) AS c FROM `选品记录表`" + where, args or None))
         total = int(cnt[0]['c']) if cnt and cnt[0].get('c') is not None else 0
         total_pages = max(1, (total + page_size - 1) // page_size)
         if page > total_pages:
@@ -7629,9 +7650,9 @@ def ps_history_runs():
         offset = (page - 1) * page_size
 
         rows = list(db_execute(
-            "SELECT `id`, `日期`, `价格区间`, `结果`, `创建时间` FROM `选品记录表` "
-            "ORDER BY `创建时间` DESC, `id` DESC LIMIT %s OFFSET %s",
-            [page_size, offset]))
+            "SELECT `id`, `日期`, `价格区间`, `结果`, `创建时间` FROM `选品记录表`"
+            + where + " ORDER BY `创建时间` DESC, `id` DESC LIMIT %s OFFSET %s",
+            args + [page_size, offset]))
 
         items = []
         for idx, r in enumerate(rows):
@@ -7655,7 +7676,8 @@ def ps_history_runs():
                 'result': result,
             })
         return success({'items': items, 'total': total, 'page': page,
-                        'pageSize': page_size, 'totalPages': total_pages})
+                        'pageSize': page_size, 'totalPages': total_pages,
+                        'date': d})
     except Exception as e:
         traceback.print_exc()
         return fail(str(e))
