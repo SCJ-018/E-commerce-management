@@ -2,7 +2,7 @@
 """种草抓取健康检查 + 钉钉告警。
 
 【要解决的问题】
-「种草监测中台」每 30 分钟自动抓一次抖音/小红书作品数据，但抓取失败时：
+「种草监测中台」每天 09:00~19:00 每 30 分钟自动抓一次抖音/小红书作品数据，但抓取失败时：
   · 后端只在日志里 print 一行，没有任何告警；
   · 作品数据文件一直不更新，页面上还是旧数据，肉眼看不出来；
   · 结果：2026-09-17 体检发现两个平台的数据已静默停更 15 天
@@ -10,11 +10,14 @@
 本脚本就是补上这个缺口：让「失败」变成一条推送到人的消息。
 
 【判据】任一平台命中即告警（以数据有没有产出为最终标准，不看脚本退出码）：
+  0.  status=skipped             —— 该平台没有可抓账号，本轮主动跳过 → **不算异常，直接健康**
   1.  进度文件 status=error      —— 抓取脚本自己报告失败
   1.5 status=done 但 ok<accounts —— 部分账号没抓到（数据是真的，但要知道）
   2.  status=running 超 45 分钟  —— 进程静默死掉，来不及写状态（或卡死）
-  3.  作品数据文件距今 > 3 小时  —— 最终判据：没有新数据产出
+  3.  作品数据落后「最近一次应抓取时刻」> 3 小时 —— 最终判据：没有按计划产出新数据
   4.  作品数据文件不存在
+  ⚠ 因为夜间（19:00 → 次日 09:00）不抓，判据 3 以「最近一次应抓取时刻」为参照，
+    不能用「距今」——否则每天早上开跑前必然误报「停更 14 小时」。
 
 【去重】异常内容不变时不重复打扰：同一异常 6 小时内只发一次；
         异常消失后立刻发一条「已恢复」，然后清空状态。
@@ -49,9 +52,16 @@ IS_SERVER = os.path.exists('/opt/ecom')
 # ============================ 判据阈值 ============================
 # 定时抓取间隔（秒）：与后端 app.py 的 _SEEDING_AUTO_INTERVAL 保持一致
 CYCLE_SEC = 1800
+# ★★ 自动抓取时间窗：与后端 app.py 的 _SEEDING_WINDOW_START / _SEEDING_WINDOW_END 保持一致。
+#   只在 09:00~19:00 之间每半小时抓一轮，夜间不抓 —— 所以「停更」不能按
+#   「距今多少小时」算，否则每天早上 09:00 都必然误报一次「停更 14 小时」。
+WINDOW_START = 9
+WINDOW_END = 19
+# 新鲜度参照点缓冲（秒）：与后端 _SEEDING_FRESH_GRACE 保持一致，遮住「刚触发还在跑」的本轮
+FRESH_GRACE_SEC = CYCLE_SEC * 4 // 3     # 2400 秒（40 分钟）
 # status=running 超过这个时长 → 视为卡死/静默退出
 RUNNING_STALE_SEC = int(CYCLE_SEC * 1.5)
-# 作品数据距今超过这个小时数 → 停更（3 小时 ≈ 漏了 6 轮）
+# 作品数据落后「最近一次应抓取时刻」超过这个小时数 → 停更（3 小时 ≈ 漏了 6 轮）
 STALE_HOURS = 3.0
 # 同一异常最短重复提醒间隔（秒）
 COOLDOWN_SEC = 6 * 3600
@@ -143,6 +153,38 @@ def _age_hours(path):
     return (time.time() - os.path.getmtime(path)) / 3600.0
 
 
+def _scheduled_slots(day):
+    """某天时间窗内的全部抓取时刻（09:00 起每 CYCLE_SEC，含 19:00 收尾）"""
+    slots = []
+    t = day.replace(hour=WINDOW_START, minute=0, second=0, microsecond=0)
+    end = day.replace(hour=WINDOW_END, minute=0, second=0, microsecond=0)
+    step = datetime.timedelta(seconds=CYCLE_SEC)
+    while t <= end:
+        slots.append(t)
+        t = t + step
+    return slots
+
+
+def _last_expected_run(now=None):
+    """最近一次「本应已完成」的抓取时刻（本地时间）
+
+    ★ 为什么需要（2026-09-18 时间窗改造）：
+      自动抓取只在 09:00~19:00 进行，夜间本来就没有新数据。
+      用「数据落后最近一次应抓取时刻多久」判停更，夜间空档自然被排除，不会误报。
+    缓冲 FRESH_GRACE_SEC：给刚触发、还在跑的本轮留时间，避免没写完就被判停更。
+    ⚠ 与 backend/app.py 的 _seeding_last_expected_run 逻辑必须完全一致。
+    """
+    now = now or datetime.datetime.now()
+    ref = now - datetime.timedelta(seconds=FRESH_GRACE_SEC)
+    today = ref.replace(hour=0, minute=0, second=0, microsecond=0)
+    for day in (today, today - datetime.timedelta(days=1)):
+        slots = [s for s in _scheduled_slots(day) if s <= ref]
+        if slots:
+            return slots[-1]
+    return (today - datetime.timedelta(days=1)).replace(
+        hour=WINDOW_END, minute=0, second=0, microsecond=0)
+
+
 def _count_works(path):
     """作品数据文件里的条数；不存在或读不出返回 0。
 
@@ -176,6 +218,13 @@ def _check_platform(p):
     items = []
     sig = [status]
 
+    # 判据 0（新增 2026-09-18）：skipped = 该平台没有可抓账号，本轮主动跳过。
+    #   ★ 这是「预期内的不抓」，不是故障：直接判定健康，跳过后面所有判据
+    #     （否则会因为数据文件一直不更新而被判「停更」，天天误报）。
+    if status == 'skipped':
+        print('[体检] %s 本轮跳过抓取（%s），不参与告警判定' % (label, msg or '无可用账号'))
+        return [], 'skipped'
+
     # 判据 1：脚本自己报告失败
     if status == 'error':
         items.append('本轮抓取失败：%s' % (msg or '未提供原因'))
@@ -200,14 +249,19 @@ def _check_platform(p):
         sig.append('stuck')
 
     # 判据 3 / 4：数据新鲜度 —— 最终判据
+    #   ★ 参照点用「最近一次应抓取时刻」而不是「现在」：时间窗之外（夜里）本来就没数据，
+    #     若按「距今」判，每天早上 09:00 开跑前都会误报一次「停更 14 小时」。
     age = _age_hours(works_path)
     if age is None:
         items.append('作品数据文件不存在：%s' % p['works'])
         sig.append('nofile')
-    elif age > STALE_HOURS:
-        items.append('作品数据已停更 **%.1f 小时**（最后更新 %s）'
-                     % (age, _fmt_time(os.path.getmtime(works_path))))
-        sig.append('stale')
+    else:
+        lag = (time.time() - _last_expected_run().timestamp()) / 3600.0
+        if lag > STALE_HOURS:
+            items.append('作品数据未按计划更新：落后最近一次应抓取时刻 **%.1f 小时**'
+                         '（最后更新 %s）'
+                         % (lag, _fmt_time(os.path.getmtime(works_path))))
+            sig.append('stale')
 
     return items, '|'.join(sig)
 
@@ -234,7 +288,7 @@ def build_alert_md(problems):
             lines.append('- %s' % it)
         lines.append('')
     lines.append('---')
-    lines.append('自动抓取每 30 分钟一轮；排查看 `tools/_scrape_<平台>.log`、'
+    lines.append('自动抓取：每天 09:00~19:00 每 30 分钟一轮；排查看 `tools/_scrape_<平台>.log`、'
                  '`tools/_seeding_progress_<平台>.json`，登录态过期则重新导出 cookie。')
     return '\n'.join(lines)
 

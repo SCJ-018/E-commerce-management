@@ -4216,6 +4216,17 @@ _SEEDING_STALE_HOURS = 3.0
 _SEEDING_WARN_HOURS = 1.0
 # 抓取健康体检脚本：每轮自动更新前先体检上一轮，异常时它自己推钉钉（见 tools/seeding_health.py）
 _SEEDING_HEALTH_SCRIPT = os.path.join(_SEEDING_DIR, 'seeding_health.py')
+# ★★ 自动抓取时间窗（2026-09-18 改）：只在 09:00~19:00 之间每半小时抓一轮，夜间不抓。
+#   背景：原实现是「启动即抓一轮 + 死循环 sleep 30 分钟」，凌晨也在打接口，
+#   既容易被平台限流/风控，也没人在夜里处置告警。抖音与小红书共用同一时间表。
+_SEEDING_WINDOW_START = 9
+_SEEDING_WINDOW_END = 19
+# ★★ 新鲜度判定的「参照点缓冲」（秒）。
+#   为什么需要：有了时间窗之后，夜间（19:00 → 次日 09:00）本来就不会有新数据，
+#   若还按「距今超过 N 小时」判停更，每天 09:00 开跑前必然误报一次「停更 14 小时」。
+#   所以新鲜度改为对比「最近一次本应完成的抓取时刻」，缓冲用于遮住「刚触发、还在跑」的本轮。
+#   取 40 分钟（> 1 个抓取周期）> 单轮耗时，避免长轮次被误判。
+_SEEDING_FRESH_GRACE = _SEEDING_AUTO_INTERVAL * 4 // 3
 
 
 def _seeding_log_rotate(path, max_bytes=None):
@@ -4453,6 +4464,8 @@ def seeding_create_account():
         }
         accounts.append(acct)
         _seeding_save_accounts(accounts)
+        # 该账号曾被删过（作品被级联清空）→ 解除标记，重新抓到作品后能正常回到列表
+        _seeding_unpurge_account(acct)
         return success(acct, '种草账号已添加')
     except Exception as e:
         return fail(str(e))
@@ -4467,6 +4480,7 @@ def seeding_update_account(aid):
         target = next((a for a in accounts if int(a.get('id', 0)) == aid), None)
         if target is None:
             return fail('账号不存在')
+        old_identity = dict(target)   # 改名/换号前后的标识都要解除「已删除」标记
         target['name'] = (data.get('name') if data.get('name') is not None else target.get('name', '')).strip()
         target['platform'] = (data.get('platform') if data.get('platform') is not None else target.get('platform', 'douyin')).strip()
         target['douyinId'] = (data.get('douyinId') if data.get('douyinId') is not None else target.get('douyinId', '')).strip()
@@ -4474,6 +4488,9 @@ def seeding_update_account(aid):
         target['redId'] = (data.get('redId') if data.get('redId') is not None else target.get('redId', '')).strip()
         target['department'] = (data.get('department') if data.get('department') is not None else target.get('department', '')).strip()
         _seeding_save_accounts(accounts)
+        # 改回某个曾被删掉的账号标识 → 解除「已删除」标记
+        _seeding_unpurge_account(old_identity)
+        _seeding_unpurge_account(target)
         return success(target, '种草账号已更新')
     except Exception as e:
         return fail(str(e))
@@ -4481,14 +4498,77 @@ def seeding_update_account(aid):
 
 @app.route('/api/seeding/accounts/<int:aid>', methods=['DELETE'])
 def seeding_delete_account(aid):
-    """删除种草账号"""
+    """删除种草账号：同步清空该账号的作品数据与被删作品记录（见 _seeding_purge_account_works）"""
     try:
         accounts = _seeding_load_accounts()
-        accounts = [a for a in accounts if int(a.get('id', 0)) != aid]
-        _seeding_save_accounts(accounts)
-        return success(None, '种草账号已删除')
+        target = next((a for a in accounts if int(a.get('id', 0) or 0) == aid), None)
+        kept = [a for a in accounts if int(a.get('id', 0) or 0) != aid]
+        _seeding_save_accounts(kept)
+        report = _seeding_purge_account_works([target] if target else [], kept)
+        n_works, n_deleted = _seeding_purge_counts(report)
+        msg = '种草账号已删除'
+        if n_works or n_deleted:
+            msg += '（同步清空 %d 条作品数据、%d 条被删作品记录）' % (n_works, n_deleted)
+        return success({'works': n_works, 'deletedWorks': n_deleted}, msg)
     except Exception as e:
         return fail(str(e))
+
+
+@app.route('/api/seeding/accounts/batch-delete', methods=['POST'])
+def seeding_batch_delete_accounts():
+    """批量删除种草账号。
+
+    body: {ids: [1,2,3]}
+    ★ 用 POST 而不是 DELETE：DELETE 带 body 在部分网关/代理上会被丢掉，
+      且 /api/seeding/accounts/<int:aid> 的 DELETE 已占用该路径。
+    """
+    try:
+        body = request.get_json(force=True) or {}
+        raw = body.get('ids')
+        if not isinstance(raw, list) or not raw:
+            return fail('请选择要删除的种草账号')
+        ids = set()
+        for x in raw:
+            try:
+                ids.add(int(x))
+            except Exception:
+                pass
+        if not ids:
+            return fail('请选择要删除的种草账号')
+        accounts = _seeding_load_accounts()
+        before = len(accounts)
+        removed_accs = [a for a in accounts if int(a.get('id', 0) or 0) in ids]
+        kept = [a for a in accounts if int(a.get('id', 0) or 0) not in ids]
+        removed = before - len(kept)
+        if not removed:
+            return fail('所选种草账号不存在（可能已被删除）')
+        _seeding_save_accounts(kept)
+        # 被删账号的作品数据 / 被删作品记录一并清空（见 _seeding_purge_account_works）
+        report = _seeding_purge_account_works(removed_accs, kept)
+        n_works, n_deleted = _seeding_purge_counts(report)
+        msg = '已删除 %d 个种草账号' % removed
+        if n_works or n_deleted:
+            msg += '（同步清空 %d 条作品数据、%d 条被删作品记录）' % (n_works, n_deleted)
+        return success({'deleted': removed, 'works': n_works, 'deletedWorks': n_deleted}, msg)
+    except Exception as e:
+        return fail(str(e))
+
+
+def _seeding_platform_accounts(platform):
+    """某平台「真正能抓」的账号数：抖音=有主页链接，小红书=有小红书号。
+
+    用于「账号为空时跳过抓取」的判定，口径与两个抓取脚本的筛选保持一致。
+    """
+    n = 0
+    for a in _seeding_load_accounts():
+        p = (a.get('platform') or 'douyin').strip().lower()
+        if platform == 'xhs':
+            if p == 'xhs' and str(a.get('redId') or '').strip():
+                n += 1
+        else:
+            if p != 'xhs' and str(a.get('homepage') or '').strip():
+                n += 1
+    return n
 
 
 def _seeding_load_works_csv():
@@ -4533,7 +4613,13 @@ def _seeding_load_xhs_works():
 
 @app.route('/api/seeding/works', methods=['GET'])
 def seeding_list_works():
-    """作品数据列表：platform=douyin 读抖音 CSV，platform=xhs 读小红书 JSON；抖音无真实数据时回退虚拟数据"""
+    """作品数据列表：platform=douyin 读抖音 CSV，platform=xhs 读小红书 JSON；抖音无真实数据时回退虚拟数据。
+
+    ★ 手动删除的作品（hidden 名单）在返回前过滤掉：
+      抓取脚本每轮都会重写数据文件，直接改文件删不掉（下一轮又回来）。
+      所以「删除」记在 _seeding_state.json 的 hidden 名单里，读列表时过滤 —— 删了就一直是删的。
+      ⚠ 对账（被删作品）必须用未过滤的原始列表，否则会把用户手动删掉的作品误判成「被平台删除」。
+    """
     try:
         platform = (request.args.get('platform') or 'douyin').strip()
         if platform == 'xhs':
@@ -4541,25 +4627,130 @@ def seeding_list_works():
             if os.path.exists(_XHS_WORKS_FILE):
                 # 走 guard：本轮抓取不完整时不对比，避免误报「作品被删」
                 _seeding_reconcile_guard('xhs', works)
-            return success(works)
+            return success(_seeding_filter_hidden('xhs', works))
         real = _seeding_load_works_csv()
         if real is not None:
             _seeding_reconcile_guard('douyin', real)
-            return success(real)
-        return success(_seeding_mock_works())
+            return success(_seeding_filter_hidden('douyin', real))
+        # 无真实数据时的虚拟数据同样支持删除（否则删了又"复活"，看着像 bug）
+        return success(_seeding_filter_hidden('douyin', _seeding_mock_works()))
     except Exception as e:
         return fail(str(e))
+
+
+@app.route('/api/seeding/works', methods=['DELETE'])
+def seeding_delete_works():
+    """删除作品数据：单条 / 批量（前端把选中的作品行整条传上来）。
+
+    body: {platform: 'douyin'|'xhs', items: [{link, url, account, title, ...}, ...]}
+    不物理改数据文件，而是把作品唯一键写入 hidden 名单 —— 理由见 seeding_list_works 注释。
+    """
+    try:
+        body = request.get_json(force=True) or {}
+        platform = (body.get('platform') or 'douyin').strip()
+        if platform not in ('douyin', 'xhs'):
+            platform = 'douyin'
+        items = body.get('items')
+        if not isinstance(items, list) or not items:
+            return fail('请选择要删除的作品数据')
+        keys = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            k = _seeding_work_key(it)
+            if k and k not in keys:
+                keys.append(k)
+        if not keys:
+            return fail('未能识别要删除的作品数据')
+        state = _seeding_load_state()
+        hidden = state.get('hidden')
+        if not isinstance(hidden, dict):
+            hidden = {}
+        cur = hidden.get(platform)
+        if not isinstance(cur, list):
+            cur = []
+        added = 0
+        for k in keys:
+            if k not in cur:
+                cur.append(k)
+                added += 1
+        hidden[platform] = cur
+        state['hidden'] = hidden
+        _seeding_save_state(state)
+        if added:
+            return success({'deleted': added}, '已删除 %d 条作品数据' % added)
+        return success({'deleted': 0}, '所选作品数据已删除过')
+    except Exception as e:
+        return fail(str(e))
+
+
+def _seeding_scheduled_slots(day):
+    """某天时间窗内的全部抓取时刻：09:00 起每 30 分钟一次，含 19:00 收尾"""
+    slots = []
+    t = day.replace(hour=_SEEDING_WINDOW_START, minute=0, second=0, microsecond=0)
+    end = day.replace(hour=_SEEDING_WINDOW_END, minute=0, second=0, microsecond=0)
+    step = timedelta(seconds=_SEEDING_AUTO_INTERVAL)
+    while t <= end:
+        slots.append(t)
+        t = t + step
+    return slots
+
+
+def _seeding_next_run(now=None):
+    """下一次自动抓取时刻（严格晚于 now）；窗口外返回次日 09:00"""
+    now = now or datetime.now()
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    for day in (today, today + timedelta(days=1)):
+        for s in _seeding_scheduled_slots(day):
+            if s > now:
+                return s
+    return _seeding_scheduled_slots(today + timedelta(days=1))[0]
+
+
+def _seeding_last_expected_run(now=None):
+    """最近一次「本应已完成」的抓取时刻，用于新鲜度分级与停更判定。
+
+    ★ 为什么不能直接用「现在 - 3 小时」（2026-09-18）：
+      自动抓取只在 09:00~19:00 进行，夜间 19:00 → 次日 09:00 本来就没有新数据。
+      按老口径判停更，每天 09:00 开跑前必然误报一次「停更 14 小时」。
+      改为以「最近一次应抓取时刻」为参照，夜间空档自然被排除。
+    缓冲 _SEEDING_FRESH_GRACE：给刚触发、还在跑的本轮留出时间，避免它没写完就被判停更。
+    """
+    now = now or datetime.now()
+    ref = now - timedelta(seconds=_SEEDING_FRESH_GRACE)
+    today = ref.replace(hour=0, minute=0, second=0, microsecond=0)
+    for day in (today, today - timedelta(days=1)):
+        slots = [s for s in _seeding_scheduled_slots(day) if s <= ref]
+        if slots:
+            return slots[-1]
+    return (today - timedelta(days=1)).replace(hour=_SEEDING_WINDOW_END, minute=0,
+                                               second=0, microsecond=0)
+
+
+def _seeding_freshness_level(mtime):
+    """按「落后最近一次应抓取时刻多久」分级：ok / warn / stale / none"""
+    if not mtime:
+        return 'none'
+    expected = _seeding_last_expected_run().timestamp()
+    lag_hours = (expected - float(mtime)) / 3600.0
+    if lag_hours < _SEEDING_WARN_HOURS:
+        return 'ok'
+    if lag_hours <= _SEEDING_STALE_HOURS:
+        return 'warn'
+    return 'stale'
 
 
 def _seeding_platform_meta(platform):
     """单平台的作品数据元信息：mtime / rows / source / 新鲜度。
 
-    ★★ 为什么要有 stale_hours + level（2026-09-18）：
+    ★★ 为什么要有 age_hours + level（2026-09-18）：
       前端顶部原来只有一个「数据更新时间」，值取的是当前选中平台的 mtime。
       09-18 早上小红书 cookie 失效停更 4.9 小时，但抖音正常抓取刷新了 CSV，
       页面顶部照样显示 08:24 → 看起来两个平台都新鲜，实际小红书早已停更。
       现在后端直接给出「距今多少小时」和分级，前端不必再猜哪个时间代表谁。
-      ⚠ stale_hours 阈值必须与 tools/seeding_health.py 的 STALE_HOURS 保持一致。
+    ★ level 由 _seeding_freshness_level 给出（对比「最近一次应抓取时刻」而非「现在」），
+      这样夜间空档不会把两个平台都染红。age_hours 仍是原始距今小时数，供展示用。
+      ⚠ 阈值必须与 tools/seeding_health.py 的 STALE_HOURS / 时间窗保持一致。
     """
     if platform == 'xhs':
         path = _XHS_WORKS_FILE
@@ -4575,14 +4766,7 @@ def _seeding_platform_meta(platform):
     else:
         mtime = None
         age_hours = None
-    if age_hours is None:
-        level = 'none'
-    elif age_hours < _SEEDING_WARN_HOURS:
-        level = 'ok'
-    elif age_hours <= _SEEDING_STALE_HOURS:
-        level = 'warn'
-    else:
-        level = 'stale'
+    level = _seeding_freshness_level(mtime)
     return {
         'mtime': mtime,
         'rows': len(real) if real else 0,
@@ -4655,29 +4839,43 @@ def seeding_save_cookie():
 
 
 def _seeding_launch(platform):
-    """后台异步启动指定平台的作品抓取脚本，写进度初始状态。返回 (error_msg or None)"""
+    """后台异步启动指定平台的作品抓取脚本，写进度初始状态。
+
+    返回 (err, skip)：
+      err  = 硬错误（Cookie 未配置 / 脚本缺失 / 正在跑），需要提示用户；
+      skip = 「本轮无需抓取」的原因（该平台还没有可用账号），**不是错误**，只做提示。
+    """
     import sys as _sys_scrape
     # 上次抓取仍在进行时不再重复触发，避免任务堆积
     if _seeding_is_running(platform):
-        return '该平台抓取正在进行中，请稍后再试'
+        return '该平台抓取正在进行中，请稍后再试', None
+    # ★ 账号为空时直接跳过（2026-09-18）：不再拉起脚本空跑。
+    #   进度写 'skipped' 而非 'error' —— 体检脚本把它当「健康」处理，不会误推钉钉告警，
+    #   也不会因为数据文件不更新而报「停更」。脚本里同样有兜底（防手工直接执行脚本时报错）。
+    if _seeding_platform_accounts(platform) <= 0:
+        label = '小红书' if platform == 'xhs' else '抖音'
+        msg = '未配置%s账号，本轮跳过抓取（请先在「种草账号」页添加）' % label
+        _seeding_progress_write(platform, 'skipped', 0, 0, msg)
+        print('[种草][跳过] %s: %s' % (platform, msg), flush=True)
+        return None, msg
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if platform == 'xhs':
         scraper = os.path.join(_SEEDING_DIR, 'seeding_xhs.py')
         if not os.path.isdir(os.path.join(_SEEDING_DIR, 'Spider_XHS')):
-            return '缺少小红书抓取依赖：未找到 tools/Spider_XHS 目录，请先部署 Spider_XHS 开源项目'
+            return '缺少小红书抓取依赖：未找到 tools/Spider_XHS 目录，请先部署 Spider_XHS 开源项目', None
     else:
         scraper = os.path.join(_SEEDING_DIR, 'douyin_video_scraper.py')
     if not os.path.exists(scraper):
-        return '抓取脚本不存在：' + scraper
+        return '抓取脚本不存在：' + scraper, None
     # Cookie 校验：缺失时直接给出明确提示，避免后台无谓触发
     if platform == 'douyin':
         if not (os.path.exists(_DOUYIN_COOKIE_FILE) and os.path.getsize(_DOUYIN_COOKIE_FILE) > 0):
-            return '抖音 Cookie 未配置，请先在「数据更新」面板保存 Cookie'
+            return '抖音 Cookie 未配置，请先在「数据更新」面板保存 Cookie', None
     else:
         fallback_cookie = os.path.join(_SEEDING_DIR, 'cookie.txt')
         if not (os.path.exists(_XHS_COOKIE_FILE) and os.path.getsize(_XHS_COOKIE_FILE) > 0) and \
            not (os.path.exists(fallback_cookie) and os.path.getsize(fallback_cookie) > 0):
-            return '小红书 Cookie 未配置，请先在「数据更新」面板保存 Cookie'
+            return '小红书 Cookie 未配置，请先在「数据更新」面板保存 Cookie', None
     _seeding_progress_write(platform, 'running', 0, 0)
     log_path = os.path.join(_SEEDING_DIR, '_scrape_%s.log' % platform)
     try:
@@ -4723,7 +4921,7 @@ def _seeding_launch(platform):
                          daemon=True).start()
     finally:
         log_file.close()
-    return None
+    return None, None
 
 
 @app.route('/api/seeding/scrape', methods=['POST'])
@@ -4737,9 +4935,12 @@ def seeding_trigger_scrape():
         else:
             output_file = _DOUYIN_WORKS_CSV
         before_mtime = os.path.getmtime(output_file) if os.path.exists(output_file) else None
-        err = _seeding_launch(platform)
+        err, skip = _seeding_launch(platform)
         if err:
             return fail(err)
+        # 没账号可抓不是错误：返回成功但 triggered=false，前端据此提示而不是报错、也不轮询进度
+        if skip:
+            return success({'triggered': False, 'reason': skip}, skip)
         return success({'triggered': True, 'mtime': before_mtime}, '已触发抓取任务，正在后台执行')
     except Exception as e:
         return fail(str(e))
@@ -4774,13 +4975,85 @@ def seeding_health_api():
 #   seeding_departments.json  部门列表  {"departments": ["三部", "四部", "五部"]}
 #   seeding_push_rules.json   推送规则  {"三部": {"userId": "...", "userName": "张三", "threshold": 1000, "enabled": true}}
 #   seeding_push_log.json     推送账本  {"pushed": {"link:https://...": {"ts": ..., "likes": ..., "dept": "三部"}}}
-# ★ 推送通道沿用「企业内部应用机器人单聊」（backend/dingtalk.py），与每日报告、抓取告警同一条链路；
-#   收件人候选直接读 dingtalk_push_users 表，不另建人员表（避免两处维护、两处不一致）。
+# ★ 推送通道沿用「企业内部应用机器人单聊」（backend/dingtalk.py），与每日报告、抓取告警同一条链路。
+# ★★ 2026-09-18 改：收件人名单**独立**成表 seeding_push_users，不再复用「每日数据分析 → 钉钉推送」的
+#   dingtalk_push_users —— 两个场景的人本来就不是一拨人（种草是各业务部门对接人，日报是全员/管理层），
+#   共用一份会互相污染（在这边"匹配并绑定"的人会凭空出现在日报收件人里）。现在两边各管各的，
+#   只有钉钉应用凭证（AppKey/Secret）继续共用。
+#   ⚠️ 系统告警（dev_alert.py 找「李自豪」）仍走 dingtalk_push_users，那是开发告警，与种草无关。
 
 _SEEDING_DEPT_FILE = os.path.join(_SEEDING_DIR, 'seeding_departments.json')
 _SEEDING_PUSH_RULE_FILE = os.path.join(_SEEDING_DIR, 'seeding_push_rules.json')
 _SEEDING_PUSH_LOG_FILE = os.path.join(_SEEDING_DIR, 'seeding_push_log.json')
 _SEEDING_DEPT_DEFAULT = ['三部', '四部', '五部']   # 迁移兜底：文件缺失时页面不至于没有部门
+
+# 种草智能体：爆文库 / 优化建议
+_SEEDING_HOT_KB_LIMIT = 100      # 爆文带入模型的条数上限
+_SEEDING_HOT_ITEM_MAX = 3000     # 单条爆文带入模型的字符上限
+_SEEDING_FB_MAX = 2000           # 单条优化建议的字符上限
+
+
+def _seeding_ensure_tables():
+    """建表（模块导入时执行）：种草推送人名单 / 爆文库 / 优化建议。
+
+    线上由 gunicorn 启动不会跑 __main__，所以建表必须在导入阶段完成
+    （与 _push_ensure_tables 同一套路）。
+    """
+    try:
+        db_execute("""
+            CREATE TABLE IF NOT EXISTS seeding_push_users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(64) NOT NULL,
+                mobile VARCHAR(32) DEFAULT '',
+                user_id VARCHAR(128) DEFAULT '',
+                enabled TINYINT(1) DEFAULT 1,
+                remark VARCHAR(255) DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """, fetch=False)
+        db_execute("""
+            CREATE TABLE IF NOT EXISTS `已上传爆文库` (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                `标题` VARCHAR(128) DEFAULT '',
+                `爆文` TEXT,
+                `来源` VARCHAR(64) DEFAULT '',
+                `创建时间` DATETIME DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """, fetch=False)
+        db_execute("""
+            CREATE TABLE IF NOT EXISTS `种草优化建议` (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                `内容` TEXT,
+                `提交人` VARCHAR(64) DEFAULT '',
+                `角色` VARCHAR(64) DEFAULT '',
+                `状态` VARCHAR(32) DEFAULT '',
+                `创建时间` DATETIME DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """, fetch=False)
+        print('[种草] 数据表就绪（推送人 / 爆文库 / 优化建议）')
+    except Exception as e:
+        print('[种草] 建表失败: %s' % e)
+        return
+
+    # ★ 一次性迁移（只在名单为空时做）：把已经绑在部门规则里的联系人补进新名单。
+    #   为什么需要：名单从「共用 dingtalk_push_users」切成独立表之后，老配置里绑好的
+    #   userId 还在 rules 里（点赞推送照常），但页面上「已登记联系人」会是空的，
+    #   看起来像"绑定丢了"。这里把规则里的人补进去，页面观感与数据一致。
+    try:
+        if not db_execute('SELECT id FROM seeding_push_users LIMIT 1'):
+            seen = set()
+            for _d, _r in (_seeding_push_rules() or {}).items():
+                nr = _seeding_norm_rule(_r)
+                if nr['userId'] and nr['userId'] not in seen:
+                    seen.add(nr['userId'])
+                    db_execute('INSERT INTO seeding_push_users (name, mobile, user_id, enabled) '
+                               'VALUES (%s, %s, %s, %s)',
+                               [nr['userName'] or '未命名', '', nr['userId'], 1], fetch=False)
+            if seen:
+                print('[种草] 已从部门推送规则迁移 %d 位联系人到种草推送名单（独立名单首次建立）'
+                      % len(seen))
+    except Exception as e:
+        print('[种草] 联系人迁移跳过: %s' % e)
 
 
 def _seeding_cfg_load(path, default):
@@ -4844,9 +5117,125 @@ def _seeding_norm_rule(r):
     }
 
 
+# ---------- 种草推送人名单（独立于「每日数据分析 → 钉钉推送」） ----------
+
+def _seeding_push_users(only_enabled=False):
+    """种草推送人名单"""
+    sql = 'SELECT id, name, mobile, user_id, enabled, remark FROM seeding_push_users'
+    if only_enabled:
+        sql += ' WHERE enabled = 1'
+    return db_execute(sql + ' ORDER BY id') or []
+
+
+@app.route('/api/seeding/push-users', methods=['GET'])
+def seeding_push_user_list():
+    """种草推送人名单"""
+    try:
+        users = [{
+            'id': u.get('id'),
+            'name': u.get('name') or '',
+            'mobile': (u.get('mobile') or '').strip(),
+            'userId': (u.get('user_id') or '').strip(),
+            'enabled': 1 if u.get('enabled') in (1, '1', True) else 0,
+        } for u in _seeding_push_users()]
+        return success(users)
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/push-users', methods=['POST'])
+def seeding_push_user_create():
+    """新增种草推送人（手机号或 userId 至少填一个）"""
+    try:
+        d = request.get_json(force=True) or {}
+        name = (d.get('name') or '').strip()
+        mobile = (d.get('mobile') or '').strip()
+        user_id = (d.get('userId') or '').strip()
+        if not name:
+            return fail('请填写成员姓名')
+        if not mobile and not user_id:
+            return fail('请填写手机号或钉钉 userId（至少一个）')
+        new_id = db_execute_insert(
+            'INSERT INTO seeding_push_users (name, mobile, user_id, enabled, remark) '
+            'VALUES (%s, %s, %s, %s, %s)',
+            [name, mobile, user_id, 1 if d.get('enabled', True) else 0,
+             (d.get('remark') or '').strip()])
+        return success({'id': new_id}, '已添加推送人')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/push-users/<int:uid>', methods=['PUT'])
+def seeding_push_user_update(uid):
+    """修改种草推送人（姓名 / 手机号 / userId / 启用 / 备注）"""
+    try:
+        d = request.get_json(force=True) or {}
+        sets, params = [], []
+        if 'name' in d:
+            name = (d.get('name') or '').strip()
+            if not name:
+                return fail('姓名不能为空')
+            sets.append('name = %s')
+            params.append(name)
+        if 'mobile' in d:
+            sets.append('mobile = %s')
+            params.append((d.get('mobile') or '').strip())
+        if 'userId' in d:
+            sets.append('user_id = %s')
+            params.append((d.get('userId') or '').strip())
+        if 'enabled' in d:
+            sets.append('enabled = %s')
+            params.append(1 if d.get('enabled') else 0)
+        if 'remark' in d:
+            sets.append('remark = %s')
+            params.append((d.get('remark') or '').strip())
+        if not sets:
+            return fail('没有需要更新的字段')
+        params.append(uid)
+        rows = db_execute('UPDATE seeding_push_users SET %s WHERE id = %%s' % ', '.join(sets),
+                          params, fetch=False)
+        if not rows:
+            return fail('推送人不存在')
+        return success(None, '已更新')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/push-users/<int:uid>', methods=['DELETE'])
+def seeding_push_user_delete(uid):
+    """删除种草推送人"""
+    try:
+        db_execute('DELETE FROM seeding_push_users WHERE id = %s', [uid], fetch=False)
+        return success(None, '已删除')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/push-users/resolve', methods=['POST'])
+def seeding_push_user_resolve():
+    """手机号 → 钉钉 userId（只换取，不写库；写库由前端决定）"""
+    try:
+        d = request.get_json(force=True) or {}
+        mobile = (d.get('mobile') or '').strip()
+        if not mobile:
+            return fail('请填写手机号')
+        client = _push_client()
+        user_id = client.get_userid_by_mobile(mobile)
+        if not user_id:
+            return fail('手机号未匹配到钉钉成员，请确认号码正确且在该应用可见范围内')
+        return success({'userId': user_id})
+    except DingTalkError as e:
+        return fail(str(e))
+    except Exception as e:
+        return fail(str(e))
+
+
 @app.route('/api/seeding/dept-config', methods=['GET'])
 def seeding_dept_config_get():
-    """部门列表 + 推送规则 + 可选钉钉联系人（一次取全，前端弹窗直接用）"""
+    """部门列表 + 推送规则 + 可选钉钉联系人（一次取全，前端弹窗直接用）
+
+    ★ 候选人来自**种草专有**名单 seeding_push_users（与日报推送名单互不影响）。
+    """
     try:
         depts = _seeding_dept_list()
         rules = _seeding_push_rules()
@@ -4854,7 +5243,7 @@ def seeding_dept_config_get():
         for d in depts:
             merged[d] = _seeding_norm_rule(rules.get(d))
         cands = []
-        for u in (_push_users() or []):
+        for u in (_seeding_push_users() or []):
             cands.append({
                 'id': u.get('id'),
                 'name': u.get('name') or '',
@@ -4892,14 +5281,17 @@ def seeding_dept_config_save():
 
 
 def _seeding_all_works():
-    """两个平台的当前作品（抖音 CSV + 小红书 JSON），用于点赞阈值判定"""
+    """两个平台的当前作品（抖音 CSV + 小红书 JSON），用于点赞阈值判定。
+
+    ★ 剔除用户手动删除（hidden）的作品：既然在页面上删掉了，就不该再被点赞推送捞出来。
+    """
     out = []
     try:
-        out.extend(_seeding_load_works_csv() or [])
+        out.extend(_seeding_filter_hidden('douyin', _seeding_load_works_csv() or []))
     except Exception as e:
         print('[种草][点赞推送] 读抖音作品失败: %s' % e)
     try:
-        out.extend(_seeding_load_xhs_works() or [])
+        out.extend(_seeding_filter_hidden('xhs', _seeding_load_xhs_works() or []))
     except Exception as e:
         print('[种草][点赞推送] 读小红书作品失败: %s' % e)
     return out
@@ -5039,20 +5431,47 @@ def _seeding_work_key(w):
 
 
 def _seeding_load_state():
-    """读取被删作品状态（快照 + 被删列表 + 自增 id）；文件不存在或损坏时返回空状态"""
+    """读取被删作品状态（快照 + 被删列表 + 手动删除名单 + 自增 id）；文件不存在或损坏时返回空状态
+
+    hidden = 用户在页面上手动删掉的作品（{平台: [作品唯一键]}）。抓取脚本每轮重写数据文件，
+    所以手动删除只能记在这里、读列表时过滤，见 seeding_list_works。
+    """
+    empty = {'snapshots': {}, 'deleted': [], 'hidden': {}, 'purged_accounts': [], '_seq': 0}
     if not os.path.exists(_SEEDING_STATE_FILE):
-        return {'snapshots': {}, 'deleted': [], '_seq': 0}
+        return dict(empty)
     try:
         with open(_SEEDING_STATE_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if not isinstance(data, dict):
-            return {'snapshots': {}, 'deleted': [], '_seq': 0}
+            return dict(empty)
         data.setdefault('snapshots', {})
         data.setdefault('deleted', [])
+        data.setdefault('hidden', {})
+        # 已删除种草账号的标记（展示过滤 + 对账跳过兜底），见 _seeding_purge_account_works
+        data.setdefault('purged_accounts', [])
         data.setdefault('_seq', 0)
+        if not isinstance(data.get('hidden'), dict):
+            data['hidden'] = {}
+        if not isinstance(data.get('purged_accounts'), list):
+            data['purged_accounts'] = []
         return data
     except Exception:
-        return {'snapshots': {}, 'deleted': [], '_seq': 0}
+        return dict(empty)
+
+
+def _seeding_filter_hidden(platform, works):
+    """过滤掉用户手动删除的作品（hidden 名单）与已删除账号的作品（purged 名单）。
+
+    ⚠ 只用于「展示」链路。对账 / 点赞推送若也用过滤后的列表，会把手动删除的作品
+      误判成又被删了一次或被重新推送；所以那边要么用原始列表，要么单独过滤。
+    """
+    keys = set(_seeding_load_state().get('hidden', {}).get(platform) or [])
+    out = works if not keys else [w for w in works if _seeding_work_key(w) not in keys]
+    # 已删除的种草账号：它的作品可能被「删除时正在跑的那轮抓取」又写回文件，这里兜底过滤
+    purged = _seeding_purged_work_check(platform)
+    if purged:
+        out = [w for w in out if not purged(w)]
+    return out
 
 
 def _seeding_save_state(state):
@@ -5061,6 +5480,236 @@ def _seeding_save_state(state):
             json.dump(state, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f'[种草] 保存被删作品状态失败: {e}')
+
+
+# ---- 种草账号 → 作品数据的归属判定 / 级联清理 ----
+# 作品数据里没有账号主键（accounts 的 id），抓取脚本只写了「账号名 + 平台内账号号」，
+# 所以「删除账号 → 清空它的作品」只能靠这两个值去作品里认领，详见 _seeding_purge_account_works。
+
+def _seeding_account_platform(a):
+    """账号所属平台：只有明确 platform=xhs 才算小红书，其余（含未填）按抖音 —— 与两个抓取脚本口径一致"""
+    return 'xhs' if str((a or {}).get('platform') or '').strip().lower() == 'xhs' else 'douyin'
+
+
+def _seeding_account_identity(a):
+    """账号的作品归属标识 (平台, 平台内账号号, 账号名)。
+
+    抓取脚本写进作品数据的正是这两个值：
+      · 抖音   _douyin_works.csv ：名称 = 账号名，账号 = douyinId
+      · 小红书 _xhs_works.json   ：name = 账号名，account = redId
+    两个都带上：账号号兜住「账号名后来改过」的历史数据，账号名兜住老数据里没写账号号的行。
+    """
+    a = a or {}
+    platform = _seeding_account_platform(a)
+    code = str((a.get('redId') if platform == 'xhs' else a.get('douyinId')) or '').strip()
+    return platform, code, str(a.get('name') or '').strip()
+
+
+def _seeding_work_owned_by(work, code, name, survivor_names=None):
+    """判断一条作品是否属于某个（正在被删的）种草账号。
+
+    survivor_names = 同平台「没被删」的账号名集合：命中它说明这条作品还挂在留下的
+    账号名下（同一账号配了多条 / 两个账号填了同一个抖音号），不能算给被删账号，
+    否则会把还留着的账号的作品一起清掉。
+    """
+    wname = str((work or {}).get('name') or '').strip()
+    wcode = str((work or {}).get('account') or '').strip()
+    if wname and survivor_names and wname in survivor_names:
+        return False
+    if name and wname and wname == name:
+        return True
+    if code and wcode and wcode == code:
+        return True
+    return False
+
+
+_SEEDING_PURGED_MAX = 200   # 已删账号标记上限（只用于兜底过滤，超了丢最老的）
+
+
+def _seeding_purged_work_check(platform):
+    """返回判定函数 work -> bool（该作品是否属于「已被删除的种草账号」）；无标记时返回 None。
+
+    为什么还需要它：作品数据文件每轮都是整份重写的。若删除账号时刚好有一轮抓取在跑
+    （它启动时读到的账号列表里还有这个账号），收尾重写会把它的作品又写回文件。
+    展示过滤 + 对账跳过都用这个判定兜底，才不会「删了又复活」或冒出假的「被删作品」。
+    """
+    entries = [e for e in (_seeding_load_state().get('purged_accounts') or [])
+               if isinstance(e, dict) and str(e.get('platform') or '') == platform]
+    if not entries:
+        return None
+    survivors = set()
+    for a in _seeding_load_accounts():
+        if _seeding_account_platform(a) == platform:
+            n = str(a.get('name') or '').strip()
+            if n:
+                survivors.add(n)
+    pairs = [(str(e.get('code') or '').strip(), str(e.get('name') or '').strip()) for e in entries]
+
+    def _hit(w):
+        return any(_seeding_work_owned_by(w, c, n, survivors) for c, n in pairs)
+
+    return _hit
+
+
+def _seeding_purge_works_csv(owned):
+    """从抖音作品 CSV 里物理删掉匹配的行，返回删除条数（文件不存在 / 出错都返回 0）。
+
+    ★ 回写后用 os.utime 还原原来的 mtime：顶部「数据更新时间」取的就是文件 mtime，
+      清理动作不该把它刷成「刚刚更新过」，否则会掩盖真正停更的平台。
+    """
+    import csv as _csv
+    if not os.path.exists(_DOUYIN_WORKS_CSV):
+        return 0
+    try:
+        st = os.stat(_DOUYIN_WORKS_CSV)
+        with open(_DOUYIN_WORKS_CSV, 'r', encoding='utf-8-sig', newline='') as f:
+            reader = _csv.DictReader(f)
+            fnames = list(reader.fieldnames or [])
+            rows = list(reader)
+    except Exception as e:
+        print('[种草] 读取抖音作品 CSV 失败: %s' % e)
+        return 0
+    kept, removed = [], 0
+    for r in rows:
+        if owned({'name': (r.get('名称') or '').strip(),
+                  'account': (r.get('账号') or '').strip()}):
+            removed += 1
+        else:
+            kept.append(r)
+    if not removed:
+        return 0
+    try:
+        with open(_DOUYIN_WORKS_CSV, 'w', encoding='utf-8-sig', newline='') as f:
+            wr = _csv.DictWriter(f, fieldnames=fnames, extrasaction='ignore')
+            wr.writeheader()
+            wr.writerows(kept)
+        os.utime(_DOUYIN_WORKS_CSV, (st.st_atime, st.st_mtime))
+    except Exception as e:
+        print('[种草] 回写抖音作品 CSV 失败: %s' % e)
+        return 0
+    return removed
+
+
+def _seeding_purge_xhs_works(owned):
+    """从小红书作品 JSON 里物理删掉匹配的作品，返回删除条数（顺带把 id 重排成 1..N）"""
+    works = _seeding_load_xhs_works()
+    if not works:
+        return 0
+    kept = [w for w in works if not owned(w)]
+    removed = len(works) - len(kept)
+    if not removed:
+        return 0
+    for i, w in enumerate(kept):
+        w['id'] = i + 1
+    try:
+        st = os.stat(_XHS_WORKS_FILE)
+        with open(_XHS_WORKS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(kept, f, ensure_ascii=False, indent=2)
+        os.utime(_XHS_WORKS_FILE, (st.st_atime, st.st_mtime))
+    except Exception as e:
+        print('[种草] 回写小红书作品失败: %s' % e)
+        return 0
+    return removed
+
+
+def _seeding_purge_account_works(removed_accounts, kept_accounts):
+    """删除种草账号时，把该账号的作品数据 / 被删作品记录一并清空。
+
+    为什么必须做（而不是等下一轮抓取自然消失）：数据文件是整份重写的，在下一轮抓取
+    之前（最长 30 分钟）页面照样显示它的作品；这期间一旦触发对账，这些作品还会被判成
+    「被平台删除」写进被删作品列表 —— 账号都删了还不断冒它的记录，纯脏数据。
+    所以一次做四件事：
+      ① 数据文件里属于该账号的行 → 物理删除（页面立即清空这批作品）；
+      ② 对账快照里的这些作品 → 剔除（后续对账不会误报「平台删除」）；
+      ③ 被删作品列表里属于该账号的记录 → 删除；
+      ④ 记一条 purged_accounts 标记 → 展示过滤 + 对账跳过兜底
+         （挡住「删除时正在跑的那轮抓取把作品写回来」；账号重新添加时自动解除）。
+
+    removed_accounts：被删的账号对象列表；kept_accounts：删完后剩下的账号列表
+    （用来排除「同名/同账号号还挂在别的账号上」的作品，避免误伤）。
+    返回 {平台: {'works': n, 'snapshots': n, 'deleted': n}}
+    """
+    state = _seeding_load_state()
+    snapshots = state.get('snapshots') if isinstance(state.get('snapshots'), dict) else {}
+    deleted = state.get('deleted') if isinstance(state.get('deleted'), list) else []
+    purged = state.get('purged_accounts')
+    if not isinstance(purged, list):
+        purged = []
+
+    by_platform, survivors = {}, {}
+    for a in removed_accounts or []:
+        platform, code, name = _seeding_account_identity(a)
+        if not code and not name:
+            continue
+        by_platform.setdefault(platform, []).append((code, name))
+    for a in kept_accounts or []:
+        platform, _c, name = _seeding_account_identity(a)
+        if name:
+            survivors.setdefault(platform, set()).add(name)
+
+    report = {}
+    for platform, idents in by_platform.items():
+        sur = survivors.get(platform) or set()
+
+        def _owned(work, _idents=tuple(idents), _sur=sur):
+            return any(_seeding_work_owned_by(work, c, n, _sur) for c, n in _idents)
+
+        info = {'works': 0, 'snapshots': 0, 'deleted': 0}
+        # ① 数据文件
+        info['works'] = (_seeding_purge_xhs_works(_owned) if platform == 'xhs'
+                         else _seeding_purge_works_csv(_owned))
+        # ② 对账快照
+        snap = snapshots.get(platform)
+        if isinstance(snap, list):
+            left = [w for w in snap if not _owned(w)]
+            info['snapshots'] = len(snap) - len(left)
+            snapshots[platform] = left
+        # ③ 被删作品记录
+        before = len(deleted)
+        deleted = [d for d in deleted
+                   if not (str((d or {}).get('platform') or '') == platform and _owned(d))]
+        info['deleted'] = before - len(deleted)
+        # ④ 已删账号标记（先按标识去重，再追加）
+        for code, name in idents:
+            purged = [e for e in purged
+                      if not (isinstance(e, dict) and str(e.get('platform') or '') == platform
+                              and str(e.get('code') or '').strip() == code
+                              and str(e.get('name') or '').strip() == name)]
+            purged.append({'platform': platform, 'code': code, 'name': name})
+        report[platform] = info
+
+    state['snapshots'] = snapshots
+    state['deleted'] = deleted
+    state['purged_accounts'] = purged[-_SEEDING_PURGED_MAX:]
+    _seeding_save_state(state)
+    return report
+
+
+def _seeding_purge_counts(report):
+    """(同步清空的作品数, 同步删除的被删作品记录数) —— 用于给用户看的提示文案"""
+    return (sum(int(v.get('works') or 0) for v in (report or {}).values()),
+            sum(int(v.get('deleted') or 0) for v in (report or {}).values()))
+
+
+def _seeding_unpurge_account(a):
+    """账号重新添加（或改回某个标识）时解除 purged 标记，让它的作品能正常回到列表"""
+    platform, code, name = _seeding_account_identity(a)
+    state = _seeding_load_state()
+    purged = state.get('purged_accounts')
+    if not isinstance(purged, list) or not purged:
+        return
+    left = []
+    for e in purged:
+        if not isinstance(e, dict):
+            continue
+        same = (str(e.get('platform') or '') == platform
+                and str(e.get('code') or '').strip() == code
+                and str(e.get('name') or '').strip() == name)
+        if not same:
+            left.append(e)
+    if len(left) != len(purged):
+        state['purged_accounts'] = left
+        _seeding_save_state(state)
 
 
 def _seeding_reconcile_guard(platform, current_works):
@@ -5095,7 +5744,13 @@ def _seeding_reconcile_deleted(platform, current_works):
     cur_keys = {_seeding_work_key(w) for w in current_works}
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+    # 已删除账号的作品不算「被平台删除」（账号都删了，不该再冒出它的被删记录），
+    # 见 _seeding_purge_account_works ④。
+    purged = _seeding_purged_work_check(platform)
+
     for w in prev:
+        if purged and purged(w):
+            continue
         k = _seeding_work_key(w)
         if k in cur_keys or k in existing:
             continue
@@ -5158,7 +5813,9 @@ def seeding_delete_deleted(did):
 
 
 # ======================== 种草智能体（文案生成） ========================
-# 知识库：已上传文案库（单列 `文案`，存用户上传的种草文案样本）
+# 知识库（两套，生成时一起喂给模型）：
+#   1. 已上传文案库（单列 `文案`）—— 历史种草文案样本，学风格、做去重
+#   2. 已上传爆文库（`标题`/`爆文`）—— 用户「投喂爆文」上传的爆款文案，学爆款结构与钩子（严禁照抄）
 # 系统提示词：backend/seeding_agent_prompt.txt（「种草君」人设）
 
 _SEEDING_AGENT_PROMPT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'seeding_agent_prompt.txt')
@@ -5196,9 +5853,153 @@ def _seeding_load_kb():
     return samples
 
 
+def _seeding_load_hot_kb():
+    """读取「已上传爆文库」，返回 [{title, content}]；表不存在或为空时返回 []"""
+    try:
+        rows = db_execute('SELECT `标题`, `爆文` FROM `已上传爆文库` '
+                          'ORDER BY id DESC LIMIT %s', [_SEEDING_HOT_KB_LIMIT])
+    except Exception as e:
+        print(f'[种草] 读取爆文库失败: {e}')
+        return []
+    out = []
+    for r in rows:
+        t = (r.get('爆文') or '').strip()
+        if t:
+            out.append({'title': (r.get('标题') or '').strip(), 'content': t[:_SEEDING_HOT_ITEM_MAX]})
+    return out
+
+
+@app.route('/api/seeding/hot-articles', methods=['GET'])
+def seeding_hot_articles_list():
+    """爆文库列表（供「投喂爆文」弹窗展示已投喂内容）"""
+    try:
+        rows = db_execute('SELECT id, `标题`, `来源`, `创建时间`, CHAR_LENGTH(`爆文`) AS `字数` '
+                          'FROM `已上传爆文库` ORDER BY id DESC LIMIT 200') or []
+        items = [{
+            'id': r.get('id'),
+            'title': r.get('标题') or '',
+            'source': r.get('来源') or '',
+            'words': int(r.get('字数') or 0),
+            'createdAt': str(r.get('创建时间') or ''),
+        } for r in rows]
+        return success({'count': len(items), 'items': items})
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/hot-articles', methods=['POST'])
+def seeding_hot_article_create():
+    """投喂爆文：把用户粘贴的爆款文案存进「已上传爆文库」"""
+    try:
+        d = request.get_json(force=True) or {}
+        content = (d.get('content') or '').strip()
+        if not content:
+            return fail('请先粘贴爆文内容')
+        if len(content) > 20000:
+            content = content[:20000]
+        title = (d.get('title') or '').strip()[:128]
+        source = (d.get('source') or '').strip()[:64]
+        new_id = db_execute_insert(
+            'INSERT INTO `已上传爆文库` (`标题`, `爆文`, `来源`) VALUES (%s, %s, %s)',
+            [title, content, source])
+        return success({'id': new_id, 'words': len(content)},
+                       '爆文已上传，智能体下次生成时就会参考它')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/hot-articles/<int:aid>', methods=['DELETE'])
+def seeding_hot_article_delete(aid):
+    """删除一条爆文（投喂错了可以删）"""
+    try:
+        rows = db_execute('DELETE FROM `已上传爆文库` WHERE id = %s', [aid], fetch=False)
+        if not rows:
+            return fail('该爆文不存在')
+        return success(None, '已删除该爆文')
+    except Exception as e:
+        return fail(str(e))
+
+
+def _seeding_feedback_push(content, who, role):
+    """把优化建议钉钉单聊发给开发人员；返回 (ok, msg)
+
+    收件人沿用「开发告警」的口径（dev_alert 从 dingtalk_push_users 里找「李自豪」，
+    查不到再回落 .env 的 DEV_ALERT_USER_ID / DEV_ALERT_MOBILE）——
+    这里要的是"开发人员"，与种草推送名单是两回事。
+    """
+    try:
+        row = _dev_recipient(force=True) if callable(_dev_recipient) else None
+    except Exception as e:
+        print(f'[种草][优化建议] 取开发人员失败: {e}')
+        row = None
+    if not row:
+        return False, '未找到开发人员钉钉账号（请在「每日数据分析 → 钉钉推送」里维护）'
+    try:
+        client = _push_client()
+    except DingTalkError as e:
+        return False, '钉钉不可用：%s' % e
+    uid, err = _push_resolve_userid(client, row)
+    if err or not uid:
+        return False, '解析开发人员 userId 失败：%s' % (err or '空')
+    md = '\n'.join([
+        '### 💡 种草智能体 · 优化建议',
+        '',
+        '- **提交人**：%s' % (who or '未署名'),
+        '- **角色**：%s' % (role or '-'),
+        '- **时间**：%s' % datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        '',
+        '**建议内容**',
+        '',
+        content,
+    ])
+    try:
+        r = client.send_markdown([uid], '💡 种草智能体优化建议', md)
+        if (r or {}).get('invalidStaffIdList'):
+            return False, '开发人员不在该钉钉应用的可见范围内'
+    except DingTalkError as e:
+        return False, str(e)
+    return True, '已发送给开发人员'
+
+
+@app.route('/api/seeding/feedback', methods=['POST'])
+def seeding_feedback():
+    """种草智能体「优化建议」：落库 + 直接钉钉单聊发给开发人员"""
+    try:
+        d = request.get_json(force=True) or {}
+        content = (d.get('content') or '').strip()
+        if not content:
+            return fail('请输入优化建议内容')
+        if len(content) > _SEEDING_FB_MAX:
+            content = content[:_SEEDING_FB_MAX]
+        who = (d.get('userName') or '').strip()[:64]
+        role = (d.get('role') or '').strip()[:64]
+        fb_id = None
+        try:
+            fb_id = db_execute_insert(
+                'INSERT INTO `种草优化建议` (`内容`, `提交人`, `角色`, `状态`) VALUES (%s, %s, %s, %s)',
+                [content, who, role, '待发送'])
+        except Exception as e:
+            # 落库失败不阻塞发送：建议本身比留痕更重要
+            print(f'[种草][优化建议] 落库失败: {e}')
+        ok, msg = _seeding_feedback_push(content, who, role)
+        try:
+            if fb_id:
+                db_execute('UPDATE `种草优化建议` SET `状态` = %s WHERE id = %s',
+                           ['已发送' if ok else ('发送失败：' + msg)[:32], fb_id], fetch=False)
+        except Exception:
+            pass
+        if ok:
+            return success({'sent': True}, msg)
+        # 已落库但没发出去：如实告诉用户，别让人以为白写了
+        print(f'[种草][优化建议] {msg}')
+        return fail('建议已记录，但%s' % msg)
+    except Exception as e:
+        return fail(str(e))
+
+
 @app.route('/api/seeding/agent', methods=['POST'])
 def seeding_agent():
-    """种草智能体：检索「已上传文案库」知识库 + 「种草君」系统提示词生成种草文案"""
+    """种草智能体：检索「已上传文案库」+「爆文库」+「种草君」系统提示词生成种草文案"""
     try:
         payload = request.get_json(silent=True) or {}
         question = (payload.get('question') or '').strip()
@@ -5211,8 +6012,18 @@ def seeding_agent():
         else:
             kb_block = '（当前「已上传文案库」为空，暂无参考样本，请按你自己的风格原创）'
 
+        hots = _seeding_load_hot_kb()
+        if hots:
+            hot_block = '\n\n'.join(
+                '【爆文 %d%s】\n%s' % (i + 1, ('·' + h['title']) if h.get('title') else '', h['content'])
+                for i, h in enumerate(hots))
+        else:
+            hot_block = '（当前爆文库为空，暂无爆款参考；可让用户在「投喂爆文」里上传）'
+
         sys_p = _load_seeding_agent_prompt()
-        user_msg = (f'已上传文案库（知识库，用于学习风格与去重，若为空则忽略）：\n{kb_block}\n\n'
+        user_msg = (f'已上传文案库（用于学习风格与去重，若为空则忽略）：\n{kb_block}\n\n'
+                    f'爆文库（已认可的爆款文案，用于学习爆款结构/开头钩子/节奏，'
+                    f'严禁照抄句子，若为空则忽略）：\n{hot_block}\n\n'
                     f'用户需求：{question}\n\n'
                     f'（直接输出最终文案，不要输出任何风格学习、知识库分析、去重说明、切入角度差异等过程性文字）')
 
@@ -5222,6 +6033,7 @@ def seeding_agent():
             'analysis': raw or '',
             'meta': {
                 'kb_count': len(samples),
+                'hot_count': len(hots),
                 'raw_available': bool(raw),
             },
         }, 'ok')
@@ -7800,11 +8612,23 @@ def _seeding_reconcile_now():
                            signature='seeding:reconcile:%s' % platform, source='种草定时任务')
 
 
-def _seeding_auto_update_loop():
-    """后台线程：每半小时自动触发一次作品抓取（抖音 + 小红书），随进程存活。
+def _seeding_sleep_until(target):
+    """睡到指定时刻；分段睡（每分钟醒一次），长时间等待也不会卡住进程退出"""
+    while True:
+        remain = (target - datetime.now()).total_seconds()
+        if remain <= 0:
+            return
+        time.sleep(min(remain, 60))
 
-    - 启动后短暂等待，先做首次抓取，再进入每半小时一次的循环；
-    - 任一平台仍在抓取（含卡死判定）时自动跳过，避免任务堆积。
+
+def _seeding_auto_update_loop():
+    """后台线程：每天 09:00~19:00 之间每半小时自动抓取一轮（抖音 + 小红书同步）。
+
+    ★ 2026-09-18 改：原实现是「启动即抓一轮，之后死循环 sleep 30 分钟」，夜里也在打接口。
+      现在改为按时间表触发（09:00、09:30、…、19:00），夜间只睡眠等待：
+        · 少打一半的接口，降低被平台限流/风控的概率；
+        · 夜里没人处置告警，也不必在夜里刷数据。
+      ⚠ 时间窗常量、新鲜度判定（_seeding_last_expected_run）与 tools/seeding_health.py 三处必须一致。
     """
     time.sleep(10)  # 等服务完成初始化，避免与启动过程竞争
 
@@ -7820,7 +8644,16 @@ def _seeding_auto_update_loop():
             print('[种草] %s: 上次抓取被服务重启中断，已重置进度（下一轮可正常触发）' % _p,
                   flush=True)
 
+    print('[种草][自动更新] 时间表：每天 %02d:00-%02d:00 每 %d 分钟一轮（抖音/小红书同步）'
+          % (_SEEDING_WINDOW_START, _SEEDING_WINDOW_END, _SEEDING_AUTO_INTERVAL // 60),
+          flush=True)
+
     while True:
+        # ★ 先按时间表睡到下一个抓取点（窗口外会一直睡到次日 09:00）
+        nxt = _seeding_next_run()
+        print('[种草][自动更新] 下一次自动抓取：%s' % nxt.strftime('%Y-%m-%d %H:%M'), flush=True)
+        _seeding_sleep_until(nxt)
+
         try:
             # ★ 先体检「上一轮」再触发新一轮（顺序不能反：触发会把进度覆写成 running）
             #   异常时 tools/seeding_health.py 会推钉钉给李自豪，见该文件头部说明
@@ -7847,9 +8680,11 @@ def _seeding_auto_update_loop():
                           '本轮跳过，避免平台限流' % (platform, _gap / 60.0, _SEEDING_MIN_GAP // 60))
                     time.sleep(5)
                     continue
-                err = _seeding_launch(platform)
+                err, skip = _seeding_launch(platform)
                 if err:
                     print(f'[种草][自动更新] {platform}: {err}')
+                elif skip:
+                    print(f'[种草][自动更新] {platform}: {skip}')
                 else:
                     print(f'[种草][自动更新] 已触发 {platform} 作品抓取（每 {_SEEDING_AUTO_INTERVAL // 60} 分钟）')
                 time.sleep(5)  # 两个平台错开，避免同时打满
@@ -7857,7 +8692,6 @@ def _seeding_auto_update_loop():
             print(f'[种草][自动更新] 触发异常: {e}')
             _dev_alert_exc('种草自动更新循环异常', e, signature='seeding:loop',
                            source='种草定时任务')
-        time.sleep(_SEEDING_AUTO_INTERVAL)
 
 
 # daemon 线程，gunicorn 单 worker 下只启动一次；随进程退出自动结束
@@ -7868,6 +8702,8 @@ _seeding_auto_thread.start()
 # ======================== 每日分析报告 → 钉钉推送 ========================
 # 建表放这里（模块导入即执行）：线上用 gunicorn 启动不会跑 __main__ 里的建表逻辑
 _push_ensure_tables()
+# 种草专有表：推送人名单 / 爆文库 / 优化建议（同样必须在导入阶段建好）
+_seeding_ensure_tables()
 
 # daemon 线程：默认每天 11:00 生成昨日报告并推送到钉钉
 _daily_report_push_thread = threading.Thread(target=_daily_report_push_loop, daemon=True,

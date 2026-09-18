@@ -114,9 +114,13 @@ def main():
         sys.exit(1)
 
     accounts = load_xhs_accounts()
+    # ★ 账号为空 = 没东西可抓，不是错误（2026-09-18）：
+    #   原来写 status=error，体检脚本会据此推一条「抓取失败」钉钉告警 —— 纯误报。
+    #   现在写 skipped（体检视作健康、不告警、不判停更），也不触碰 _xhs_works.json。
     if not accounts:
-        print('[xhs_batch] 未找到小红书账号（需要 platform=xhs 且填写 redId）')
-        write_progress('error', 0, 0, '未找到小红书账号')
+        msg = '未配置可抓取的小红书账号（需要 platform=xhs 且填写小红书号），本轮跳过'
+        print('[xhs_batch] ' + msg)
+        write_progress('skipped', 0, 0, msg)
         return
 
     cookie = _cookie_str()

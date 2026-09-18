@@ -35,6 +35,11 @@
     //   顶部依旧显示抖音的 08:24，看起来"整页数据都很新鲜"（实际是假的）。
     //   现在两平台各记一份，顶部并列展示，哪个掉了直接看得见。
     updateTimes: { douyin: '--', xhs: '--' },
+    // ★★ 勾选态（2026-09-18 补）：作品数据 / 种草账号 各一份，键分别是「作品唯一键」「账号 id」。
+    //   为什么用「键」而不是行下标：表格可搜索/可排序，下标随时会变，
+    //   勾了第 3 行再搜一下，下标 3 已经是另一条数据了。
+    worksSelected: {},            // { 作品唯一键: true }
+    accountsSelected: {},         // { 账号 id: true }
 
     meta: {
       douyin: { mtime: 0, rows: 0, source: '' },
@@ -53,6 +58,10 @@
     cal: { open: false, base: null, start: null, end: null, pickStart: true },   // 双月日历
     agent: { busy: false, input: '', result: '', meta: '', error: '' },          // 种草智能体
     infoModal: { open: false, name: '', category: '', selling: '', audience: '', platform: '', price: '', scene: '', style: '', note: '', types: [] },  // 信息填写弹窗
+    // 「投喂爆文」弹窗：粘贴爆文 → 上传进「已上传爆文库」，智能体生成时会参考
+    hotModal: { open: false, title: '', content: '', saving: false, list: [], loading: false },
+    // 「优化建议」弹窗：提交后由后端落库并钉钉单聊发给开发人员
+    fbModal: { open: false, content: '', sending: false },
   });
 
   // ==================== 格式化辅助 ====================
@@ -72,34 +81,77 @@
       ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
   }
 
-  // ★★ 数据新鲜度分级（2026-09-18 补）
+  // ★★ 数据新鲜度分级（2026-09-18 补；同日改「时间窗感知」）
   //   为什么需要：原先只有一个「数据更新时间」，且取的是当前选中平台，
   //   导致小红书停更 4.9 小时时顶部仍显示抖音的 08:24 —— 页面在说谎。
-  //   现在按「距今多久」分三档，颜色 + 文案都跟着变：
-  //     ok   < 1 小时   → 绿  （自动抓取每 30 分钟一轮，1 小时内属正常）
-  //     warn 1~3 小时   → 橙  （漏了 2~6 轮，需留意）
-  //     stale > 3 小时  → 红  （与 tools/seeding_health.py 的 STALE_HOURS 对齐）
-  //     none  无数据    → 灰
+  //   ★ 为什么不能按「距今多少小时」判（时间窗改造后）：
+  //     自动抓取只在 09:00~19:00 之间进行，夜里 19:00 → 次日 09:00 本来就没数据。
+  //     若按「距今」判，每天早上开跑前两个平台必然全红，是纯误报。
+  //     所以改成对比「最近一次本应完成的抓取时刻」，夜间空档自然被排除：
+  //       ok    滞后 < 1 小时  → 绿（正常，30 分钟一轮）
+  //       warn  滞后 1~3 小时  → 橙（漏了 2~6 轮，需留意）
+  //       stale 滞后 > 3 小时  → 红（与 tools/seeding_health.py 的 STALE_HOURS 对齐）
+  //       none  无数据         → 灰
+  //   ⚠ 时间窗 / 缓冲 / 阈值三处常量必须与 backend/app.py、tools/seeding_health.py 一致。
+  var SCHED_START_HOUR = 9;
+  var SCHED_END_HOUR = 19;
+  var SCHED_STEP_MIN = 30;
+  var FRESH_GRACE_MS = 40 * 60 * 1000;   // 与后端 _SEEDING_FRESH_GRACE（40 分钟）一致
   var FRESH_WARN_HOURS = 1.0;
   var FRESH_STALE_HOURS = 3.0;   // ⚠ 必须与 tools/seeding_health.py 的 STALE_HOURS 一致
+
+  /** 某天时间窗内的全部抓取时刻（时间戳数组）：09:00 起每 30 分钟，含 19:00 */
+  function _scheduledSlots(dayBase) {
+    var slots = [];
+    var t = new Date(dayBase.getFullYear(), dayBase.getMonth(), dayBase.getDate(),
+                     SCHED_START_HOUR, 0, 0, 0).getTime();
+    var end = new Date(dayBase.getFullYear(), dayBase.getMonth(), dayBase.getDate(),
+                       SCHED_END_HOUR, 0, 0, 0).getTime();
+    while (t <= end) { slots.push(t); t += SCHED_STEP_MIN * 60000; }
+    return slots;
+  }
+
+  /** 最近一次「本应已完成」的抓取时刻（时间戳）；窗口外回落到上一窗口末 */
+  function _lastExpectedRunMs() {
+    var ref = Date.now() - FRESH_GRACE_MS;
+    var d = new Date(ref);
+    for (var i = 0; i < 2; i++) {
+      var base = new Date(d.getFullYear(), d.getMonth(), d.getDate() - i);
+      var slots = _scheduledSlots(base).filter(function (s) { return s <= ref; });
+      if (slots.length) return slots[slots.length - 1];
+    }
+    var y = new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
+    return new Date(y.getFullYear(), y.getMonth(), y.getDate(), SCHED_END_HOUR, 0, 0, 0).getTime();
+  }
 
   function _freshness(mtime) {
     if (!mtime) {
       return { level: 'none', color: '#94a3b8', text: '无数据', ageText: '尚无数据' };
     }
+    // 展示文案仍用「距今多久」——它是客观事实；颜色才表达「是否按计划更新」
     var ageH = (Date.now() / 1000 - mtime) / 3600.0;
-    var ageText, level, color;
-    if (ageH < 1) {
-      ageText = ageH < 1 / 60 ? '刚刚' : Math.round(ageH * 60) + ' 分钟前';
-    } else if (ageH < 24) {
-      ageText = ageH.toFixed(1) + ' 小时前';
-    } else {
-      ageText = Math.floor(ageH / 24) + ' 天前';
-    }
-    if (ageH < FRESH_WARN_HOURS) { level = 'ok'; color = '#16a34a'; }
-    else if (ageH <= FRESH_STALE_HOURS) { level = 'warn'; color = '#d97706'; }
+    var ageText;
+    if (ageH < 1 / 60) ageText = '刚刚';
+    else if (ageH < 1) ageText = Math.round(ageH * 60) + ' 分钟前';
+    else if (ageH < 24) ageText = ageH.toFixed(1) + ' 小时前';
+    else ageText = Math.floor(ageH / 24) + ' 天前';
+    // 滞后量：数据比「最近一次应抓取时刻」旧了多少小时（负数 = 比应抓时刻还新）
+    var lagH = (_lastExpectedRunMs() - mtime * 1000) / 3600000;
+    var level, color;
+    if (lagH < FRESH_WARN_HOURS) { level = 'ok'; color = '#16a34a'; }
+    else if (lagH <= FRESH_STALE_HOURS) { level = 'warn'; color = '#d97706'; }
     else { level = 'stale'; color = '#dc2626'; }
-    return { level: level, color: color, text: ageText, ageText: ageText, ageHours: ageH };
+    return { level: level, color: color, text: ageText, ageText: ageText,
+             ageHours: ageH, lagHours: lagH };
+  }
+
+  // 作品唯一键：优先用链接（同一列表内唯一），无链接退回「账号+标题」。
+  // 仅用于前端勾选态与本地过滤，不参与后端对账，所以不做 query 归一化。
+  function _workKey(w) {
+    w = w || {};
+    var link = String(w.link || w.url || '').trim();
+    if (link) return 'link:' + link;
+    return 't:' + String(w.account || '').trim() + '|' + String(w.title || '').trim();
   }
 
   // 顶部状态圆点：跟随「最差」的那个平台，有平台掉线就不再是绿色
@@ -168,6 +220,8 @@
       function switchTab(tab) { _st.tab = tab; }
       function switchPlatform(p) {
         _st.platform = p || 'douyin';
+        // 切平台/切到被删作品时清空勾选：勾的是上一个平台的作品，留着会误删
+        _st.worksSelected = {};
         if (_st.platform === 'deleted') { loadDeleted(); }
         else { loadWorks(); loadMeta(); }
       }
@@ -392,9 +446,11 @@
       }
 
       // ---------- 钉钉联系人：姓名 + 手机号 → 匹配 userId → 绑定到部门 ----------
-      // ★ 与「每日数据分析 → 钉钉推送」共用同一张 dingtalk_push_users 表、同一批接口：
-      //   这里匹配/新增出来的人那边立刻能看到，那边加的人这里也能选到——单一名单，两处维护必然不一致。
-      //   删除 / 停用请到「每日数据分析 → 钉钉推送」页（那边有完整管理）；本弹窗只负责「把人对到部门上」。
+      // ★★ 2026-09-18 改：名单**独立**（seeding_push_users），不再与「每日数据分析 → 钉钉推送」共用。
+      //   两个场景的人本来就不是一拨人，共用一份会互相污染：这里为了点赞推送新增一个部门对接人，
+      //   会凭空出现在日报收件人列表里；日报那边删人也会把这里绑定的人删掉。
+      //   现在这边新增/查询只动种草名单，只有钉钉应用凭证（AppKey/Secret）继续共用。
+      //   删除/停用本名单里的人 → 用弹窗底部的「已登记联系人」列表（或直接解绑部门）。
       async function matchPushContact(dept) {
         var c = pushContact(dept);
         var name = (c.name || '').trim();
@@ -405,17 +461,17 @@
         var cands = _st.deptConfig.candidates || [];
         _st.pushModal.matching = dept;
         try {
-          // 1) 名单里已有同一个手机号（或同一个 userId）→ 直接复用那条记录，缺 userId 就顺手补上
+          // 1) 种草名单里已有同一个手机号（或同一个 userId）→ 直接复用那条记录，缺 userId 就顺手补上
           var exist = mobile ? cands.filter(function (x) { return (x.mobile || '') === mobile; })[0] : null;
           if (!exist && uid) exist = cands.filter(function (x) { return x.userId === uid; })[0];
           if (exist) {
             if (mobile && !exist.userId) {
-              var mr = await ApiService.resolvePushUser(mobile);
+              var mr = await ApiService.resolveSeedingPushUser(mobile);
               if (!mr.ok || !(mr.data && mr.data.userId)) {
                 App.showToast('手机号 ' + mobile + ' 没匹配到钉钉 userId：' + ((mr && mr.msg) || '请确认号码正确且在应用可见范围内'), 'error');
                 return;
               }
-              var uw = await ApiService.updatePushUser(exist.id, { userId: mr.data.userId });
+              var uw = await ApiService.updateSeedingPushUser(exist.id, { userId: mr.data.userId });
               if (!uw.ok) { App.showToast(uw.msg || '写入 userId 失败', 'error'); return; }
               exist.userId = mr.data.userId;
             }
@@ -425,15 +481,15 @@
           }
           // 2) 名单里没有 → 用手机号换 userId（换不到就等于推不出去，必须拿到）
           if (mobile && !uid) {
-            var r = await ApiService.resolvePushUser(mobile);
+            var r = await ApiService.resolveSeedingPushUser(mobile);
             if (!r.ok || !(r.data && r.data.userId)) {
               App.showToast('手机号 ' + mobile + ' 没匹配到钉钉 userId：' + ((r && r.msg) || '请确认号码正确且在应用可见范围内'), 'error');
               return;
             }
             uid = r.data.userId;
           }
-          // 3) 新增联系人，并本地并入候选名单（不整表重载，免得冲掉其他部门还没保存的输入）
-          var ar = await ApiService.addPushUser({ name: name, mobile: mobile, userId: uid, enabled: true });
+          // 3) 新增到种草名单，并本地并入候选（不整表重载，免得冲掉其他部门还没保存的输入）
+          var ar = await ApiService.addSeedingPushUser({ name: name, mobile: mobile, userId: uid, enabled: true });
           if (!ar.ok) { App.showToast(ar.msg || '新增联系人失败', 'error'); return; }
           cands.push({ id: (ar.data && ar.data.id) || ('new-' + mobile + '-' + uid), name: name,
                        mobile: mobile, userId: uid, enabled: 1 });
@@ -442,6 +498,33 @@
         } finally {
           _st.pushModal.matching = '';
         }
+      }
+      /** 从种草名单里删除一个联系人（部门已绑定时一并解绑） */
+      function removePushContact(c) {
+        if (!c || !c.id) return;
+        _st.confirm.msg = '确定从「种草推送名单」里删除「' + (c.name || '') + '」吗？'
+          + '（部门若已绑定该联系人，绑定也会一并清除，需点「保存配置」生效）';
+        _st.confirm.action = function () {
+          ApiService.deleteSeedingPushUser(c.id).then(function (res) {
+            // requestFull 返回 {ok,data,msg}，失败时 ok=false（不会返回 null）
+            if (!res || res.ok === false) {
+              App.showToast((res && res.msg) || '删除失败，请重试', 'error'); return;
+            }
+            _st.deptConfig.candidates = (_st.deptConfig.candidates || []).filter(function (x) {
+              return x.id !== c.id;
+            });
+            (_st.deptConfig.departments || []).forEach(function (d) {
+              var r = _st.deptConfig.rules[d];
+              if (r && r.userId && r.userId === c.userId) {
+                r.userId = ''; r.userName = '';
+                var cc = pushContact(d);
+                cc.name = ''; cc.mobile = ''; cc.userId = '';
+              }
+            });
+            App.showToast('已从种草名单删除「' + (c.name || '') + '」');
+          });
+        };
+        _st.confirm.open = true;
       }
 
       // 搜索框防浏览器自动填充：初始 readonly，浏览器不会填充只读框；首次聚焦时解除
@@ -538,6 +621,51 @@
         return list;
       });
 
+      // ---------- 勾选态（作品数据 / 种草账号） ----------
+      // 全选只作用于「当前筛选出来的行」——搜索后再点全选，删的才是眼前这些，
+      // 不会把看不见的行一起删掉（这是最容易出事故的地方）。
+      var worksSelCount = Vue.computed(function () {
+        return filteredWorks.value.filter(function (w) { return !!_st.worksSelected[_workKey(w)]; }).length;
+      });
+      var allWorksSelected = Vue.computed(function () {
+        var list = filteredWorks.value;
+        return list.length > 0 && worksSelCount.value === list.length;
+      });
+      var worksSelectedItems = Vue.computed(function () {
+        return filteredWorks.value.filter(function (w) { return !!_st.worksSelected[_workKey(w)]; });
+      });
+      var accountsSelCount = Vue.computed(function () {
+        return filteredAccounts.value.filter(function (a) { return !!_st.accountsSelected[a.id]; }).length;
+      });
+      var allAccountsSelected = Vue.computed(function () {
+        var list = filteredAccounts.value;
+        return list.length > 0 && accountsSelCount.value === list.length;
+      });
+
+      function toggleWorkSel(w) {
+        var k = _workKey(w);
+        if (_st.worksSelected[k]) delete _st.worksSelected[k];
+        else _st.worksSelected[k] = true;
+      }
+      function toggleAllWorks() {
+        var next = {};
+        if (!allWorksSelected.value) {
+          filteredWorks.value.forEach(function (w) { next[_workKey(w)] = true; });
+        }
+        _st.worksSelected = next;   // 已全选时再点 = 取消全选（赋空对象）
+      }
+      function toggleAccountSel(id) {
+        if (_st.accountsSelected[id]) delete _st.accountsSelected[id];
+        else _st.accountsSelected[id] = true;
+      }
+      function toggleAllAccounts() {
+        var next = {};
+        if (!allAccountsSelected.value) {
+          filteredAccounts.value.forEach(function (a) { next[a.id] = true; });
+        }
+        _st.accountsSelected = next;
+      }
+
       // ---------- 账号增删改 ----------
       function openAccountModal(id) {
         _st.accountModal.isEdit = !!id;
@@ -584,15 +712,75 @@
       function deleteAccount(id) {
         var acc = _st.accounts.find(function (a) { return a.id === id; });
         if (!acc) return;
-        _st.confirm.msg = '确定删除种草账号「' + (acc.name || '') + '」吗？';
+        _st.confirm.msg = '确定删除种草账号「' + (acc.name || '') + '」吗？'
+          + '该账号的作品数据与「被删作品」记录会一并清空。';
         _st.confirm.action = function () {
-          ApiService.deleteSeedingAccount(id).then(function () {
+          ApiService.deleteSeedingAccount(id).then(function (res) {
+            if (res === null) { App.showToast('删除失败，请重试', 'error'); return; }
             _st.accounts = _st.accounts.filter(function (a) { return a.id !== id; });
-            App.showToast('种草账号已删除');
+            delete _st.accountsSelected[id];
+            _reloadAfterAccountRemoved();
+            App.showToast(_purgeMsg('种草账号已删除', res));
           });
         };
         _st.confirm.open = true;
       }
+      /** 批量删除种草账号（只删当前勾选的） */
+      function deleteAccountsSelected() {
+        var ids = filteredAccounts.value
+          .filter(function (a) { return !!_st.accountsSelected[a.id]; })
+          .map(function (a) { return a.id; });
+        if (!ids.length) { App.showToast('请先勾选要删除的种草账号', 'error'); return; }
+        _st.confirm.msg = '确定批量删除选中的 ' + ids.length + ' 个种草账号吗？'
+          + '这些账号的作品数据与「被删作品」记录会一并清空。';
+        _st.confirm.action = function () {
+          ApiService.batchDeleteSeedingAccounts(ids).then(function (res) {
+            if (res === null) { App.showToast('批量删除失败，请重试', 'error'); return; }
+            var idset = {};
+            ids.forEach(function (i) { idset[i] = true; });
+            _st.accounts = _st.accounts.filter(function (a) { return !idset[a.id]; });
+            _st.accountsSelected = {};
+            _reloadAfterAccountRemoved();
+            App.showToast(_purgeMsg('已删除 ' + ((res && res.deleted) || ids.length) + ' 个种草账号', res));
+          });
+        };
+        _st.confirm.open = true;
+      }
+      /** 删除账号后重拉作品侧数据：后端已把该账号的作品数据与被删记录一并清空，
+       *  本地内存里的副本还是旧的，不重拉就会「删了账号作品还挂在列表上」。 */
+      function _reloadAfterAccountRemoved() {
+        if (_st.platform !== 'deleted') { loadWorks(); loadMeta(); }
+        loadDeleted();
+      }
+      /** 提示文案：带上后端回报的「同步清空」数量，用户才知道作品也被一起清掉了 */
+      function _purgeMsg(base, res) {
+        var w = (res && res.works) || 0, d = (res && res.deletedWorks) || 0;
+        if (!w && !d) return base;
+        return base + '，同步清空 ' + w + ' 条作品数据、' + d + ' 条被删作品记录';
+      }
+
+      // ---------- 作品数据删除（单条 / 批量） ----------
+      /** 删除作品数据：items = 要删的作品行（单条就传 [w]）。后端记入删除名单，抓取后也不会复活。 */
+      function deleteWorks(items) {
+        var list = (items || []).filter(Boolean);
+        if (!list.length) { App.showToast('请先勾选要删除的作品数据', 'error'); return; }
+        var tip = list.length === 1 ? '确定删除「' + ((list[0].title || '').slice(0, 30) || '这条作品') + '」吗？'
+                                    : '确定删除选中的 ' + list.length + ' 条作品数据吗？';
+        _st.confirm.msg = tip + '删除后不再显示，也不会再被点赞推送。';
+        _st.confirm.action = function () {
+          var platform = _st.platform === 'xhs' ? 'xhs' : 'douyin';
+          ApiService.deleteSeedingWorks(platform, list).then(function (res) {
+            if (res === null) { App.showToast('删除失败，请重试', 'error'); return; }
+            var keys = {};
+            list.forEach(function (w) { keys[_workKey(w)] = true; });
+            _st.works = _st.works.filter(function (w) { return !keys[_workKey(w)]; });
+            _st.worksSelected = {};
+            App.showToast('已删除 ' + ((res && res.deleted) || list.length) + ' 条作品数据');
+          });
+        };
+        _st.confirm.open = true;
+      }
+      function deleteWorksSelected() { deleteWorks(worksSelectedItems.value); }
 
       // ---------- 被删作品 ----------
       function deleteDeleted(id) {
@@ -633,6 +821,8 @@
       async function triggerScrape(platform) {
         var res = await ApiService.triggerSeedingScrape(platform);
         if (res === null) { App.showToast('触发抓取失败', 'error'); return; }
+        // ★ 没有可用账号时后端返回 triggered=false（不是错误）：只作提示，不报错、不轮询进度
+        if (res.triggered === false) { App.showToast(res.reason || '暂无可抓取的账号，已跳过'); return; }
         var beforeMtime = res.mtime || 0;
         App.showToast('已触发' + (platform === 'xhs' ? '小红书' : '抖音') + '抓取，正在后台执行…');
         _pollScrape(platform, beforeMtime);
@@ -796,8 +986,9 @@
             } else {
               _st.agent.error = '智能体未返回有效结果，请稍后重试。';
             }
-            if (meta && meta.kb_count !== undefined) {
-              _st.agent.meta = '已上传文案库样本：' + (meta.kb_count || 0) + ' 条';
+            if (meta && (meta.kb_count !== undefined || meta.hot_count !== undefined)) {
+              _st.agent.meta = '知识库 —— 已上传文案库 ' + (meta.kb_count || 0)
+                + ' 条 · 爆文库 ' + (meta.hot_count || 0) + ' 条';
             }
           }
         } catch (e) {
@@ -811,6 +1002,82 @@
         if (!q) { App.showToast('请输入种草文案需求', 'error'); return; }
         _st.agent.input = '';
         runAgent(q);
+      }
+
+      // ---------- 投喂爆文（存进「已上传爆文库」，智能体生成时参考） ----------
+      async function openHotModal() {
+        _st.hotModal.open = true;
+        _st.hotModal.title = '';
+        _st.hotModal.content = '';
+        loadHotArticles();
+      }
+      function closeHotModal() { _st.hotModal.open = false; }
+      async function loadHotArticles() {
+        _st.hotModal.loading = true;
+        try {
+          var d = await ApiService.getSeedingHotArticles();
+          _st.hotModal.list = (d && Array.isArray(d.items)) ? d.items : [];
+        } finally {
+          _st.hotModal.loading = false;
+        }
+      }
+      async function submitHotArticle() {
+        if (_st.hotModal.saving) return;   // 防连点重复上传
+        var content = (_st.hotModal.content || '').trim();
+        if (!content) { App.showToast('请先粘贴爆文内容', 'error'); return; }
+        _st.hotModal.saving = true;
+        try {
+          var r = await ApiService.addSeedingHotArticle({
+            title: (_st.hotModal.title || '').trim(),
+            content: content,
+            source: '人工投喂',
+          });
+          if (!r.ok) { App.showToast(r.msg || '上传失败，请重试', 'error'); return; }
+          _st.hotModal.content = '';
+          _st.hotModal.title = '';
+          App.showToast(r.msg || '爆文已上传');
+          loadHotArticles();
+        } finally {
+          _st.hotModal.saving = false;
+        }
+      }
+      function deleteHotArticle(item) {
+        if (!item || !item.id) return;
+        _st.confirm.msg = '确定删除这条爆文吗？（原标题：' + ((item.title || '').slice(0, 20) || '无标题') + '）';
+        _st.confirm.action = function () {
+          ApiService.deleteSeedingHotArticle(item.id).then(function (r) {
+            if (r.ok === false) { App.showToast(r.msg || '删除失败，请重试', 'error'); return; }
+            _st.hotModal.list = _st.hotModal.list.filter(function (x) { return x.id !== item.id; });
+            App.showToast('已删除该爆文');
+          });
+        };
+        _st.confirm.open = true;
+      }
+
+      // ---------- 优化建议（落库 + 钉钉发给开发人员） ----------
+      function openFbModal() {
+        _st.fbModal.open = true;
+        _st.fbModal.content = '';
+      }
+      function closeFbModal() { _st.fbModal.open = false; }
+      async function submitFeedback() {
+        if (_st.fbModal.sending) return;   // 防连点重复提交
+        var content = (_st.fbModal.content || '').trim();
+        if (!content) { App.showToast('请输入优化建议内容', 'error'); return; }
+        _st.fbModal.sending = true;
+        try {
+          var r = await ApiService.submitSeedingFeedback({
+            content: content,
+            userName: sessionStorage.getItem('admin_current_user') || '',
+            role: sessionStorage.getItem('admin_current_role') || '',
+          });
+          if (!r.ok) { App.showToast(r.msg || '提交失败，请重试', 'error'); return; }
+          _st.fbModal.open = false;
+          _st.fbModal.content = '';
+          App.showToast('优化建议已发送给开发人员，感谢反馈！');
+        } finally {
+          _st.fbModal.sending = false;
+        }
       }
 
       // ---------- 首次挂载时加载数据 ----------
@@ -834,6 +1101,10 @@
       var statusDotColor = Vue.computed(function () {
         return _LEVEL_COLOR[_worstLevel()] || _LEVEL_COLOR.ok;
       });
+      // ★★ 「数据更新」（Cookie + 触发抓取）只对开发人员账号显示（2026-09-18）。
+      //   角色存 sessionStorage（登录时写入），页面生命周期内不会变，直接取即可。
+      //   注意：这里只是**显示层**收敛；后端接口未按角色拦截，普通账号理论上仍可直接调接口。
+      var isDeveloper = (sessionStorage.getItem('admin_current_role') || '') === '开发人员';
       // 顶部整体是否有平台异常（用于提示文案「有平台数据滞后」）
       var hasStale = Vue.computed(function () {
         var lv = _worstLevel();
@@ -857,6 +1128,14 @@
         filteredDeleted: filteredDeleted,
         filteredAccounts: filteredAccounts,
         calMonths: calMonths,
+        // 勾选态 + 删除（作品单条/批量、账号批量）
+        workKey: _workKey,
+        worksSelCount: worksSelCount, allWorksSelected: allWorksSelected,
+        accountsSelCount: accountsSelCount, allAccountsSelected: allAccountsSelected,
+        toggleWorkSel: toggleWorkSel, toggleAllWorks: toggleAllWorks,
+        toggleAccountSel: toggleAccountSel, toggleAllAccounts: toggleAllAccounts,
+        deleteWorks: deleteWorks, deleteWorksSelected: deleteWorksSelected,
+        deleteAccountsSelected: deleteAccountsSelected,
         switchTab: switchTab, switchPlatform: switchPlatform, filterDept: filterDept,
         filterAccountPlatform: filterAccountPlatform, filterAccountDept: filterAccountDept,
         worksSearchLocked: worksSearchLocked, accountSearchLocked: accountSearchLocked, unlockWorksSearch: unlockWorksSearch, unlockAccountSearch: unlockAccountSearch,
@@ -874,9 +1153,15 @@
         openPushModal: openPushModal, closePushModal: closePushModal,
         pushContact: pushContact, onPushNameInput: onPushNameInput,
         matchPushContact: matchPushContact, clearPushContact: clearPushContact,
+        removePushContact: removePushContact,
         toggleUidInput: toggleUidInput, uidInputOpen: uidInputOpen,
         setPushThreshold: setPushThreshold,
         togglePushEnabled: togglePushEnabled, savePushModal: savePushModal,
+        // 投喂爆文 / 优化建议 / 开发人员可见性
+        isDeveloper: isDeveloper,
+        openHotModal: openHotModal, closeHotModal: closeHotModal,
+        submitHotArticle: submitHotArticle, deleteHotArticle: deleteHotArticle,
+        openFbModal: openFbModal, closeFbModal: closeFbModal, submitFeedback: submitFeedback,
       };
     },
     template: `
@@ -903,8 +1188,9 @@
         </div>
         <div class="sd-header-actions">
           <button class="btn btn-sm btn-outline" @click="openPushModal"><i class="fa-solid fa-bell"></i> 钉钉推送</button>
-          <button class="btn btn-sm btn-outline" @click="toggleUpdatePanel"><i class="fa-solid fa-rotate"></i> 数据更新</button>
-          <div class="sd-update-panel" :class="{ hidden: !state.updatePanelOpen }">
+          <!-- ★ 数据更新（Cookie + 触发抓取）只对开发人员显示：非开发人员看不到入口，也就点不到面板 -->
+          <button v-if="isDeveloper" class="btn btn-sm btn-outline" @click="toggleUpdatePanel"><i class="fa-solid fa-rotate"></i> 数据更新</button>
+          <div v-if="isDeveloper" class="sd-update-panel" :class="{ hidden: !state.updatePanelOpen }">
             <!-- ★★ 双平台抓取状态（2026-09-18 补）：一眼看出哪个平台在掉数据 -->
             <div class="sd-plat-status">
               <div class="sd-plat-status-item">
@@ -1012,8 +1298,11 @@
           <div class="ps-table-title-group">
             <h3><i class="fa-solid fa-clapperboard" style="color:#16a34a;margin-right:6px"></i>种草作品数据</h3>
             <span class="ps-table-badge" style="background:#f0fdf4;color:#16a34a">共 {{ filteredWorks.length }} 条</span>
+            <span v-if="worksSelCount" class="ps-table-badge" style="background:#fef2f2;color:#dc2626">已选 {{ worksSelCount }} 条</span>
           </div>
           <div class="ps-table-tools">
+            <!-- 批量删除：只在有勾选时出现，避免误点 -->
+            <button v-if="worksSelCount" class="btn btn-danger btn-sm" @click="deleteWorksSelected"><i class="fa-solid fa-trash-can" style="margin-right:6px"></i>删除选中 ({{ worksSelCount }})</button>
             <div class="ps-search-wrap"><i class="fa-solid fa-search"></i><input type="text" class="ps-search-input" v-model="state.worksSearch" autocomplete="off" :readonly="worksSearchLocked" @focus="unlockWorksSearch" placeholder="搜索标题/账号..."></div>
             <div style="position:relative">
               <button type="button" @click="calToggle" style="display:flex;align-items:center;gap:6px;background:#fff;border:1px solid #e2e8f0;border-radius:9px;padding:5px 12px;height:33px;cursor:pointer;font-size:0.82rem;color:#334155;font-family:inherit">
@@ -1054,15 +1343,19 @@
         <div class="ps-table-wrap">
           <table class="ps-store-table">
             <thead><tr>
+              <th style="width:40px;text-align:center"><input type="checkbox" style="width:15px;height:15px;cursor:pointer" title="全选当前筛选结果" :checked="allWorksSelected" @change="toggleAllWorks"></th>
               <th style="width:140px">名称</th><th style="width:120px">账号</th><th>标题</th>
               <th class="ps-col-num" style="width:100px;cursor:pointer" @click="sortWorks('likes')">点赞 <span class="sd-sort-arrow">{{ sortArrow('likes') }}</span></th>
               <th class="ps-col-num" style="width:90px;cursor:pointer" @click="sortWorks('comments')">评论 <span class="sd-sort-arrow">{{ sortArrow('comments') }}</span></th>
               <th class="ps-col-num" style="width:90px;cursor:pointer" @click="sortWorks('collects')">收藏 <span class="sd-sort-arrow">{{ sortArrow('collects') }}</span></th>
               <th class="ps-col-num" style="width:90px;cursor:pointer" @click="sortWorks('shares')">分享 <span class="sd-sort-arrow">{{ sortArrow('shares') }}</span></th>
               <th style="width:140px">发布时间</th>
+              <th style="width:60px">操作</th>
             </tr></thead>
             <tbody>
+              <tr v-if="!filteredWorks.length"><td colspan="10" style="text-align:center;color:#94a3b8;padding:24px">暂无作品数据</td></tr>
               <tr v-for="(w, wi) in filteredWorks" :key="wi">
+                <td style="text-align:center"><input type="checkbox" style="width:15px;height:15px;cursor:pointer" :checked="!!state.worksSelected[workKey(w)]" @change="toggleWorkSel(w)"></td>
                 <td><strong>{{ w.name }}</strong></td>
                 <td style="font-family:monospace;font-size:12px">{{ w.account || '-' }}</td>
                 <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
@@ -1074,6 +1367,7 @@
                 <td class="ps-col-num">{{ (w.collects || 0).toLocaleString() }}</td>
                 <td class="ps-col-num">{{ (w.shares || 0).toLocaleString() }}</td>
                 <td style="font-size:12px;color:#64748b">{{ w.publishTime || '-' }}</td>
+                <td><button class="ap-btn-sm delete" title="删除这条作品数据" @click="deleteWorks([w])"><i class="fa-solid fa-trash"></i></button></td>
               </tr>
             </tbody>
           </table>
@@ -1120,7 +1414,11 @@
     <div v-show="state.tab === 'accounts'">
       <div class="ap-toolbar">
         <div class="ap-search-wrap"><i class="fa-solid fa-search"></i><input class="ap-search-input" v-model="state.accountSearch" autocomplete="off" :readonly="accountSearchLocked" @focus="unlockAccountSearch" placeholder="搜索账号/抖音号/小红书号/主页链接..."></div>
-        <button class="ap-btn-primary" @click="openAccountModal()"><i class="fa-solid fa-plus"></i> 新增种草账号</button>
+        <div style="display:flex;align-items:center;gap:10px">
+          <!-- 批量删除：只在有勾选时出现，避免误点 -->
+          <button v-if="accountsSelCount" class="btn btn-danger" style="height:38px" @click="deleteAccountsSelected"><i class="fa-solid fa-trash-can" style="margin-right:6px"></i>批量删除 ({{ accountsSelCount }})</button>
+          <button class="ap-btn-primary" @click="openAccountModal()"><i class="fa-solid fa-plus"></i> 新增种草账号</button>
+        </div>
       </div>
       <!-- ★ 筛选条（2026-09-18）：与「作品数据」同款按钮组，原先的平台下拉框已去掉。
            平台与部门各用一套独立 state，不跟作品页的 platform / deptFilter 互相干扰。 -->
@@ -1139,13 +1437,15 @@
       <div class="ap-table-wrap" id="sdAccountsCard">
         <table class="ap-table">
           <thead><tr>
+            <th style="width:40px;text-align:center"><input type="checkbox" style="width:15px;height:15px;cursor:pointer" title="全选当前筛选结果" :checked="allAccountsSelected" @change="toggleAllAccounts"></th>
             <th style="width:50px">ID</th><th style="width:70px">平台</th><th style="width:140px">账号</th><th style="width:140px">抖音号/小红书号</th>
             <th style="width:90px">部门</th><th>主页链接</th><th style="width:90px">操作</th>
           </tr></thead>
           <tbody>
             <!-- 筛选/搜索后为空时的空态（原先没有，加了筛选就必然碰得到） -->
-            <tr v-if="!filteredAccounts.length"><td colspan="7" style="text-align:center;color:#94a3b8;padding:24px">没有符合条件的种草账号</td></tr>
+            <tr v-if="!filteredAccounts.length"><td colspan="8" style="text-align:center;color:#94a3b8;padding:24px">没有符合条件的种草账号</td></tr>
             <tr v-for="a in filteredAccounts" :key="a.id">
+              <td style="text-align:center"><input type="checkbox" style="width:15px;height:15px;cursor:pointer" :checked="!!state.accountsSelected[a.id]" @change="toggleAccountSel(a.id)"></td>
               <td>{{ a.id }}</td>
               <td><span v-if="(a.platform || 'douyin') === 'xhs'" style="font-size:11px;color:#e11d48;font-weight:600">小红书</span><span v-else style="font-size:11px;color:#0284c7;font-weight:600">抖音</span></td>
               <td><strong>{{ a.name || '' }}</strong></td>
@@ -1170,12 +1470,16 @@
     <div class="sd-agent">
       <div class="sd-agent-header">
         <div class="sd-agent-title"><i class="fa-solid fa-wand-magic-sparkles" style="color:#16a34a;margin-right:8px"></i>种草智能体</div>
-        <span class="sd-agent-sub">种草君 · 基于 已上传文案库 知识库</span>
+        <span class="sd-agent-sub">种草君 · 基于 已上传文案库 + 爆文库</span>
       </div>
       <div class="sd-agent-suggest">
         <button class="sd-agent-chip" @click="agentAsk('body')">📝 种草正文</button>
         <button class="sd-agent-chip" @click="agentAsk('comment')">💬 评论区文案</button>
         <button class="sd-agent-chip" @click="agentAsk('video')">🎬 口播文案</button>
+      </div>
+      <div class="sd-agent-suggest" style="margin-top:-4px">
+        <button class="sd-agent-chip" style="border-color:#fca5a5;color:#b91c1c;background:#fef2f2" @click="openHotModal">🔥 投喂爆文</button>
+        <button class="sd-agent-chip" style="border-color:#93c5fd;color:#1d4ed8;background:#eff6ff" @click="openFbModal">💡 优化建议</button>
       </div>
       <div class="sd-agent-result">
         <div v-if="state.agent.busy" class="sa-loading" style="color:#16a34a"><i class="fa-solid fa-spinner"></i> 正在生成文案，请稍候...</div>
@@ -1186,7 +1490,7 @@
         </div>
         <div v-else class="sd-agent-empty">
           <i class="fa-solid fa-robot" style="font-size:28px;color:#cbd5e1"></i>
-          <p>点击上方快捷问题，或直接输入产品信息与文案需求，种草君会先学习「已上传文案库」的风格，再生成原创文案。</p>
+          <p>点击上方快捷问题，或直接输入产品信息与文案需求。种草君会先学习「已上传文案库」的风格与「爆文库」的爆款结构，再生成原创文案；也可以点「投喂爆文」上传你看中的爆款，「优化建议」把想法直接发给开发人员。</p>
         </div>
       </div>
       <div class="sd-agent-input">
@@ -1202,12 +1506,12 @@
   <div class="ap-form-group"><label>平台</label>
     <select class="ap-form-input" v-model="state.accountModal.platform"><option value="douyin">抖音</option><option value="xhs">小红书</option></select>
   </div>
-  <div class="ap-form-group"><label>账号名称</label><input class="ap-form-input" v-model="state.accountModal.name" autocomplete="off" placeholder="例如：聚浪好物研究所"></div>
+  <div class="ap-form-group"><label>账号名称 <span style="color:#94a3b8;font-weight:400">（姓名+账号名）</span></label><input class="ap-form-input" v-model="state.accountModal.name" autocomplete="off" placeholder="例如：张三-聚浪好物研究所"></div>
   <div v-show="state.accountModal.platform === 'douyin'" class="ap-form-group"><label>抖音号</label><input class="ap-form-input" v-model="state.accountModal.douyinId" autocomplete="off" placeholder="抖音号（如 julang_haowu）"></div>
   <div v-show="state.accountModal.platform === 'xhs'" class="ap-form-group"><label>小红书号</label><input class="ap-form-input" v-model="state.accountModal.redId" autocomplete="off" placeholder="小红书号（如 18930360363）"></div>
   <div class="ap-form-group"><label>部门</label><input class="ap-form-input" v-model="state.accountModal.department" autocomplete="off" placeholder="例如：三部 / 四部 / 五部"></div>
-  <div v-show="state.accountModal.platform === 'douyin'" class="ap-form-group"><label>主页链接</label><input class="ap-form-input" v-model="state.accountModal.homepage" autocomplete="off" placeholder="https://www.douyin.com/user/MS4wLjAB..."></div>
-  <div style="font-size:11px;color:#94a3b8">抖音需填写主页链接（自动解析 sec_user_id）；小红书无需主页链接，抓取时按小红书号解析。</div>
+  <div v-show="state.accountModal.platform === 'douyin'" class="ap-form-group"><label>主页链接 <span style="color:#94a3b8;font-weight:400">（仅链接剔除文本）</span></label><input class="ap-form-input" v-model="state.accountModal.homepage" autocomplete="off" placeholder="只粘贴链接，例如 https://v.douyin.com/gktlai2Rq9U/"></div>
+  <div style="font-size:11px;color:#94a3b8">账号名称请按「姓名+账号名」填写（如 张三-聚浪好物研究所），方便按人员区分账号。<br>抖音主页链接请<b>只粘贴链接本身</b>：从抖音分享文案里复制时会带「长按复制此条消息，打开抖音搜索…」等文字，需把文字剔除后再粘贴，系统会自动解析 sec_user_id。<br>小红书无需主页链接，抓取时按小红书号解析。</div>
 </ecom-modal>
 
 <!-- 钉钉推送配置弹窗：部门 → 钉钉联系人 + 点赞阈值 N -->
@@ -1215,7 +1519,8 @@
   <div style="font-size:12px;color:#475569;line-height:1.75;margin-bottom:12px;background:#f8fafc;border-radius:8px;padding:10px 12px">
     为每个部门指定一位钉钉联系人并设置点赞阈值 <b>N</b>。<br>
     抓取完成后自动检查：作品点赞达到 N 时，把<b>作品链接</b>推送给该部门对应的联系人（同一作品只推一次）。<br>
-    <span style="color:#94a3b8">联系人<b>直接填姓名 + 手机号</b>点「匹配并绑定」：系统按手机号换取钉钉 userId，名单里没这个人就自动新增。名单与「每日数据分析 → 钉钉推送」共用同一份（那边的增删改这里立刻可见）。</span>
+    <span style="color:#94a3b8">联系人<b>直接填姓名 + 手机号</b>点「匹配并绑定」：系统按手机号换取钉钉 userId，名单里没这个人就自动新增。<br>
+    ★ 这里维护的是<b>种草专用名单</b>，与「每日数据分析 → 钉钉推送」<b>完全独立</b>：在这边加的部门对接人不会出现在日报收件人里，那边删人也不影响这里的绑定。两边只共用钉钉应用凭证。</span>
   </div>
   <div class="ap-table-wrap" v-if="state.deptConfig.departments.length">
     <table class="ap-table">
@@ -1275,9 +1580,25 @@
   </div>
   <div v-else style="font-size:12px;color:#94a3b8;padding:10px 0">还没有部门，请先在「部门筛选」处点 + 添加部门。</div>
 
+  <!-- 种草专有名单：在这里增/删，完全独立于「每日数据分析 → 钉钉推送」 -->
+  <div style="margin-top:14px;border-top:1px solid #f1f5f9;padding-top:10px">
+    <div style="font-size:12px;color:#334155;font-weight:600;margin-bottom:6px">
+      已登记联系人（种草推送名单）<span style="color:#94a3b8;font-weight:400">共 {{ (state.deptConfig.candidates || []).length }} 人</span>
+    </div>
+    <div v-if="(state.deptConfig.candidates || []).length" style="display:flex;flex-wrap:wrap;gap:6px">
+      <span v-for="c in state.deptConfig.candidates" :key="'pc' + c.id"
+            style="display:inline-flex;align-items:center;gap:6px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:3px 8px;font-size:12px;color:#334155">
+        {{ c.name || '(未命名)' }}
+        <span style="color:#94a3b8;font-size:11px">{{ c.mobile || c.userId || '未填手机号' }}</span>
+        <i class="fa-solid fa-xmark" style="cursor:pointer;color:#dc2626" title="从本名单删除" @click="removePushContact(c)"></i>
+      </span>
+    </div>
+    <div v-else style="font-size:12px;color:#94a3b8">本名单还是空的 —— 在上面的表格里填姓名 + 手机号点「匹配并绑定」即可登记。</div>
+  </div>
+
   <div style="font-size:11px;color:#94a3b8;margin-top:10px;line-height:1.75">
     ⚠️ 手机号匹配依赖钉钉应用的「手机号获取成员信息」权限；万一换不到 userId，点「或直接填 userId」手填即可。成员必须在该应用的「可见范围」内，否则推送会返回「不在可见范围」。<br>
-    未勾选「启用」的部门不推送；要删除 / 停用某位联系人，请到「每日数据分析 → 钉钉推送」页操作——两处是同一份名单。
+    未勾选「启用」的部门不推送。本弹窗管理的是<b>种草专用名单</b>，「每日数据分析 → 钉钉推送」那边的人不在这里显示，反之亦然。
   </div>
 </ecom-modal>
 
@@ -1311,6 +1632,62 @@
     </div>
   </div>
   <div class="sd-info-field"><label class="sd-info-label">补充说明 <span class="muted">（可选）</span></label><textarea class="sd-info-textarea" v-model="state.infoModal.note" placeholder="任何你想强调的点"></textarea></div>
+</ecom-modal>
+
+<!-- 投喂爆文弹窗：粘贴爆文 → 存入「已上传爆文库」，智能体生成时参考 -->
+<ecom-modal :visible="state.hotModal.open" title="投喂爆文" width="720px" save-text="上传到爆文库" @close="closeHotModal" @save="submitHotArticle">
+  <div style="font-size:12px;color:#475569;line-height:1.75;margin-bottom:12px;background:#fef2f2;border-radius:8px;padding:10px 12px;border:1px solid #fecaca">
+    🔥 把你看中的<b>爆款文案</b>整篇粘贴进来点「上传」，它会被存进独立的<b>爆文库</b>。<br>
+    种草智能体生成文案前会学习爆文库里的<b>结构、开头钩子和节奏</b>，但<b>不会照抄句子</b>——投喂越多，写出来的爆款感越准。
+  </div>
+  <div class="ap-form-group">
+    <label>标题 <span style="color:#94a3b8;font-weight:400">（可选，方便以后辨认）</span></label>
+    <input class="ap-form-input" v-model="state.hotModal.title" autocomplete="off" placeholder="例如：油皮防晒爆文-小红书10w赞">
+  </div>
+  <div class="ap-form-group">
+    <label>爆文内容 <span style="color:#dc2626">*</span></label>
+    <textarea class="ap-form-input" v-model="state.hotModal.content" rows="10"
+              style="height:auto;min-height:180px;line-height:1.7;resize:vertical"
+              placeholder="把爆款文案原文整篇粘贴到这里（标题+正文都可以）..."></textarea>
+  </div>
+  <div style="margin-top:16px;border-top:1px solid #f1f5f9;padding-top:10px">
+    <div style="font-size:12px;color:#334155;font-weight:600;margin-bottom:6px">
+      已投喂爆文<span style="color:#94a3b8;font-weight:400">共 {{ (state.hotModal.list || []).length }} 篇</span>
+    </div>
+    <div v-if="state.hotModal.loading" style="font-size:12px;color:#94a3b8">加载中…</div>
+    <template v-else>
+      <div v-if="(state.hotModal.list || []).length" class="ap-table-wrap" style="max-height:240px;overflow:auto">
+        <table class="ap-table">
+          <thead><tr><th style="width:60px">ID</th><th>标题</th><th style="width:90px">字数</th><th style="width:150px">投喂时间</th><th style="width:70px">操作</th></tr></thead>
+          <tbody>
+            <tr v-for="h in state.hotModal.list" :key="h.id">
+              <td>{{ h.id }}</td>
+              <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ h.title || '(无标题)' }}</td>
+              <td>{{ h.words }} 字</td>
+              <td style="font-size:12px;color:#64748b">{{ (h.createdAt || '').slice(0, 16) }}</td>
+              <td><button class="ap-btn-sm delete" title="删除这条爆文" @click="deleteHotArticle(h)"><i class="fa-solid fa-trash"></i></button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-else style="font-size:12px;color:#94a3b8">还没有投喂过爆文。</div>
+    </template>
+  </div>
+</ecom-modal>
+
+<!-- 优化建议弹窗：提交后由后端落库并钉钉单聊发给开发人员 -->
+<ecom-modal :visible="state.fbModal.open" title="优化建议" width="620px" save-text="提交给开发人员" @close="closeFbModal" @save="submitFeedback">
+  <div style="font-size:12px;color:#475569;line-height:1.75;margin-bottom:12px;background:#eff6ff;border-radius:8px;padding:10px 12px;border:1px solid #bfdbfe">
+    💡 想加什么功能、哪里不好用、文案效果不理想……都可以写在这里。<br>
+    提交后会<b>直接钉钉发送给开发人员</b>，并留档一条记录。
+  </div>
+  <div class="ap-form-group">
+    <label>建议内容 <span style="color:#dc2626">*</span></label>
+    <textarea class="ap-form-input" v-model="state.fbModal.content" rows="8"
+              style="height:auto;min-height:160px;line-height:1.7;resize:vertical"
+              placeholder="例如：希望能按部门导出作品数据；口播文案希望支持指定时长；爆文库能不能加导入 Excel..."></textarea>
+  </div>
+  <div style="font-size:11px;color:#94a3b8">提交时会自动带上你的账号与角色，无需填写。</div>
 </ecom-modal>
     `,
   };

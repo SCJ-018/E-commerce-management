@@ -71,9 +71,9 @@ PAGE_COUNT = 18        # 每页条数（实测 18 有效）
 MAX_PAGES = 12         # 单账号最大翻页（18*12=216 条，远超实际；中位数仅 8 条）
 PAGE_DELAY_MS = 900    # 翻页间隔
 
-# 回退账号：账号文件缺失/解析全失败时使用
-FALLBACK_SEC_USER_ID = "MS4wLjABAAAAmNgVBI7dikJ3OmLbDqK7G3eIF54FIURwJl0Qa8MOfCg"
-FALLBACK_NAME = "默认账号"
+# ★ 2026-09-18 起删除了「回退账号」：
+#   账号文件缺失/为空时不再拿一个硬编码账号去抓（那会把别人的作品混进数据里，
+#   用户也会误以为"还有数据在更新"）。改为直接跳过本轮、进度写 skipped，见 main()。
 
 FIELDNAMES = ["名称", "账号", "标题", "链接", "点赞", "评论", "收藏", "分享", "发布时间"]
 
@@ -166,7 +166,10 @@ def extract_sec_user_id(homepage):
 
 
 def load_accounts():
-    """读取种草账号列表；不存在或为空时回退到硬编码账号。返回 [{name, douyin_id, sec_user_id}]"""
+    """读取种草账号列表；不存在 / 为空 / 全部解析失败时返回 []（由 main 优雅跳过，不报错）。
+
+    返回 [{name, douyin_id, sec_user_id}]
+    """
     accounts = []
     if os.path.exists(ACCOUNTS_FILE):
         try:
@@ -175,7 +178,7 @@ def load_accounts():
             if isinstance(raw, list):
                 accounts = raw
         except Exception as e:
-            log("[警告] 读取账号文件失败，回退到默认账号：%s" % e)
+            log("[警告] 读取账号文件失败，本轮按「无账号」处理：%s" % e)
 
     result = []
     seen = {}   # sec_user_id -> 首次出现的账号名（同一账号配了多条时只抓一次）
@@ -202,9 +205,6 @@ def load_accounts():
         log("[警告] %d 个账号主页链接解析不出 sec_user_id，已跳过：%s"
             % (len(skipped), "、".join(skipped[:8])))
 
-    if not result:
-        result.append({"name": FALLBACK_NAME, "douyin_id": "",
-                       "sec_user_id": FALLBACK_SEC_USER_ID})
     return result
 
 
@@ -318,6 +318,15 @@ def main():
                 pass
 
     accounts = load_accounts()
+    # ★ 账号为空 = 没东西可抓，不是错误（2026-09-18）：
+    #   原来会回退到硬编码账号去抓，把无关作品混进 CSV；现在直接跳过本轮，
+    #   进度写 skipped（体检脚本视作健康，不推钉钉告警，也不判「停更」），
+    #   不触碰 _douyin_works.csv，上一次的数据保持原样。
+    if not accounts:
+        msg = "未配置可抓取的抖音账号（需要在「种草账号」里添加抖音账号并填主页链接），本轮跳过"
+        log("[跳过] " + msg)
+        write_progress("skipped", 0, 0, msg)
+        return
     if limit > 0:
         accounts = accounts[:limit]
         log("[调试] --limit %d，只抓前 %d 个账号" % (limit, len(accounts)))

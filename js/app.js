@@ -424,7 +424,11 @@ const ApiService = (() => {
     async createSeedingAccount(data) { return request('/seeding/accounts', { method: 'POST', body: JSON.stringify(data) }); },
     async updateSeedingAccount(id, data) { return request('/seeding/accounts/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
     async deleteSeedingAccount(id) { return request('/seeding/accounts/' + id, { method: 'DELETE' }); },
+    /** 批量删除种草账号（ids 数组） */
+    async batchDeleteSeedingAccounts(ids) { return request('/seeding/accounts/batch-delete', { method: 'POST', body: JSON.stringify({ ids: ids || [] }) }); },
     async getSeedingWorks(platform) { return request('/seeding/works' + (platform ? '?platform=' + encodeURIComponent(platform) : '')); },
+    /** 删除作品数据（单条/批量）：items = 选中的作品行对象数组 */
+    async deleteSeedingWorks(platform, items) { return request('/seeding/works', { method: 'DELETE', body: JSON.stringify({ platform: platform || 'douyin', items: items || [] }) }); },
     async getSeedingWorksMeta(platform) { return request('/seeding/works/meta' + (platform ? '?platform=' + encodeURIComponent(platform) : '')); },
     async getSeedingCookie(platform) { return request('/seeding/cookie' + (platform ? '?platform=' + encodeURIComponent(platform) : '')); },
     async saveSeedingCookie(platform, cookie) { return request('/seeding/cookie', { method: 'POST', body: JSON.stringify({ platform: platform || 'douyin', cookie: cookie }) }); },
@@ -434,9 +438,24 @@ const ApiService = (() => {
     async getSeedingDeleted() { return request('/seeding/deleted'); },
     async deleteSeedingDeleted(id) { return request('/seeding/deleted/' + id, { method: 'DELETE' }); },
     async clearSeedingDeleted() { return request('/seeding/deleted', { method: 'DELETE' }); },
-    /** 部门列表 + 部门→钉钉联系人/点赞阈值规则 + 钉钉联系人候选 */
+    /** 部门列表 + 部门→钉钉联系人/点赞阈值规则 + 钉钉联系人候选（候选来自种草**独立**名单） */
     async getSeedingDeptConfig() { return request('/seeding/dept-config'); },
     async saveSeedingDeptConfig(data) { return request('/seeding/dept-config', { method: 'POST', body: JSON.stringify(data) }); },
+
+    // ---- 种草监测中台：推送人名单（独立于「每日数据分析 → 钉钉推送」） ----
+    async getSeedingPushUsers() { return request('/seeding/push-users'); },
+    async addSeedingPushUser(data) { return requestFull('/seeding/push-users', { method: 'POST', body: JSON.stringify(data) }); },
+    async updateSeedingPushUser(id, data) { return requestFull('/seeding/push-users/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
+    async deleteSeedingPushUser(id) { return requestFull('/seeding/push-users/' + id, { method: 'DELETE' }); },
+    /** 手机号 → 钉钉 userId（种草名单专用） */
+    async resolveSeedingPushUser(mobile) { return requestFull('/seeding/push-users/resolve', { method: 'POST', body: JSON.stringify({ mobile: mobile || '' }) }); },
+
+    // ---- 种草智能体：爆文库 / 优化建议 ----
+    async getSeedingHotArticles() { return request('/seeding/hot-articles'); },
+    async addSeedingHotArticle(data) { return requestFull('/seeding/hot-articles', { method: 'POST', body: JSON.stringify(data) }); },
+    async deleteSeedingHotArticle(id) { return requestFull('/seeding/hot-articles/' + id, { method: 'DELETE' }); },
+    /** 提交优化建议：后端落库并直接钉钉发给开发人员 */
+    async submitSeedingFeedback(data) { return requestFull('/seeding/feedback', { method: 'POST', body: JSON.stringify(data) }); },
 
     // ---- CRUD 快捷方法 ----
     create(type, data) {
