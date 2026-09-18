@@ -51,6 +51,43 @@ def _save_state_file(email, state, shop_name=None):
     return path
 
 
+def _snap(page, name):
+    """安全截图。★ 浏览器被关掉时**绝不能**让异常冒出去。
+
+    2026-09-18 事故：`page.screenshot()` 抛 TargetClosedError（用户拖完滑块顺手关了
+    Chrome 窗口），异常打断了 login()，导致后面那行「保存登录态」根本没执行 ——
+    用户明明登录成功了，前端却一直显示「已过期」。
+    截图只是给人看的，凭证才是要命的东西 —— 任何时候都别让前者挡住后者。
+    """
+    try:
+        page.screenshot(path=os.path.join(BASE_DIR, name))
+    except Exception:
+        pass
+
+
+def _dump_state(ctx, email, shop_name, tag=''):
+    """安全导出 storage_state 落盘。浏览器已关闭时返回 None（不抛异常）。
+
+    设计成「可重复调用、后一次覆盖前一次」：登录流程里分几个时点各存一次，
+    后面任何一个环节崩掉（关窗口 / 网络抖动 / 平台改版），前面已拿到的凭证都还在。
+    """
+    try:
+        state = ctx.storage_state()
+    except Exception as e:
+        print('  [warn] 导出登录态失败（%s），跳过本次保存：%s' % (tag, e))
+        return None
+    if not state or not state.get('cookies'):
+        print('  [warn] 导出登录态为空（%s），跳过本次保存' % tag)
+        return None
+    try:
+        path = _save_state_file(email, state, shop_name)
+    except Exception as e:
+        print('  [warn] 写登录态文件失败（%s）：%s' % (tag, e))
+        return None
+    print('  ✅ 凭证已落盘（%s）' % tag)
+    return path
+
+
 def is_logged_in(page):
     """判定登录成功：URL 离开 login 页面 或 有 sessionid 系列 cookie。"""
     url = page.url
@@ -211,7 +248,9 @@ def login(shop_name=None):
         #   而 verify-center 的常驻 iframe 又会被误判成滑块 → 死等满 300s 才走。
         #   现在只要看到「请选择店铺/工作台」就立刻放行。
         print('[4/5] 等待登录结果（若出现拼图验证弹窗则需人工拖动）')
-        page.screenshot(path=os.path.join(BASE_DIR, '_dd_before_captcha.png'))
+        print('      ⚠️ 拖完滑块后**请不要关闭 Chrome 窗口** —— 脚本会自己关；')
+        print('         提前关窗口会让已登录的凭证保存不下来（前端会一直显示「已过期」）。')
+        _snap(page, '_dd_before_captcha.png')
         warned = has_captcha(page)
         if warned:
             print('  ⚠️⚠️ 出现拼图验证弹窗！请在弹出的窗口里**按住左边按钮拖动**把拼图补齐')
@@ -219,11 +258,20 @@ def login(shop_name=None):
         else:
             print('  未检测到滑块，等待登录跳转...')
         deadline = time.time() + 300
-        last, landed = 0, False
+        last, landed, saved_early = 0, False, None
         while time.time() < deadline:
             if login_landed(page):
                 landed = True
                 break
+            # ★ 浏览器被关掉就立刻退出，别干等满 300s 才报「未见登录成功信号」——
+            #   那会让用户以为是平台问题，其实只是窗口被提前关了。
+            try:
+                page.title()
+            except Exception:
+                print('  [FAIL] Chrome 窗口已被关闭 —— 登录流程无法继续，登录态拿不到。')
+                print('         下一轮里请在拖完滑块后**不要手动关窗口**，'
+                      '脚本走完会自己关（约需 1~2 分钟）。')
+                return False
             if not warned and has_captcha(page):
                 warned = True
                 print('  ⚠️⚠️ 出现拼图验证弹窗！请按住左边按钮拖动把拼图补齐（最多等 300 秒）')
@@ -232,9 +280,14 @@ def login(shop_name=None):
                 last = waited // 30
                 print('      ...已等待 %ds（剩余 %ds）' % (waited, 300 - waited))
             time.sleep(2)
-        page.screenshot(path=os.path.join(BASE_DIR, '_dd_after_captcha.png'))
+        _snap(page, '_dd_after_captcha.png')
         if landed:
             print('  ✅ 登录成功：%s' % page.url[:80])
+            # ★★ 登录成功的**当下**立刻落盘（2026-09-18 事故后新增）。
+            #    后面还有选店铺 / 工作台验证 / 罗盘探测 —— 那些都只是「锦上添花」，
+            #    而凭证是命根子：任何一个后续步骤抛异常（最常见是用户顺手关了窗口），
+            #    都不能让已经到手的登录态丢掉。此刻浏览器一定还活着（刚 evaluate 过）。
+            saved_early = _dump_state(ctx, email, shop_name, '登录成功后即时')
         else:
             print('  [warn] 300s 内未见登录成功信号，截图 _dd_after_captcha.png')
 
@@ -270,30 +323,41 @@ def login(shop_name=None):
         if has_shop_page:
             target = shop_name or '御车宝周口驰为网络科技有限公司专卖店'
             print('  店铺选择页出现，点击目标店铺:', target)
-            page.screenshot(path=os.path.join(BASE_DIR, '_dd_shop_select.png'))
-            item = page.locator('text=%s' % target)
-            if item.count() == 0:
-                print('[FAIL] 店铺选择页未找到目标店铺: %s' % target)
-                # 打印可选店铺
-                try:
-                    body_txt = page.inner_text('body')
-                    print('--- 页面文本（截断）---')
-                    print(body_txt[:1500])
-                except Exception:
-                    pass
-                browser.close()
-                return False
-            item.first.click()
-            time.sleep(8)
+            _snap(page, '_dd_shop_select.png')
+            # ★ 凭证已在上一步落盘 → 这里崩掉也不能中断流程（浏览器被关是最常见原因）
+            try:
+                item = page.locator('text=%s' % target)
+                if item.count() == 0:
+                    print('[FAIL] 店铺选择页未找到目标店铺: %s' % target)
+                    # 打印可选店铺
+                    try:
+                        body_txt = page.inner_text('body')
+                        print('--- 页面文本（截断）---')
+                        print(body_txt[:1500])
+                    except Exception:
+                        pass
+                    browser.close()
+                    return False
+                item.first.click()
+                time.sleep(8)
+            except Exception as e:
+                print('  [warn] 选择店铺失败（浏览器可能已被关闭）：%s' % e)
         else:
             print('  未出现店铺选择页（可能已记住上次选择）')
 
         # 等待 URL 离开 login
         deadline = time.time() + 60
         while time.time() < deadline:
-            if '/login' not in page.url and 'jinritemai.com' in page.url:
+            try:
+                if '/login' not in page.url and 'jinritemai.com' in page.url:
+                    break
+            except Exception:
                 break
             time.sleep(2)
+
+        # ★ 选完店铺后再存一次：此时带店铺上下文的 cookie 更完整，
+        #   覆盖掉上面「登录成功即时」那份兜底版本（同路径覆盖，不留垃圾文件）。
+        _dump_state(ctx, email, shop_name, '选店铺后')
 
         # 最终验证：访问工作台首页。抖店是 SPA —— URL 可能不跳但内容渲染登录表单，
         # 必须同时检查「URL 不含 /login」+「页面无登录输入框」
@@ -303,7 +367,7 @@ def login(shop_name=None):
         except Exception:
             pass
         time.sleep(10)
-        page.screenshot(path=os.path.join(BASE_DIR, '_dd_after_login.png'))
+        _snap(page, '_dd_after_login.png')
         login_form = 0
         for s in ['input[name=mobile]', 'input[name=email]', 'text=扫码登录', 'text=手机登录']:
             try:
@@ -311,8 +375,12 @@ def login(shop_name=None):
                     login_form += 1
             except Exception:
                 pass
-        url_ok = '/login' not in page.url
-        print('  URL:', page.url[:80])
+        try:
+            cur_url = page.url or ''
+        except Exception:
+            cur_url = ''
+        url_ok = '/login' not in cur_url
+        print('  URL:', cur_url[:80])
         print('  URL 判定:', '过' if url_ok else '在登录页', '| 页面登录表单特征:', login_form, '个')
         if (not url_ok) or login_form >= 2:
             print('[FAIL] 登录态无效（页面仍是登录表单），截图 _dd_after_login.png')
@@ -320,8 +388,13 @@ def login(shop_name=None):
             return False
 
         print('  工作台验证通过')
-        state = ctx.storage_state()
-        _save_state_file(email, state, shop_name)
+        # ★ 第三次（正式）保存：覆盖前面两份，取最完整的一份。
+        #   若浏览器已在此刻被关闭 → 返回 None，但前面那份仍在，不影响这次登录的成果。
+        final = _dump_state(ctx, email, shop_name, '工作台验证通过')
+        if not final:
+            print('  [warn] 本次未能导出登录态；若前面已提示「凭证已落盘」则登录态仍然有效。')
+            browser.close()
+            return bool(saved_early)
 
         # 同一会话内立即验证罗盘
         print('[+] 同会话验证罗盘...')
@@ -331,7 +404,7 @@ def login(shop_name=None):
         except Exception:
             pass
         time.sleep(10)
-        page.screenshot(path=os.path.join(BASE_DIR, '_dd_compass_same.png'))
+        _snap(page, '_dd_compass_same.png')
         qr = 0
         for s in ['text=扫码登录', 'img[class*="qrcode"]', 'text=抖音App扫码']:
             try:
@@ -339,7 +412,11 @@ def login(shop_name=None):
                     qr += 1
             except Exception:
                 pass
-        print('  罗盘 URL:', page.url[:80], '| 扫码特征:', qr, '个')
+        try:
+            compass_url = page.url or ''
+        except Exception:
+            compass_url = ''
+        print('  罗盘 URL:', compass_url[:80], '| 扫码特征:', qr, '个')
 
         browser.close()
         return True
