@@ -13,7 +13,11 @@
     works: [],                    // 作品列表
     deleted: [],                  // 被删作品列表
     accountSearch: '',            // 账号搜索词
-    accountPlatformFilter: '',    // 账号平台筛选
+    // ★★ 账号列表面板筛选（2026-09-18）：与「作品数据」同款式按钮组，**去掉平台下拉框**。
+    //   故意与作品页的 platform / deptFilter 分开存：作品页 platform 还兼着「加载哪个平台的
+    //   作品数据」，共用会把「切去账号页筛抖音」变成「顺手改了作品页的数据源」。
+    accountPlatformFilter: '',    // '' | douyin | xhs（'' = 全部平台）
+    accountDeptFilter: '',        // '' | 部门名（'' = 全部部门）
     worksSearch: '',              // 作品搜索词
     sortKey: 'publishTime',       // 作品排序字段
     sortDir: -1,                  // 1 升序 / -1 降序
@@ -168,6 +172,9 @@
         else { loadWorks(); loadMeta(); }
       }
       function filterDept(dept) { _st.deptFilter = dept || ''; }
+      // 账号列表面板的两个筛选（按钮组，与作品页同款；空串 = 全部）
+      function filterAccountPlatform(p) { _st.accountPlatformFilter = p || ''; }
+      function filterAccountDept(d) { _st.accountDeptFilter = d || ''; }
 
       // ---------- 部门管理（动态列表；新增/删除都立即落盘） ----------
       async function loadDeptConfig() {
@@ -510,7 +517,7 @@
         return list;
       });
 
-      // ---------- 账号列表（搜索 + 平台筛选） ----------
+      // ---------- 账号列表（搜索 + 平台筛选 + 部门筛选） ----------
       var filteredAccounts = Vue.computed(function () {
         var kw = (_st.accountSearch || '').toLowerCase();
         var list = _st.accounts.slice();
@@ -523,6 +530,10 @@
         });
         if (_st.accountPlatformFilter) list = list.filter(function (a) {
           return (a.platform || 'douyin') === _st.accountPlatformFilter;
+        });
+        // 部门筛选：口径与作品页一致（空 department 视为不属于任何部门，只在「全部」里出现）
+        if (_st.accountDeptFilter) list = list.filter(function (a) {
+          return (a.department || '') === _st.accountDeptFilter;
         });
         return list;
       });
@@ -847,6 +858,7 @@
         filteredAccounts: filteredAccounts,
         calMonths: calMonths,
         switchTab: switchTab, switchPlatform: switchPlatform, filterDept: filterDept,
+        filterAccountPlatform: filterAccountPlatform, filterAccountDept: filterAccountDept,
         worksSearchLocked: worksSearchLocked, accountSearchLocked: accountSearchLocked, unlockWorksSearch: unlockWorksSearch, unlockAccountSearch: unlockAccountSearch,
         sortWorks: sortWorks, sortArrow: sortArrow,
         openAccountModal: openAccountModal, closeAccountModal: closeAccountModal, saveAccount: saveAccount, deleteAccount: deleteAccount,
@@ -1108,16 +1120,31 @@
     <div v-show="state.tab === 'accounts'">
       <div class="ap-toolbar">
         <div class="ap-search-wrap"><i class="fa-solid fa-search"></i><input class="ap-search-input" v-model="state.accountSearch" autocomplete="off" :readonly="accountSearchLocked" @focus="unlockAccountSearch" placeholder="搜索账号/抖音号/小红书号/主页链接..."></div>
-        <select class="dh-select" v-model="state.accountPlatformFilter"><option value="">全部平台</option><option value="douyin">抖音</option><option value="xhs">小红书</option></select>
         <button class="ap-btn-primary" @click="openAccountModal()"><i class="fa-solid fa-plus"></i> 新增种草账号</button>
       </div>
-      <div class="ap-table-wrap">
+      <!-- ★ 筛选条（2026-09-18）：与「作品数据」同款按钮组，原先的平台下拉框已去掉。
+           平台与部门各用一套独立 state，不跟作品页的 platform / deptFilter 互相干扰。 -->
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap">
+        <div style="display:flex;gap:2px;background:#f1f5f9;border-radius:8px;padding:3px">
+          <button class="sd-plat-btn" :class="{ active: state.accountPlatformFilter === '' }" @click="filterAccountPlatform('')">全部平台</button>
+          <button class="sd-plat-btn" :class="{ active: state.accountPlatformFilter === 'douyin' }" @click="filterAccountPlatform('douyin')">抖音</button>
+          <button class="sd-plat-btn" :class="{ active: state.accountPlatformFilter === 'xhs' }" @click="filterAccountPlatform('xhs')">小红书</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:0.82rem;color:#64748b;font-weight:500">部门筛选</span>
+          <button class="sd-dept-btn" :class="{ active: state.accountDeptFilter === '' }" @click="filterAccountDept('')">全部</button>
+          <button class="sd-dept-btn" v-for="d in state.deptConfig.departments" :key="d" :class="{ active: state.accountDeptFilter === d }" @click="filterAccountDept(d)">{{ d }}</button>
+        </div>
+      </div>
+      <div class="ap-table-wrap" id="sdAccountsCard">
         <table class="ap-table">
           <thead><tr>
             <th style="width:50px">ID</th><th style="width:70px">平台</th><th style="width:140px">账号</th><th style="width:140px">抖音号/小红书号</th>
             <th style="width:90px">部门</th><th>主页链接</th><th style="width:90px">操作</th>
           </tr></thead>
           <tbody>
+            <!-- 筛选/搜索后为空时的空态（原先没有，加了筛选就必然碰得到） -->
+            <tr v-if="!filteredAccounts.length"><td colspan="7" style="text-align:center;color:#94a3b8;padding:24px">没有符合条件的种草账号</td></tr>
             <tr v-for="a in filteredAccounts" :key="a.id">
               <td>{{ a.id }}</td>
               <td><span v-if="(a.platform || 'douyin') === 'xhs'" style="font-size:11px;color:#e11d48;font-weight:600">小红书</span><span v-else style="font-size:11px;color:#0284c7;font-weight:600">抖音</span></td>
