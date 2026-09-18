@@ -143,6 +143,26 @@ def _age_hours(path):
     return (time.time() - os.path.getmtime(path)) / 3600.0
 
 
+def _count_works(path):
+    """作品数据文件里的条数；不存在或读不出返回 0。
+
+    .csv（抖音）= 数据行数；.json（小红书）= 数组长度。
+    用于判据 1.6：status=done 但条数为 0 说明"成功"是假的。
+    """
+    if not os.path.exists(path):
+        return 0
+    try:
+        if path.endswith('.csv'):
+            import csv as _csv
+            with open(path, 'r', encoding='utf-8-sig', newline='') as f:
+                return sum(1 for _ in _csv.DictReader(f))
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return len(data) if isinstance(data, list) else 0
+    except Exception:
+        return 0
+
+
 def _check_platform(p):
     """单平台体检；返回 (items, sig_parts)。items 非空 = 有异常"""
     key, label = p['key'], p['label']
@@ -162,6 +182,16 @@ def _check_platform(p):
         items.append('（进度：%s/%s，抓取时间 %s）'
                      % (progress.get('done', 0), progress.get('total', 0), _fmt_time(ts)))
         sig.append('error:' + msg[:120])
+
+    # 判据 1.6：status=done 但「一条作品都没抓到」（2026-09-18 补）
+    #   ★ 为什么需要：done 看起来是成功，但如果作品数为 0，说明接口能通、
+    #     数据却全空（多为 cookie 半失效 / 风控软拦截）。此时数据文件根本没被覆写，
+    #     光看 status 会误判为健康；配合判据 3 的数据新鲜度一起看才能发现。
+    elif status == 'done':
+        rows_now = _count_works(works_path)
+        if rows_now == 0:
+            items.append('本轮抓取标记为成功，但作品数为 0（数据文件为空或未写入）')
+            sig.append('zerorows')
 
     # 判据 2：running 停留过久 → 进程静默死掉 / 卡死
     elif status == 'running' and run_age is not None and run_age > RUNNING_STALE_SEC:

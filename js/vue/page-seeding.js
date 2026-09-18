@@ -25,7 +25,17 @@
     scraping: false,              // 抓取进行中
     progressPercent: 0,
     progressText: '抓取中...',
-    updateTime: '--',             // 数据更新时间
+    // ★★ 双平台更新时间分别记录（2026-09-18 改）。
+    //   原来只有单个 updateTime，取的是「当前选中平台」的 mtime ——
+    //   而手机/宽屏下默认平台是 douyin，于是小红书已停更 4.9 小时时，
+    //   顶部依旧显示抖音的 08:24，看起来"整页数据都很新鲜"（实际是假的）。
+    //   现在两平台各记一份，顶部并列展示，哪个掉了直接看得见。
+    updateTimes: { douyin: '--', xhs: '--' },
+
+    meta: {
+      douyin: { mtime: 0, rows: 0, source: '' },
+      xhs:    { mtime: 0, rows: 0, source: '' },
+    },
     accountModal: { open: false, isEdit: false, id: null, platform: 'douyin', name: '', douyinId: '', redId: '', department: '', homepage: '' },
     deptConfig: { departments: [], rules: {}, candidates: [] },  // 部门列表 + 部门→钉钉推送规则 + 联系人候选
     deptPanelOpen: false,         // 部门「+」浮层
@@ -55,6 +65,48 @@
       ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
   }
 
+  // ★★ 数据新鲜度分级（2026-09-18 补）
+  //   为什么需要：原先只有一个「数据更新时间」，且取的是当前选中平台，
+  //   导致小红书停更 4.9 小时时顶部仍显示抖音的 08:24 —— 页面在说谎。
+  //   现在按「距今多久」分三档，颜色 + 文案都跟着变：
+  //     ok   < 1 小时   → 绿  （自动抓取每 30 分钟一轮，1 小时内属正常）
+  //     warn 1~3 小时   → 橙  （漏了 2~6 轮，需留意）
+  //     stale > 3 小时  → 红  （与 tools/seeding_health.py 的 STALE_HOURS 对齐）
+  //     none  无数据    → 灰
+  var FRESH_WARN_HOURS = 1.0;
+  var FRESH_STALE_HOURS = 3.0;   // ⚠ 必须与 tools/seeding_health.py 的 STALE_HOURS 一致
+
+  function _freshness(mtime) {
+    if (!mtime) {
+      return { level: 'none', color: '#94a3b8', text: '无数据', ageText: '尚无数据' };
+    }
+    var ageH = (Date.now() / 1000 - mtime) / 3600.0;
+    var ageText, level, color;
+    if (ageH < 1) {
+      ageText = ageH < 1 / 60 ? '刚刚' : Math.round(ageH * 60) + ' 分钟前';
+    } else if (ageH < 24) {
+      ageText = ageH.toFixed(1) + ' 小时前';
+    } else {
+      ageText = Math.floor(ageH / 24) + ' 天前';
+    }
+    if (ageH < FRESH_WARN_HOURS) { level = 'ok'; color = '#16a34a'; }
+    else if (ageH <= FRESH_STALE_HOURS) { level = 'warn'; color = '#d97706'; }
+    else { level = 'stale'; color = '#dc2626'; }
+    return { level: level, color: color, text: ageText, ageText: ageText, ageHours: ageH };
+  }
+
+  // 顶部状态圆点：跟随「最差」的那个平台，有平台掉线就不再是绿色
+  function _worstLevel() {
+    var order = { none: 0, ok: 1, warn: 2, stale: 3 };
+    var worst = 'ok';
+    ['douyin', 'xhs'].forEach(function (p) {
+      var lv = _freshness((_st.meta[p] || {}).mtime).level;
+      if (order[lv] > order[worst]) worst = lv;
+    });
+    return worst;
+  }
+  var _LEVEL_COLOR = { ok: '#10b981', warn: '#f59e0b', stale: '#ef4444', none: '#94a3b8' };
+
   // ==================== 组件 ====================
   var SeedingPage = {
     components: { 'ecom-modal': EcomUI.Modal },
@@ -70,9 +122,29 @@
         if (Array.isArray(data) && p === _st.platform) _st.works = data;
       }
       async function loadMeta(platform) {
-        var p = platform || _st.platform;
-        var meta = await ApiService.getSeedingWorksMeta(p);
-        if (p === _st.platform) _st.updateTime = (meta && meta.mtime) ? _fmtTime(meta.mtime) : '--';
+        // ★ 顶部要并列展示「两个平台各自的新鲜度」，所以优先用一次请求拿全：
+        //   后端 /works/meta 已返回 platforms={douyin:{...},xhs:{...}}。
+        //   老版本后端无该字段时，退化为按平台各拉一次（向后兼容）。
+        var meta = await ApiService.getSeedingWorksMeta(platform || 'douyin');
+        if (!meta) return;
+        if (meta.platforms) {
+          ['douyin', 'xhs'].forEach(function (p) {
+            var m = meta.platforms[p] || {};
+            _st.meta[p] = { mtime: m.mtime || 0, rows: m.rows || 0, source: m.source || '', level: m.level || '' };
+            _st.updateTimes[p] = m.mtime ? _fmtTime(m.mtime) : '--';
+          });
+          return;
+        }
+        // 兼容旧后端：逐个平台拉
+        var targets = platform ? [platform] : ['douyin', 'xhs'];
+        for (var i = 0; i < targets.length; i++) {
+          var p = targets[i];
+          if (p !== 'douyin' && p !== 'xhs') continue;
+          var m2 = await ApiService.getSeedingWorksMeta(p);
+          if (!m2) continue;
+          _st.meta[p] = { mtime: m2.mtime || 0, rows: m2.rows || 0, source: m2.source || '', level: m2.level || '' };
+          _st.updateTimes[p] = m2.mtime ? _fmtTime(m2.mtime) : '--';
+        }
       }
       async function loadCookie() {
         var d = await ApiService.getSeedingCookie('douyin');
@@ -677,8 +749,38 @@
       loadDeleted();
       loadDeptConfig();
 
+      // ---------- 新鲜度（响应式计算） ----------
+      //   fresh：两平台各自的 {level,color,text,ageHours}，供顶部与平台按钮染色
+      //   statusDotColor：顶部圆点，跟随「最差」平台 —— 有平台掉线就不再是绿色
+      //   ⚠ 依赖 _st.meta[p].mtime（reactive），meta 更新后自动重算
+      var fresh = Vue.computed(function () {
+        return {
+          douyin: _freshness((_st.meta.douyin || {}).mtime),
+          xhs: _freshness((_st.meta.xhs || {}).mtime),
+        };
+      });
+      var statusDotColor = Vue.computed(function () {
+        return _LEVEL_COLOR[_worstLevel()] || _LEVEL_COLOR.ok;
+      });
+      // 顶部整体是否有平台异常（用于提示文案「有平台数据滞后」）
+      var hasStale = Vue.computed(function () {
+        var lv = _worstLevel();
+        return lv === 'warn' || lv === 'stale';
+      });
+      var worstAgeText = Vue.computed(function () {
+        var f = fresh.value;
+        var worst = null;
+        ['douyin', 'xhs'].forEach(function (p) {
+          var o = { none: 0, ok: 1, warn: 2, stale: 3 };
+          if (!worst || o[f[p].level] > o[f[worst].level]) worst = p;
+        });
+        return worst ? ((worst === 'xhs' ? '小红书' : '抖音') + ' ' + f[worst].text) : '';
+      });
+
       return {
         state: _st,
+        fresh: fresh, statusDotColor: statusDotColor,
+        hasStale: hasStale, worstAgeText: worstAgeText,
         filteredWorks: filteredWorks,
         filteredDeleted: filteredDeleted,
         filteredAccounts: filteredAccounts,
@@ -712,7 +814,11 @@
         <div class="dh-title-group">
           <h2 class="dh-title">种草监测中台</h2>
           <span class="dh-subtitle">Seeding Monitoring Center</span>
-          <span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;color:#10b981;margin-right:4px"></i>监测种草账号作品数据 · 数据更新时间 <span style="color:#16a34a;font-weight:600">{{ state.updateTime }}</span></span>
+          <span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;margin-right:4px" :style="{ color: state.statusDotColor }"></i>监测种草账号作品数据 · 数据更新时间
+            <span style="font-weight:600;margin-left:2px" :style="{ color: state.fresh.douyin.color }">抖音 {{ state.updateTimes.douyin }}</span>
+            <span style="color:#cbd5e1;margin:0 6px">|</span>
+            <span style="font-weight:600" :style="{ color: state.fresh.xhs.color }">小红书 {{ state.updateTimes.xhs }}</span>
+          </span>
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:16px">
@@ -724,6 +830,29 @@
           <button class="btn btn-sm btn-outline" @click="openPushModal"><i class="fa-solid fa-bell"></i> 钉钉推送</button>
           <button class="btn btn-sm btn-outline" @click="toggleUpdatePanel"><i class="fa-solid fa-rotate"></i> 数据更新</button>
           <div class="sd-update-panel" :class="{ hidden: !state.updatePanelOpen }">
+            <!-- ★★ 双平台抓取状态（2026-09-18 补）：一眼看出哪个平台在掉数据 -->
+            <div class="sd-plat-status">
+              <div class="sd-plat-status-item">
+                <div class="sd-plat-status-head">
+                  <i class="fa-solid fa-circle" style="font-size:7px" :style="{ color: fresh.douyin.color }"></i>
+                  <span class="sd-plat-status-name">抖音</span>
+                  <span class="sd-plat-status-age" :style="{ color: fresh.douyin.color }">{{ fresh.douyin.text }}</span>
+                </div>
+                <div class="sd-plat-status-meta">{{ state.updateTimes.douyin }} · {{ state.meta.douyin.rows }} 条作品</div>
+              </div>
+              <div class="sd-plat-status-item">
+                <div class="sd-plat-status-head">
+                  <i class="fa-solid fa-circle" style="font-size:7px" :style="{ color: fresh.xhs.color }"></i>
+                  <span class="sd-plat-status-name">小红书</span>
+                  <span class="sd-plat-status-age" :style="{ color: fresh.xhs.color }">{{ fresh.xhs.text }}</span>
+                </div>
+                <div class="sd-plat-status-meta">{{ state.updateTimes.xhs }} · {{ state.meta.xhs.rows }} 条作品</div>
+              </div>
+            </div>
+            <div v-if="hasStale" class="sd-stale-hint">
+              <i class="fa-solid fa-triangle-exclamation"></i> {{ worstAgeText }}未更新数据，请检查登录态是否过期
+            </div>
+            <div style="height:1px;background:#f1f5f9;margin:14px 0"></div>
             <div class="sd-cookie-label"><i class="fa-solid fa-cookie-bite" style="color:#16a34a"></i>抖音 Cookie</div>
             <textarea class="sd-cookie-textarea" v-model="state.cookies.douyin" placeholder="粘贴抖音网页版登录态 Cookie..."></textarea>
             <div class="sd-cookie-actions"><button class="btn btn-primary btn-sm" @click="saveCookie('douyin')"><i class="fa-solid fa-floppy-disk"></i> 保存抖音 Cookie</button></div>
@@ -755,8 +884,8 @@
     <div v-show="state.tab === 'works'">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">
         <div style="display:flex;gap:2px;background:#f1f5f9;border-radius:8px;padding:3px">
-          <button class="sd-plat-btn" :class="{ active: state.platform === 'douyin' }" @click="switchPlatform('douyin')">抖音</button>
-          <button class="sd-plat-btn" :class="{ active: state.platform === 'xhs' }" @click="switchPlatform('xhs')">小红书</button>
+          <button class="sd-plat-btn" :class="{ active: state.platform === 'douyin' }" @click="switchPlatform('douyin')">抖音<span class="sd-plat-age" :style="{ color: fresh.douyin.color }">{{ fresh.douyin.text }}</span></button>
+          <button class="sd-plat-btn" :class="{ active: state.platform === 'xhs' }" @click="switchPlatform('xhs')">小红书<span class="sd-plat-age" :style="{ color: fresh.xhs.color }">{{ fresh.xhs.text }}</span></button>
           <button class="sd-plat-btn" :class="{ active: state.platform === 'deleted' }" @click="switchPlatform('deleted')">🗑 被删作品</button>
         </div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;position:relative">

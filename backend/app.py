@@ -3697,6 +3697,12 @@ _SEEDING_AUTO_INTERVAL = 1800
 _SEEDING_MIN_GAP = 20 * 60
 # 抓取日志单文件上限，超过滚动成 _scrape_<平台>.log.1（只留 1 份历史）
 _SEEDING_LOG_MAX_BYTES = 2 * 1024 * 1024
+# ★★ 作品数据「停更」判定阈值（小时）：前端顶部时间染色 + meta 接口 level 分级共用。
+#   ⚠ 必须与 tools/seeding_health.py 的 STALE_HOURS 保持一致（那边用于钉钉告警），
+#     两处不一致会出现「页面标红但没告警」或反之的错位。
+_SEEDING_STALE_HOURS = 3.0
+# 「将要停更」的提醒阈值（小时）：1 小时 ≈ 漏了 2 轮自动抓取，页面转橙提示留意
+_SEEDING_WARN_HOURS = 1.0
 # 抓取健康体检脚本：每轮自动更新前先体检上一轮，异常时它自己推钉钉（见 tools/seeding_health.py）
 _SEEDING_HEALTH_SCRIPT = os.path.join(_SEEDING_DIR, 'seeding_health.py')
 
@@ -4034,24 +4040,72 @@ def seeding_list_works():
         return fail(str(e))
 
 
+def _seeding_platform_meta(platform):
+    """单平台的作品数据元信息：mtime / rows / source / 新鲜度。
+
+    ★★ 为什么要有 stale_hours + level（2026-09-18）：
+      前端顶部原来只有一个「数据更新时间」，值取的是当前选中平台的 mtime。
+      09-18 早上小红书 cookie 失效停更 4.9 小时，但抖音正常抓取刷新了 CSV，
+      页面顶部照样显示 08:24 → 看起来两个平台都新鲜，实际小红书早已停更。
+      现在后端直接给出「距今多少小时」和分级，前端不必再猜哪个时间代表谁。
+      ⚠ stale_hours 阈值必须与 tools/seeding_health.py 的 STALE_HOURS 保持一致。
+    """
+    if platform == 'xhs':
+        path = _XHS_WORKS_FILE
+        real = _seeding_load_xhs_works()
+        source = 'real' if real else 'empty'
+    else:
+        path = _DOUYIN_WORKS_CSV
+        real = _seeding_load_works_csv()
+        source = 'real' if real is not None else 'mock'
+    if os.path.exists(path):
+        mtime = os.path.getmtime(path)
+        age_hours = max(0.0, (time.time() - mtime) / 3600.0)
+    else:
+        mtime = None
+        age_hours = None
+    if age_hours is None:
+        level = 'none'
+    elif age_hours < _SEEDING_WARN_HOURS:
+        level = 'ok'
+    elif age_hours <= _SEEDING_STALE_HOURS:
+        level = 'warn'
+    else:
+        level = 'stale'
+    return {
+        'mtime': mtime,
+        'rows': len(real) if real else 0,
+        'source': source,
+        'age_hours': round(age_hours, 2) if age_hours is not None else None,
+        'level': level,
+    }
+
+
 @app.route('/api/seeding/works/meta', methods=['GET'])
 def seeding_works_meta():
-    """作品数据来源与最后抓取时间，供前端轮询判断抓取是否完成"""
+    """作品数据来源与最后抓取时间，供前端轮询判断抓取是否完成。
+
+    默认返回「两个平台各自」的元信息（platforms 字段），顶层 mtime/rows/source
+    仍保持向后兼容 = platform 参数指定平台（不传则 douyin）的值。
+    """
     try:
         platform = (request.args.get('platform') or 'douyin').strip()
-        if platform == 'xhs':
-            mtime = os.path.getmtime(_XHS_WORKS_FILE) if os.path.exists(_XHS_WORKS_FILE) else None
-            real = _seeding_load_xhs_works()
-            source = 'real' if real else 'empty'
-        else:
-            mtime = os.path.getmtime(_DOUYIN_WORKS_CSV) if os.path.exists(_DOUYIN_WORKS_CSV) else None
-            real = _seeding_load_works_csv()
-            source = 'real' if real is not None else 'mock'
-        return success({
-            'mtime': mtime,
-            'rows': len(real) if real else 0,
-            'source': source,
-        })
+        if platform not in ('douyin', 'xhs'):
+            platform = 'douyin'
+        info = _seeding_platform_meta(platform)
+        resp = {
+            'mtime': info['mtime'],
+            'rows': info['rows'],
+            'source': info['source'],
+            'age_hours': info['age_hours'],
+            'level': info['level'],
+        }
+        # 两平台都给出：前端顶部要并列展示，避免"只显示一个平台的假新鲜"
+        resp['platforms'] = {
+            'douyin': _seeding_platform_meta('douyin'),
+            'xhs': _seeding_platform_meta('xhs'),
+        }
+        return success(resp)
     except Exception as e:
         return fail(str(e))
 
