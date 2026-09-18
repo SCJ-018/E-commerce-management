@@ -5,8 +5,8 @@ cd /d "%~dp0"
 set "PYEXE=C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe"
 if not exist "%PYEXE%" set "PYEXE=python"
 
-title Doudian Slider Assistant
-"%PYEXE%" "tools\doudian_crawler\slider_agent.py"
+title Doudian Login - manual slider
+"%PYEXE%" "tools\doudian_crawler\_local_login_all.py"
 
 echo.
 echo  ------------------------------------------------------------

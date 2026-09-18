@@ -4,7 +4,7 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5000.*LISTENING"') do taskk
 timeout /t 1 /nobreak >nul
 echo.
 echo  ==========================================
-echo   当前代码分支：
+echo   Current git branch:
 for /f "tokens=3 delims=/" %%a in ('type "%~dp0.git\HEAD"') do echo     %%a
 echo  ==========================================
 echo.
