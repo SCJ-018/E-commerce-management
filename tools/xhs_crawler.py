@@ -34,6 +34,30 @@ COOKIE_FILE = os.path.join(BASE_DIR, 'cookie.txt')
 QR_FILE = os.path.join(BASE_DIR, 'qrcode.png')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 
+# ★★ 详情接口风控熔断（2026-09-18 补）。
+#   小红书「笔记详情」接口被账号级风控时会连续返回 code=300011「账号异常，请稍后重试」
+#   （或「登录已过期」）。此时把剩下几十条详情继续打一遍毫无意义，反而延长风控窗口：
+#   2026-09-18 那两轮 59 条详情 ×（1 + EMPTY_RETRIES 重试）≈ 177 次无效请求全废。
+#   连续失败达到阈值就抛 RiskControlError，由调用方（seeding_xhs.py）判整轮失败。
+#   注意：主页「作品列表」接口不受影响（仍能拿到标题/链接），所以这不是 Cookie 失效。
+RISK_STREAK_LIMIT = 5
+RISK_MSG_KEYS = ('300011', '账号异常', '登录已过期', '登录已失效', '请先登录')
+
+
+class RiskControlError(RuntimeError):
+    """详情接口被平台风控（账号异常/登录过期），本轮应立刻中止。"""
+
+    def __init__(self, streak, last_msg):
+        self.streak = streak
+        self.last_msg = last_msg
+        super().__init__('详情接口连续 %d 条被风控（%s）' % (streak, last_msg))
+
+
+def is_risk_msg(msg):
+    """判定获取详情/列表接口的返回文案是否属于「风控类」。"""
+    s = str(msg or '')
+    return any(k in s for k in RISK_MSG_KEYS)
+
 
 def build_auth(cookie_str: str = None, use_qrcode: bool = False):
     from xhs_utils.xhs_pc import XHSPcAuth
@@ -164,6 +188,7 @@ def crawl_user_notes(api, user_id: str, xsec_token: str, limit: int = 0, fast: b
                 'xsec_token': n.get('xsec_token'),
             })
     else:
+        risk_streak = 0   # 连续被风控的条数（成功一条即清零）
         for i, n in enumerate(notes, 1):
             note_id = n.get('note_id')
             token = n.get('xsec_token', '')
@@ -171,6 +196,7 @@ def crawl_user_notes(api, user_id: str, xsec_token: str, limit: int = 0, fast: b
             try:
                 success, msg, res = api.get_note_info(url)
                 if success:
+                    risk_streak = 0
                     item = (res.get('data') or {}).get('items') or [{}]
                     note_card = (item[0].get('note_card') or {}) if item else {}
                     interact = note_card.get('interact_info') or {}
@@ -190,8 +216,21 @@ def crawl_user_notes(api, user_id: str, xsec_token: str, limit: int = 0, fast: b
                     })
                 else:
                     logger.warning(f'[{i}/{total}] 笔记 {note_id} 详情失败: {msg}')
+                    # ★ 熔断：连续被风控说明整条链路已被平台拦住，继续打只会让风控更久
+                    if is_risk_msg(msg):
+                        risk_streak += 1
+                        if risk_streak >= RISK_STREAK_LIMIT:
+                            logger.error(f'[{i}/{total}] 详情接口连续 {risk_streak} 条被风控'
+                                         f'（{msg}），中止本轮剩余 {total - i} 条，'
+                                         f'已成功 {len(results)} 条')
+                            raise RiskControlError(risk_streak, str(msg))
+                    else:
+                        risk_streak = 0
+            except RiskControlError:
+                raise
             except Exception as e:
                 logger.warning(f'[{i}/{total}] 笔记 {note_id} 异常: {e}')
+                risk_streak = 0
             if i % 5 == 0:
                 logger.info(f'详情进度: {i}/{total}')
             time.sleep(random.uniform(1.5, 3.0))

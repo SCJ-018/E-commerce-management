@@ -8,7 +8,7 @@
 
 登录凭证优先级：tools/xhs_cookie.txt > tools/cookie.txt（xhs_crawler 默认）
 
-退出码：0=全部成功；3=有账号未取到作品（已保护上次的数据文件）；1=脚本自身异常
+退出码：0=全部成功；3=有账号未取到作品（风控/登录态失效/列表为空，已保护上次的数据文件）；1=脚本自身异常
 """
 import json
 import os
@@ -122,19 +122,44 @@ def main():
     cookie = _cookie_str()
     write_progress('running', 0, len(accounts), accounts=len(accounts), ok=0)
     try:
-        auth = crawler.build_auth(cookie, use_qrcode=False)
-        from apis.xhs_pc_apis import XHS_Apis  # noqa: E402
-        api = XHS_Apis(auth)
-        api.bootstrap()
+        # ★ 登录态失效只会在 build_auth / bootstrap(user/me) 阶段抛错（详情接口被风控不算）。
+        #   原来这里抛的 SystemExit 会直接穿透到外层 `except SystemExit: raise`，
+        #   进度文件停在 running、日志里只有一行 SystemExit → 前端只能显示「进行中」，
+        #   要靠 30 分钟后的 _seeding_is_running 超时才自愈（2026-09-18 整理）。
+        try:
+            auth = crawler.build_auth(cookie, use_qrcode=False)
+            from apis.xhs_pc_apis import XHS_Apis  # noqa: E402
+            api = XHS_Apis(auth)
+            api.bootstrap()
+        except SystemExit as e:
+            _m = '小红书登录态已失效，请重新导出 Cookie（%s）' % (e or '')
+            print('[xhs_batch] ' + _m)
+            write_progress('error', 0, len(accounts), _m)
+            sys.exit(3)
 
         all_rows = []
         failed = []
+        risk_msg = ''   # 命中「详情接口风控」时的原始文案（用于区分限流/风控两种失败）
         for i, acc in enumerate(accounts):
             red_id = str(acc.get('redId') or '').strip()
             name = (acc.get('name') or '').strip() or red_id
             try:
                 info = crawler.resolve_user(api, red_id)
                 notes = _crawl_notes_with_retry(crawler, api, info, name)
+            except crawler.RiskControlError as e:
+                # ★ 详情接口被风控：不重试、也不抓后面的账号（多打只会延长风控窗口）
+                risk_msg = str(getattr(e, 'last_msg', '') or e)
+                print(f'[xhs_batch] 账号 {name}({red_id}) 命中平台风控，中止本轮: {e}')
+                failed.append(name)
+                write_progress('running', i + 1, len(accounts),
+                               accounts=len(accounts), ok=len(accounts) - len(failed))
+                break
+            except SystemExit as e:
+                print(f'[xhs_batch] 账号 {name}({red_id}) 抓取失败: {e}')
+                failed.append(name)
+                write_progress('running', i + 1, len(accounts),
+                               accounts=len(accounts), ok=len(accounts) - len(failed))
+                continue
             except Exception as e:
                 print(f'[xhs_batch] 账号 {name}({red_id}) 抓取失败: {e}')
                 failed.append(name)
@@ -162,9 +187,17 @@ def main():
         #    登录态失效时若写出空数组，后端会把上一版全部作品判为「已删除」，
         #    生成一批假的「被删作品」记录（2026-09-17 就发生过）。
         if not all_rows:
-            msg = ('小红书抓取失败：%d 个账号重试后仍未取到作品（作品列表接口返回空，'
-                   '多为平台限流；连续两轮以上才需要重新导出 cookie），已保留上次的数据文件'
-                   % len(accounts))
+            # ★ 两种失败要分开说（2026-09-18）：风控是「详情接口 300011」，限流是「列表返回空」，
+            #   处置动作完全不同 —— 前者要等/换号、后者才可能要重导 Cookie。
+            if risk_msg:
+                msg = ('小红书抓取失败：详情接口被平台风控（%s）。主页作品列表与登录态都正常，'
+                       '本轮已提前中止以免加重风控，已保留上次的数据文件。通常 1~3 小时自愈，'
+                       '不用重新导出 Cookie；若连续 6 小时以上仍是该码，再考虑换账号或重导 Cookie。'
+                       % risk_msg)
+            else:
+                msg = ('小红书抓取失败：%d 个账号重试后仍未取到作品（作品列表接口返回空，'
+                       '多为平台限流；连续两轮以上才需要重新导出 cookie），已保留上次的数据文件'
+                       % len(accounts))
             print('[xhs_batch] ' + msg)
             write_progress('error', 0, len(accounts), msg)
             sys.exit(3)
