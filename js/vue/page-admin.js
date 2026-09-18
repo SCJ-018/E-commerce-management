@@ -61,6 +61,7 @@
     roles: [],
     keyword: '',
     pwdVisible: {},
+    pwdCache: {},   // id -> 明文密码（列表接口不下发密码，点眼睛时才单条拉取）
   });
 
   function allPageIds() {
@@ -95,6 +96,9 @@
         if (!isAccountManager) return;
         var list = await ApiService.getAdmins();
         _state.accounts = Array.isArray(list) ? list : [];
+        // 列表刷新说明密码可能已变，清掉已取出的明文与展开状态
+        _state.pwdCache = {};
+        _state.pwdVisible = {};
         syncRoleCounts();
       }
       async function loadRoles() {
@@ -193,7 +197,16 @@
         loadAccounts();
       }
 
-      function togglePwdVis(id) { _state.pwdVisible[id] = !_state.pwdVisible[id]; }
+      // 点「眼睛」——展开时才向 /admin/accounts/<id>/password 单条取明文
+      async function togglePwdVis(id) {
+        if (_state.pwdVisible[id]) { _state.pwdVisible[id] = false; return; }
+        if (_state.pwdCache[id] === undefined) {
+          var r = await ApiService.getAdminPassword(id);
+          if (!r || !r.ok) { App.showToast((r && r.msg) || '密码获取失败', 'error'); return; }
+          _state.pwdCache[id] = (r.data && r.data.password) || '';
+        }
+        _state.pwdVisible[id] = true;
+      }
 
       function openPwdModal(id) {
         var a = _state.accounts.find(function (x) { return x.id === id; });
@@ -385,7 +398,7 @@
               <td style="font-family:'SF Mono','Consolas',monospace;font-size:12px">{{ a.account }}</td>
               <td>
                 <div class="ap-pwd-cell">
-                  <span class="ap-pwd-text">{{ state.pwdVisible[a.id] ? a.password : '●●●●●●' }}</span>
+                  <span class="ap-pwd-text">{{ state.pwdVisible[a.id] ? (state.pwdCache[a.id] || '—') : '●●●●●●' }}</span>
                   <button class="ap-pwd-toggle" :class="{ showing: state.pwdVisible[a.id] }" @click="togglePwdVis(a.id)" :title="state.pwdVisible[a.id] ? '隐藏密码' : '显示密码'">
                     <i class="fa-solid" :class="state.pwdVisible[a.id] ? 'fa-eye-slash' : 'fa-eye'"></i>
                   </button>
@@ -531,6 +544,7 @@
     _adminApp = null;
     _state.keyword = '';
     _state.pwdVisible = {};
+    _state.pwdCache = {};
     var mount = document.getElementById('page-admin-permissions-vue');
     if (mount) { mount.classList.add('hidden'); mount.innerHTML = ''; }
     var oldSection = document.getElementById('page-admin-permissions');

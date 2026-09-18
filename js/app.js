@@ -146,6 +146,9 @@ const ApiService = (() => {
     async updateAdmin(id, data) { return requestFull('/admin/accounts/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
     async deleteAdmin(id) { return request('/admin/accounts/' + id, { method: 'DELETE' }); },
 
+    /** 单条读取账号明文密码 —— 列表不下发密码，点「眼睛」时才按 id 取这一条 */
+    async getAdminPassword(id) { return requestFull('/admin/accounts/' + id + '/password'); },
+
     /** 角色与权限 CRUD */
     async getRoles() { return request('/admin/roles'); },
     async createRole(data) { return request('/admin/roles', { method: 'POST', body: JSON.stringify(data) }); },

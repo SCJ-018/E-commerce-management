@@ -2160,7 +2160,9 @@ def admin_list():
         dept = (request.args.get('department') or '').strip()
         kw = (request.args.get('keyword') or '').strip()
 
-        sql = ('SELECT id, name, account, password, role, status, last_login, created_at, '
+        # ★ 列表刻意不返回 password：避免一次请求就把全库明文密码下发到前端。
+        # 需要看某一条时走 GET /api/admin/accounts/<id>/password 单条读取。
+        sql = ('SELECT id, name, account, role, status, last_login, created_at, '
                'department, sub_dept, leader, avatar, gender FROM admin_accounts')
         conds, params = [], []
         if dept and dept not in ('全部', 'all'):
@@ -2180,7 +2182,6 @@ def admin_list():
                 'id': r['id'],
                 'name': r['name'],
                 'account': r['account'],
-                'password': r['password'],
                 'role': r['role'],
                 'department': r.get('department') or '',
                 'subDept': r.get('sub_dept') or '',
@@ -2192,6 +2193,25 @@ def admin_list():
                 'createdAt': str(r['created_at']) if r['created_at'] else '',
             })
         return success(admins)
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/admin/accounts/<int:aid>/password', methods=['GET'])
+def admin_get_password(aid):
+    """单条读取账号明文密码（点「眼睛」时才调用）
+
+    ★ 与列表接口分离：列表不下发 password，避免一次请求就把全库明文密码
+    送到前端；这里一次只返回一条，把风险从「全库」收窄为「单条」。
+    权限：仅 开发人员 / 超级管理员 / 人事行政部。
+    """
+    try:
+        if not _can_manage_accounts():
+            return fail('无权查看密码')
+        rows = db_execute('SELECT password FROM admin_accounts WHERE id = %s', [aid])
+        if not rows:
+            return fail('账号不存在')
+        return success({'id': aid, 'password': rows[0]['password'] or ''})
     except Exception as e:
         return fail(str(e))
 
