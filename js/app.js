@@ -649,6 +649,160 @@ const App = (() => {
     if (state.apiAvailable) ApiService.del(type, id);
   }
 
+  // ==================== 保存密码（本机记忆） ====================
+  /**
+   * 用户勾选「保存密码」后，把该账号的密码存在本机浏览器（localStorage），
+   * 下次打开登录页自动回填。仅本机本浏览器生效。
+   *
+   * 三重隔离，确保「不同用户 / 不同环境」不会串：
+   *  1) 环境隔离：存储 key 带 location.origin（协议 + 域名 + 端口）。
+   *     本地 localhost:xxxx 与线上 julangkeji.site 是不同 origin，各存各的，
+   *     同一台电脑同时开本地和线上调试也不会互相覆盖。
+   *  2) 账号隔离：单环境内存的是 { 账号: 密文 } 映射，回填时按输入框里的账号
+   *     精确匹配，A 的密码绝不会填进 B 的登录框。
+   *  3) 意图隔离：只有勾选了「保存密码」的账号才写入；取消勾选即删除该账号记录。
+   *
+   * 说明：下面是 base64 混淆，不是加密 —— 只能避免肉眼直读 localStorage，
+   *      能打开开发者工具的人依然可以还原。仅用于本机免输密码的便捷场景。
+   */
+  const PasswordSaver = (() => {
+    const STORE_PREFIX = 'admin_saved_pwd';
+    const LAST_PREFIX = 'admin_last_account';
+
+    function env() { return location.origin || location.host || 'default'; }
+    function storeKey() { return STORE_PREFIX + '@' + env(); }
+    function lastKey() { return LAST_PREFIX + '@' + env(); }
+
+    function enc(text) {
+      try { return 'b64:' + btoa(unescape(encodeURIComponent(text))); }
+      catch (e) { return 'raw:' + text; }
+    }
+    function dec(str) {
+      if (!str) return '';
+      try {
+        if (str.indexOf('b64:') === 0) return decodeURIComponent(escape(atob(str.slice(4))));
+        if (str.indexOf('raw:') === 0) return str.slice(4);
+      } catch (e) { /* 数据损坏，按未保存处理 */ }
+      return '';
+    }
+    function readAll() {
+      try {
+        const raw = localStorage.getItem(storeKey());
+        const obj = raw ? JSON.parse(raw) : {};
+        return (obj && typeof obj === 'object' && !Array.isArray(obj)) ? obj : {};
+      } catch (e) { return {}; }
+    }
+    function writeAll(obj) {
+      try { localStorage.setItem(storeKey(), JSON.stringify(obj || {})); } catch (e) {}
+    }
+    function norm(account) { return String(account == null ? '' : account).trim(); }
+
+    return {
+      /** 该账号在本环境是否保存过密码 */
+      has(account) {
+        const a = norm(account);
+        return !!a && Object.prototype.hasOwnProperty.call(readAll(), a);
+      },
+      /** 取该账号在本环境保存的密码（没有则空串） */
+      get(account) { return dec(readAll()[norm(account)]); },
+      /** 保存/更新该账号密码，并记为「本环境最近一次使用的账号」 */
+      save(account, password) {
+        const a = norm(account);
+        if (!a || !password) return;
+        const all = readAll();
+        all[a] = enc(password);
+        writeAll(all);
+        try { localStorage.setItem(lastKey(), a); } catch (e) {}
+      },
+      /** 删除该账号记录（同时清理最近账号，避免回填到已删除的账号） */
+      remove(account) {
+        const a = norm(account);
+        if (!a) return;
+        const all = readAll();
+        if (Object.prototype.hasOwnProperty.call(all, a)) { delete all[a]; writeAll(all); }
+        try { if (localStorage.getItem(lastKey()) === a) localStorage.removeItem(lastKey()); } catch (e) {}
+      },
+      /** 本环境最近一次保存过的账号 */
+      lastAccount() {
+        try { return localStorage.getItem(lastKey()) || ''; } catch (e) { return ''; }
+      }
+    };
+  })();
+
+  /** 密码框当前内容是否为「自动回填」的（用于判断能否安全覆盖，避免抹掉用户手输） */
+  var _pwdAutofilled = false;
+
+  /** 去掉 no-autofill.js 给密码框上的 readonly 锁，保证回填后可直接编辑 */
+  function _unlockPasswordEl(el) {
+    if (!el) return;
+    if (el.hasAttribute('readonly')) {
+      el.removeAttribute('readonly');
+      el.__nafUnlocked = true;   // 告知 no-autofill.js 别再加锁
+    }
+  }
+
+  /** 把某账号的密码回填到登录框（无记录则清空并取消勾选） */
+  function _prefillSavedCred(account) {
+    const a = String(account == null ? '' : account).trim();
+    const uEl = document.getElementById('username');
+    const pEl = document.getElementById('password');
+    const sEl = document.getElementById('savePassword');
+    if (uEl) uEl.value = a;
+    _unlockPasswordEl(pEl);
+    if (a && PasswordSaver.has(a)) {
+      if (pEl) pEl.value = PasswordSaver.get(a);
+      if (sEl) sEl.checked = true;
+      _pwdAutofilled = true;
+    } else {
+      if (pEl) pEl.value = '';
+      if (sEl) sEl.checked = false;
+      _pwdAutofilled = false;
+    }
+  }
+
+  /** 页面载入时回填本环境最近保存过的账号密码 */
+  function restoreSavedLogin() {
+    const last = PasswordSaver.lastAccount();
+    // 最近账号必须确实有保存记录才回填（防止存储被改坏/半删除时串号）
+    if (!last || !PasswordSaver.has(last)) {
+      const sEl = document.getElementById('savePassword');
+      if (sEl) sEl.checked = false;
+      _pwdAutofilled = false;
+      return;
+    }
+    _prefillSavedCred(last);
+  }
+
+  /**
+   * 账号输入框变化时同步密码框：命中已保存账号则回填，未命中则清掉上一次的回填
+   * （不覆盖用户手动输入的密码；不修改 input 本身的值，避免打断输入）
+   */
+  function syncPasswordWithAccount() {
+    const uEl = document.getElementById('username');
+    const pEl = document.getElementById('password');
+    const sEl = document.getElementById('savePassword');
+    const a = uEl ? uEl.value.trim() : '';
+    _unlockPasswordEl(pEl);
+    if (a && PasswordSaver.has(a)) {
+      if (pEl && (!pEl.value || _pwdAutofilled)) { pEl.value = PasswordSaver.get(a); }
+      if (sEl) sEl.checked = true;
+      _pwdAutofilled = true;
+    } else if (_pwdAutofilled) {
+      if (pEl) pEl.value = '';
+      if (sEl) sEl.checked = false;
+      _pwdAutofilled = false;
+    }
+  }
+
+  /** 取消勾选「保存密码」时，立即删除当前账号的本机记录 */
+  function onSavePasswordToggle() {
+    const sEl = document.getElementById('savePassword');
+    const uEl = document.getElementById('username');
+    if (!sEl || sEl.checked) return;
+    const a = uEl ? uEl.value.trim() : '';
+    if (a) PasswordSaver.remove(a);
+  }
+
   // ==================== 登录/登出 ====================
   async function handleLogin(e) {
     e.preventDefault();
@@ -711,7 +865,14 @@ const App = (() => {
     state.currentAccount = username;
     state.currentPermissions = adminData.permissions || [];
 
-    // 「记住密码」已全局下线：不再留存任何账号密码；顺手清掉历史遗留的明文凭据
+    // 「保存密码」：勾选则记住当前账号密码（按环境+账号隔离存本机），未勾选则删除该账号记录
+    var savePwdEl = document.getElementById('savePassword');
+    if (savePwdEl) {
+      if (savePwdEl.checked) PasswordSaver.save(username, password);
+      else PasswordSaver.remove(username);
+    }
+
+    // 顺手清掉历史遗留的明文凭据（旧「记住密码」实现，已废弃）
     try {
       localStorage.removeItem('admin_user');
       localStorage.removeItem('admin_pass');
@@ -731,6 +892,7 @@ const App = (() => {
         __nafPwdEl.value = '';
         __nafPwdEl.setAttribute('autocomplete', 'off');
       }
+      _pwdAutofilled = false;
     } catch (e) {}
 
     document.getElementById('loginPage').classList.add('hidden');
@@ -772,6 +934,8 @@ const App = (() => {
     document.getElementById('loginPage').classList.remove('hidden');
     document.getElementById('appPage').classList.add('hidden');
     document.getElementById('loginForm').reset();
+    // 退出后把本机保存的账号密码回填，方便下次一键登录（保存记录本身不清除）
+    restoreSavedLogin();
   }
 
   // ==================== 路由 ====================
@@ -3357,15 +3521,27 @@ const App = (() => {
     document.getElementById('loginForm').addEventListener('submit', handleLogin);
     document.getElementById('logoutBtn').addEventListener('click', handleLogout);
 
-    // 「记住密码」已下线：一次性清空历史遗留的明文账号密码，输入框始终保持空白
+    // 清掉历史遗留的明文账号密码（旧「记住密码」实现），改用下方的「保存密码」独立存储
     try {
       localStorage.removeItem('admin_user');
       localStorage.removeItem('admin_pass');
     } catch (e) {}
-    var __nafU = document.getElementById('username');
-    var __nafP = document.getElementById('password');
-    if (__nafU) __nafU.value = '';
-    if (__nafP) __nafP.value = '';
+
+    // 「保存密码」交互绑定
+    var _loginUserEl = document.getElementById('username');
+    var _loginPwdEl = document.getElementById('password');
+    var _savePwdChk = document.getElementById('savePassword');
+    if (_loginUserEl) {
+      _loginUserEl.addEventListener('input', syncPasswordWithAccount);
+      _loginUserEl.addEventListener('change', syncPasswordWithAccount);
+    }
+    if (_loginPwdEl) {
+      // 用户一旦手动改动密码框，就不再视为「自动回填」，切账号时不会覆盖他的输入
+      _loginPwdEl.addEventListener('input', function () { _pwdAutofilled = false; });
+    }
+    if (_savePwdChk) _savePwdChk.addEventListener('change', onSavePasswordToggle);
+    // 回填本环境最近保存过的账号密码（无记录则保持空白）
+    restoreSavedLogin();
 
     // 刷新后自动恢复登录状态
     if (sessionStorage.getItem('admin_logged_in') === 'true') {

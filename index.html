@@ -70,6 +70,7 @@
     .form-options{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;font-size:13px}
     .form-options label{display:flex;align-items:center;gap:6px;color:oklch(50% 0.02 248);cursor:pointer}
     .form-options a{color:oklch(58% 0.14 245);text-decoration:none}.form-options a:hover{text-decoration:underline}
+    .form-options input[type="checkbox"]{width:14px;height:14px;margin:0;flex-shrink:0;accent-color:oklch(58% 0.14 245);cursor:pointer}
     .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:0 20px;height:50px;border-radius:14px;font-size:15px;font-weight:500;cursor:pointer;border:none;transition:all .2s ease-out;font-family:inherit;letter-spacing:0.5px}
     .btn-primary{background:linear-gradient(180deg,oklch(58% 0.15 245) 0%,oklch(52% 0.16 245) 100%);color:#fff;width:100%;box-shadow:0 4px 16px oklch(58% 0.15 245 / 0.3)}
     .btn-primary:hover{box-shadow:0 6px 24px oklch(58% 0.15 245 / 0.4);transform:translateY(-1px)}
@@ -877,7 +878,7 @@
       <form id="loginForm" autocomplete="off">
         <div class="form-group"><label for="username">账号</label><input class="form-input" id="username" name="username" placeholder="请输入手机号" autocomplete="off" aria-label="账号"></div>
         <div class="form-group"><label for="password">密码</label><div class="form-input-wrap"><input class="form-input" id="password" name="password" type="password" placeholder="默认密码为身份证生日（年月日）8位数字" autocomplete="off" aria-label="密码"><button type="button" class="pwd-toggle" onclick="var p=document.getElementById('password');p.type=p.type==='password'?'text':'password'" aria-label="切换密码显示"><i class="fa-regular fa-eye"></i></button></div></div>
-        <div class="form-options"><a href="#" style="margin-left:auto">忘记密码？</a></div>
+        <div class="form-options"><label for="savePassword"><input type="checkbox" id="savePassword" autocomplete="off"><span>保存密码</span></label><a href="#" style="margin-left:auto">忘记密码？</a></div>
         <button type="submit" class="btn btn-primary">登 录</button>
         <div class="login-error" id="loginError"></div>
       </form>
@@ -2430,7 +2431,7 @@
   <div class="ai-chat-footer">聚浪网络科技 · AI 服务可能产生误差，请以实际数据为准</div>
 </div>
 
-<script src="js/app.js?v=20260918h"></script>
+<script src="js/app.js?v=20260918i"></script>
 <script src="js/vue/components.js?v=20260917d"></script>
 <script src="js/vue/page-profile.js?v=20260918c"></script>
 <script src="js/vue/page-hr-common.js"></script>
