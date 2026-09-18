@@ -40,6 +40,9 @@
     deptConfig: { departments: [], rules: {}, candidates: [] },  // 部门列表 + 部门→钉钉推送规则 + 联系人候选
     deptPanelOpen: false,         // 部门「+」浮层
     deptNewName: '',              // 待新增的部门名
+    // ★ 部门拖拽排序（2026-09-18 补）：from = 拖起时的下标，over = 当前悬停下标。
+    //   -1 = 无拖拽进行中。仅浮层内用，落盘后由后端 JSON 数组顺序持久化。
+    deptDrag: { from: -1, over: -1 },
     // 「钉钉推送」配置悬浮窗：contacts = 部门 → {name,mobile,userId} 的输入态
     pushModal: { open: false, saving: false, matching: '', contacts: {}, uidOpen: {} },
     confirm: { open: false, msg: '', action: null },
@@ -224,6 +227,51 @@
         var r = await _saveDeptConfig();
         if (r === null) { App.showToast('删除失败，请重试', 'error'); }
         else { App.showToast('已删除部门「' + d + '」'); }
+      }
+
+      // ---------- 部门拖拽排序（2026-09-18 补） ----------
+      // 拖完立即落盘：部门顺序会被后端 JSON 数组原样保存，进而决定
+      // 「部门筛选」按钮顺序 + 钉钉推送弹窗表格行序 —— 顺序对业务是有意义的
+      // （默认把最常看的部门拖到最前）。所以不做「暂存等保存」，松手即存。
+      function deptDragStart(di, ev) {
+        _st.deptDrag.from = di;
+        _st.deptDrag.over = di;
+        if (ev && ev.dataTransfer) {
+          ev.dataTransfer.effectAllowed = 'move';
+          // Firefox 必须 setData 才会真正启动拖拽；值本身不用
+          try { ev.dataTransfer.setData('text/plain', String(di)); } catch (e) {}
+        }
+      }
+      function deptDragOver(di) {
+        if (_st.deptDrag.from < 0) return;
+        _st.deptDrag.over = di;
+      }
+      function deptDragEnd() {
+        _st.deptDrag.from = -1;
+        _st.deptDrag.over = -1;
+      }
+      /** 把 from 位置的部门移动到 to 位置，并整份落盘（失败回滚） */
+      async function moveDept(from, to) {
+        var before = _st.deptConfig.departments.slice();
+        if (from === to || from < 0 || to < 0 || from >= before.length || to >= before.length) return;
+        var arr = before.slice();
+        arr.splice(to, 0, arr.splice(from, 1)[0]);
+        if (arr.join('\u0001') === before.join('\u0001')) return;
+        _st.deptConfig.departments = arr;
+        _syncDeptRules(arr);                 // 让 rules 键序跟随新顺序（同名部门配置不丢）
+        var r = await _saveDeptConfig();
+        if (r === null) {
+          _st.deptConfig.departments = before;
+          _syncDeptRules(before);
+          App.showToast('排序保存失败，已还原', 'error');
+        } else {
+          App.showToast('部门顺序已保存');
+        }
+      }
+      function deptDrop(di) {
+        var from = _st.deptDrag.from;
+        deptDragEnd();
+        if (from >= 0 && from !== di) moveDept(from, di);
       }
 
       // ---------- 钉钉推送配置（部门 → 联系人 + 点赞阈值 N） ----------
@@ -796,6 +844,7 @@
         agentAsk: agentAsk, closeInfoModal: closeInfoModal, infoSubmit: infoSubmit, agentSend: agentSend,
         // 部门管理 + 钉钉推送配置
         loadDeptConfig: loadDeptConfig, toggleDeptPanel: toggleDeptPanel, addDept: addDept, removeDept: removeDept,
+        deptDragStart: deptDragStart, deptDragOver: deptDragOver, deptDragEnd: deptDragEnd, deptDrop: deptDrop,
         openPushModal: openPushModal, closePushModal: closePushModal,
         pushContact: pushContact, onPushNameInput: onPushNameInput,
         matchPushContact: matchPushContact, clearPushContact: clearPushContact,
@@ -901,13 +950,28 @@
               <button class="btn btn-primary btn-sm" @click="addDept">添加</button>
             </div>
             <div style="height:1px;background:#f1f5f9;margin:12px 0"></div>
-            <div style="font-size:12px;color:#64748b;margin-bottom:6px;font-weight:600">已有部门（点 × 删除）</div>
+            <div style="font-size:12px;color:#64748b;margin-bottom:6px;font-weight:600">已有部门（拖动排序 · 点 × 删除）</div>
             <div style="display:flex;flex-wrap:wrap;gap:6px">
-              <span v-for="d in state.deptConfig.departments" :key="d" style="display:inline-flex;align-items:center;gap:6px;background:#f1f5f9;border-radius:6px;padding:3px 8px;font-size:12px;color:#334155">
+              <span v-for="(d, di) in state.deptConfig.departments" :key="d"
+                    draggable="true"
+                    :title="'按住拖动排序（当前第 ' + (di + 1) + ' 位）'"
+                    @dragstart="deptDragStart(di, $event)"
+                    @dragover.prevent="deptDragOver(di)"
+                    @drop.prevent="deptDrop(di)"
+                    @dragend="deptDragEnd"
+                    :style="{
+                      display:'inline-flex',alignItems:'center',gap:'6px',borderRadius:'6px',padding:'3px 8px',
+                      fontSize:'12px',color:'#334155',userSelect:'none',cursor:'grab',
+                      background: state.deptDrag.from === di ? '#e0f2fe' : (state.deptDrag.over === di ? '#dbeafe' : '#f1f5f9'),
+                      border: '1px solid ' + (state.deptDrag.over === di ? '#38bdf8' : 'transparent'),
+                      opacity: state.deptDrag.from === di ? 0.45 : 1
+                    }">
+                <i class="fa-solid fa-grip-vertical" style="color:#94a3b8;font-size:11px"></i>
                 {{ d }}
                 <i class="fa-solid fa-xmark" style="cursor:pointer;color:#94a3b8" @click="removeDept(d)"></i>
               </span>
             </div>
+            <div style="font-size:11px;color:#94a3b8;margin-top:8px;line-height:1.6">顺序 = 「部门筛选」按钮顺序与推送配置的行序，松手即自动保存。</div>
           </div>
         </div>
       </div>
