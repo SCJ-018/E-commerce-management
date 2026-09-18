@@ -49,33 +49,117 @@ LOGIN_COOKIE = 'web_session'
 WAIT_TIMEOUT = 8 * 60
 POLL_INTERVAL = 2
 
-# 在页面内读取登录态：优先 __INITIAL_STATE__，字段名做多版本兼容。
+# 在页面内读取登录态：穿透 Vue ref 包装读 __INITIAL_STATE__.user。
 # ★ 2026-09-17：必须是**立即执行**的 IIFE —— 之前写成裸箭头函数字符串，
 #   Playwright 求值后得到的是「函数对象」，序列化后变成 undefined，
-#   于是登录态探测永远返回空值，把已登录误判为未登录（本次踩到的坑）。
+#   于是登录态探测永远返回空值，把已登录误判为未登录（曾踩到的坑）。
+# ★ 2026-09-18：实测确认了 __INITIAL_STATE__ 的真实结构（这是关键）：
+#   `user.loggedIn` 与 `user.userInfo` 都是 **Vue ref 对象**
+#   （带 __v_isRef / _value / _rawValue），直接访问拿到的是 {dep, es, ...}
+#   而非布尔值/数据对象 —— 必须 unwrap 到 `. _value`（或 `._rawValue`）。
+#   userInfo 解包后形如：
+#     {userId:'6901...', redId:'27730175439', nickname:'小红薯', guest:false}
+#   → 判据：loggedIn === true 且 guest === false 且取到 userId（非空字符串）。
+#   ⚠️ 同一份 __INITIAL_STATE__ 里有**循环引用**，绝不能用 JSON.stringify(整体)
+#      （会抛 "Converting circular structure to JSON"）→ 只按字段名逐个取值。
 PROBE_JS = r"""
 (() => {
-  const out = { hasState: false, stateKeys: null, userKeys: null, userId: '',
-                nick: '', guest: null, loggedIn: null, probeErr: null };
+  var out = { hasState: false, userKeys: null, userInfoKeys: null,
+              userId: '', redId: '', nick: '', guest: null, loggedIn: null,
+              activated: null, probeErr: null, hasSession: null, signals: [],
+              loginBtnVisible: null };
+
+  // 穿透 Vue ref / shallowRef 包装
+  var unwrap = function (v) {
+    var g = 0;
+    while (v && typeof v === 'object' &&
+           (v.__v_isRef || v.__v_isShallow || v._value !== undefined) && g < 8) {
+      v = (v._value !== undefined) ? v._value : v._rawValue;
+      g++;
+    }
+    return v;
+  };
+
   try {
-    const s = window.__INITIAL_STATE__ || null;
+    var s = window.__INITIAL_STATE__ || null;
     out.hasState = !!s;
-    if (s) { out.stateKeys = Object.keys(s).slice(0, 30); }
-    const u = (s && s.user) || {};
-    out.userKeys = Object.keys(u).slice(0, 30);
-    out.guest = (u.guest === undefined) ? null : u.guest;
-    out.loggedIn = (u.loggedIn === undefined) ? null : u.loggedIn;
-    const cands = [u.userInfo, u.user, (u.userPageData || {}).basicInfo,
-                   (u.userPageData || {}).userInfo].filter(Boolean);
-    for (const info of cands) {
-      const id = info.userId || info._id || info.id || '';
-      if (id) {
-        out.userId = String(id);
-        out.nick = info.nickname || info.nickName || info.name || '';
-        break;
+    if (s) {
+      var u = s.user || {};
+      out.userKeys = Object.keys(u).slice(0, 30);
+      out.loggedIn = unwrap(u.loggedIn);
+      out.activated = unwrap(u.activated);
+
+      var ui = unwrap(u.userInfo);
+      if (ui && typeof ui === 'object') {
+        var obj = Array.isArray(ui) ? ui[0] : ui;
+        if (obj && typeof obj === 'object') {
+          out.userInfoKeys = Object.keys(obj).slice(0, 30);
+          var uid = unwrap(obj.userId) || unwrap(obj.user_id) || unwrap(obj._id) || unwrap(obj.id);
+          if (uid && typeof uid !== 'object') out.userId = String(uid);
+          var rid = unwrap(obj.redId) || unwrap(obj.red_id);
+          if (rid && typeof rid !== 'object') out.redId = String(rid);
+          var nk = unwrap(obj.nickname) || unwrap(obj.nickName);
+          if (nk && typeof nk !== 'object') out.nick = String(nk);
+          var gst = unwrap(obj.guest);
+          out.guest = (gst === undefined) ? null : gst;
+        }
       }
     }
   } catch (e) { out.probeErr = String(e); }
+
+  // 信号：document.cookie 里有无 web_session
+  // ⚠️ web_session 是 HttpOnly → document.cookie 永远读不到，此信号恒 false，
+  //    仅保留作诊断（真值以 context.cookies() 为准，不参与判定）。
+  try {
+    var m = document.cookie.match(/(?:^|;\s*)web_session=([^;]+)/);
+    out.hasSession = !!m;
+  } catch (e) {}
+
+  // 信号：页面找不到可见「登录」按钮 = 已登录
+  try {
+    var btns = Array.from(document.querySelectorAll('button, div, span'));
+    var vis = btns.some(function (el) {
+      var t = (el.innerText || '').trim();
+      return (t === '登录' || t === '登 录') && el.offsetParent !== null;
+    });
+    out.loginBtnVisible = vis;
+    if (!vis) out.signals.push('noLoginBtn');
+  } catch (e) {}
+
+  if (out.loggedIn === true) out.signals.push('loggedIn');
+  if (out.guest === false) out.signals.push('guestFalse');
+  if (out.userId) out.signals.push('userId');
+  return out;
+})()
+"""
+
+# 辅助判据：调小红书「当前用户」接口。
+# ★ 2026-09-18 实测结论：该接口在当前版本**已不可靠** —— 本机「确定已登录」
+#   的 profile 调用它同样返回 `500 create invoker failed, service:
+#   jarvis-gateway-default`，即登录与未登录都拿不到 success。
+#   因此**不再作为判定依据**，仅保留用于日志诊断（账号昵称等）。
+#   ⚠️ 也正因如此，绝不能写「接口失败即判定未登录」——那会把已登录判成未登录。
+ME_JS = r"""
+(async () => {
+  const out = { ok: false, code: null, msg: null, userId: '', nick: '', raw: '' };
+  try {
+    const r = await fetch('/api/sns/web/v2/user/me', {
+      method: 'GET', credentials: 'include',
+      headers: { 'Accept': 'application/json' }
+    });
+    out.code = r.status;
+    const t = await r.text();
+    out.raw = t.slice(0, 300);
+    let j = null;
+    try { j = JSON.parse(t); } catch (e) {}
+    if (j) {
+      out.msg = j.msg || j.message || null;
+      const d = j.data || {};
+      out.userId = String(d.user_id || d.userId || '');
+      out.nick = d.nickname || d.nick_name || d.name || '';
+      out.ok = (j.success === true) && !!out.userId;
+    }
+  } catch (e) { out.msg = String(e); }
   return out;
 })()
 """
@@ -109,14 +193,57 @@ def _login_button_visible(page):
 
 
 def _probe(page):
+    """读取页面 __INITIAL_STATE__（穿透 Vue ref）判定登录态。
+
+    返回 (is_logged, info)。
+
+    ★ 2026-09-18 最终方案 —— 只认「确定的正面证据」：
+      判定为已登录，当且仅当满足任一：
+        a) user.loggedIn === true（解包后）；
+        b) userInfo 解包后 guest === false 且取到非空 userId。
+      这是因为：
+        · `/api/sns/web/v2/user/me` 本版本恒 500（jarvis-gateway-default），
+          登录/未登录都拿不到 success → **不能**用它做判据，
+          更不能「接口失败就当未登录」（那正是本次误判的直接原因）。
+        · web_session 是 HttpOnly，document.cookie 恒读不到 → 不能做判据。
+        · DOM 文本信号（「发布」「通知」）容易误伤 → 只作辅助日志。
+      判据 a/b 都来自服务端渲染进 HTML 的登录态数据，且与「匿名游客
+      guest=true」严格区分，是本版本唯一稳定可靠的来源。
+    """
+    info = {}
     try:
         st = page.evaluate(PROBE_JS) or {}
     except Exception as e:
-        st = {'probeErr': str(e)[:200], 'guest': None, 'userId': ''}
-    uid = str(st.get('userId') or '')
-    is_logged = (st.get('guest') is False and bool(uid)) or \
-                (st.get('loggedIn') is True and bool(uid))
-    return is_logged, st
+        st = {'probeErr': str(e)[:200]}
+    info['dom'] = st
+
+    logged_in = st.get('loggedIn')
+    guest = st.get('guest')
+    uid = st.get('userId') or ''
+
+    a = (logged_in is True)
+    b = (guest is False and bool(uid))
+
+    me = {}
+    try:
+        me = page.evaluate(ME_JS) or {}
+    except Exception as e:
+        me = {'msg': str(e)[:200]}
+    info['me'] = me
+
+    if a and b:
+        info['reason'] = 'loggedIn=true 且 guest=false 且 userId=%s' % uid
+        return True, info
+    if b:
+        info['reason'] = 'guest=false 且 userId=%s' % uid
+        return True, info
+    if a:
+        info['reason'] = 'loggedIn=true'
+        return True, info
+
+    info['reason'] = ('未登录：loggedIn=%s guest=%s userId=%r'
+                      % (logged_in, guest, uid))
+    return False, info
 
 
 def _dump_and_save(context):
@@ -134,19 +261,25 @@ def _verify_and_export(context, page, label, prev_session):
     except Exception as e:
         print(f'[警告] 跳转首页失败: {str(e)[:120]}')
 
-    ok, st = _probe(page)
+    ok, info = _probe(page)
+    st = info.get('dom', {})
+    me = info.get('me', {})
     cur = _pick_cookie(context, LOGIN_COOKIE)
     changed = bool(cur) and cur != (prev_session or '')
 
     print(f'\n--- 登录态校验（{label}）---')
     print(json.dumps({
-        'guest': st.get('guest'),
+        '判定': '已登录' if ok else '未登录',
+        '依据': info.get('reason'),
         'loggedIn': st.get('loggedIn'),
+        'guest': st.get('guest'),
         'userId': st.get('userId'),
-        'nick': st.get('nick'),
-        'hasState': st.get('hasState'),
-        'state_keys': st.get('stateKeys'),
-        'user_keys': st.get('userKeys'),
+        'redId(小红书号)': st.get('redId'),
+        '昵称': st.get('nick'),
+        '信号': st.get('signals') or [],
+        '有__INITIAL_STATE__': st.get('hasState'),
+        '登录按钮可见': st.get('loginBtnVisible'),
+        '接口/user/me(仅参考)': {'code': me.get('code'), 'msg': me.get('msg')},
         '会话已替换': changed,
         'cookie 字段数': len(context.cookies()),
         'probe_err': st.get('probeErr'),
@@ -155,8 +288,11 @@ def _verify_and_export(context, page, label, prev_session):
     if ok:
         sid = _pick_cookie(context, LOGIN_COOKIE)
         _dump_and_save(context)
+        nick = st.get('nick') or me.get('nick') or '(未取到昵称)'
+        uid = st.get('userId') or me.get('userId') or '-'
+        red = st.get('redId') or '-'
         print('\n✅ 登录态校验通过，已导出完整 Cookie（含 HttpOnly）。')
-        print(f'   账号: {st.get("nick") or "(未取到昵称)"}  userId={st.get("userId")}')
+        print(f'   账号: {nick}  小红书号={red}  userId={uid}')
         print(f'   web_session: 长度 {len(sid)}，前缀 {sid[:12]}...')
         print(f'   已写入: {COOKIE_FILE}')
         return True
@@ -260,25 +396,34 @@ def main():
     print('=' * 56)
 
     with sync_playwright() as p:
+        _trace('launching browser...')
         context = _launch(p)
+        _trace('browser launched OK')
         context.add_init_script(
             "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
         )
         page = context.new_page()
+        _trace('new page OK, goto %s' % HOME_URL)
         print('正在打开小红书网页版...')
         try:
             page.goto(HOME_URL, wait_until='domcontentloaded', timeout=60000)
         except Exception as e:
+            _trace('goto failed: %s' % str(e)[:200])
             print(f'[警告] 首页加载失败: {str(e)[:120]}')
         time.sleep(4)
+        _trace('home page loaded, url=%s' % page.url)
 
         prev_session = _pick_cookie(context, LOGIN_COOKIE)
         print(f'当前 web_session: 长度 {len(prev_session)}，前缀 {prev_session[:12] or "-"}...')
+        _trace('prev_session len=%d cookies=%d' % (len(prev_session), len(context.cookies())))
 
         # 1) 尝试复用 profile 里残留的登录态
+        _trace('try reuse profile session...')
         if _verify_and_export(context, page, '复用本地 profile', prev_session):
+            _trace('reuse OK, cookie exported')
             context.close()
             return
+        _trace('reuse failed -> need scan')
 
         # 2) 未登录：打开登录二维码
         #    注意：本版本小红书首页游客态**没有**「登录」按钮，直接访问
@@ -312,8 +457,11 @@ def main():
         while time.time() < deadline:
             cur = _pick_cookie(context, LOGIN_COOKIE)
             replaced = bool(cur) and cur != (prev_session or '')
-            ok, st = _probe(page)
-            note = f'会话替换={replaced} guest={st.get("guest")} userId={st.get("userId") or "-"}'
+            ok, info = _probe(page)
+            _dom = info.get('dom', {})
+            note = ('会话替换=%s 已登录=%s userId=%s' % (
+                replaced, ok,
+                (_dom.get('userId') or (info.get('me') or {}).get('userId') or '-')))
             if replaced or ok:
                 if _verify_and_export(context, page, '扫码后确认', prev_session):
                     context.close()
@@ -327,5 +475,25 @@ def main():
         context.close()
 
 
+def _trace(msg):
+    """把关键步骤写到 xhs_login_debug.log —— GUI 进程 stdout 常被宿主吞掉，
+    落盘是唯一可靠的诊断手段。"""
+    try:
+        with open(os.path.join(BASE_DIR, 'xhs_login_debug.log'), 'a', encoding='utf-8') as f:
+            f.write('[%s] %s\n' % (time.strftime('%H:%M:%S'), msg))
+    except Exception:
+        pass
+
+
 if __name__ == '__main__':
-    main()
+    _trace('=== 启动 ===')
+    try:
+        main()
+        _trace('=== 正常结束 ===')
+    except SystemExit:
+        raise
+    except BaseException:
+        import traceback
+        tb = traceback.format_exc()
+        _trace('!!! 异常 !!!\n' + tb)
+        raise

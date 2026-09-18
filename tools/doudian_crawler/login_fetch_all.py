@@ -16,6 +16,7 @@ import sys
 import os
 import time
 import json
+from datetime import datetime
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -28,6 +29,32 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 LOGIN_URL = 'https://fxg.jinritemai.com/login/common?channel=zhaoshang'
 WORKBENCH = 'https://fxg.jinritemai.com/ffa/mshop/homepage/index'
 STATE_DIR = os.path.join(BASE_DIR, '_states')
+
+# ── 无人值守标记 ──────────────────────────────────────────────────────────
+# 服务器上浏览器跑在 xvfb 虚拟屏（实测 Xvfb :99 640x480），**没有任何窗口显示在
+# 谁的屏幕上** —— 所以「请在浏览器窗口人工拖拽滑块」那句提示在服务器环境下永远无效，
+# 只换来一次 240s 的白等（batch + 多日期还会乘上去）。
+# 命中该标记时遇到拼图验证立刻失败退出，用一条明确的人工恢复指引替代那 4 分钟。
+# 由后端 /api/fetch/trigger（app.py _fetch_exec）与 cron 的 run_all.sh 注入。
+UNATTENDED = os.environ.get('PW_UNATTENDED') == '1'
+
+# 登录态时效上限（分钟）：state 实测约 40 分钟失效，取 25 分钟给「抓完 14 家店」留余量
+STATE_MAX_AGE_MIN = 25
+
+
+def state_age_minutes():
+    """「抖店邮箱账号表.登录状态」距今多少分钟；读不到返回 None。"""
+    try:
+        acc = shops.get_email_account() or {}
+        if not acc.get('state'):
+            return -1                       # -1 = 压根没有 state
+        st = acc.get('状态更新时间')
+        if not st:
+            return -1
+        return int((datetime.now() - st).total_seconds() // 60)
+    except Exception as e:
+        print('  [warn] 登录态时效自检失败:', e)
+        return None
 
 
 CAPTCHA_JS = r"""
@@ -141,6 +168,16 @@ def do_login(page, first_shop):
     time.sleep(3)
 
     if has_captcha(page):
+        # 无人值守环境（服务器 xvfb 虚拟屏）根本没有窗口可拖 → 别等，直接失败。
+        # 2026-09-17 用户实况：线上点了「更新数据」只看到
+        #   「⚠️ 出现拼图滑块！请在浏览器窗口人工拖拽（最多等 240s）  没有出现浏览器弹窗」
+        # —— 因为这个窗口物理上就不存在于任何人的屏幕上（Xvfb :99 640x480）。
+        if UNATTENDED:
+            print('  [FAIL] 无人值守环境出现拼图滑块，虚拟屏上没有窗口可拖 —— 立即放弃')
+            print('         抖店登录态已失效。请在本机恢复后重抓：')
+            print('           1) python tools/doudian_crawler/login_save_state.py')
+            print('           2) python tools/doudian_crawler/upload_state.py')
+            return False
         print('  ⚠️ 出现拼图滑块！请在浏览器窗口人工拖拽（最多等 240s）')
         deadline = time.time() + 240
         while time.time() < deadline and has_captcha(page):
@@ -609,6 +646,27 @@ def main():
             print('[FAIL] 过滤后无目标店铺，退出')
             return 2
     print('目标日期: %s | 抓取店铺 %d 家（运营中 %d 家）' % (date_str, len(all_shops), len(all_active)))
+
+    # ★ 登录态时效自检
+    #   过期的后果：state 免登录失败 → 走邮箱登录 → 撞拼图滑块 → 干等 240s → 退出。
+    #   一条命令白烧 4~5 分钟，batch(4家/条) × N 天还会把这笔账乘上去。
+    #   服务器（UNATTENDED）没人能过滑块 → 硬拦；本机有头模式还能人工拖 → 只提醒。
+    age = state_age_minutes()
+    if age is not None:
+        bad = (age < 0) or (age > STATE_MAX_AGE_MIN)
+        if age < 0:
+            print('  [warn] 抖店邮箱账号表没有可用登录态')
+        elif bad:
+            print('  [warn] 抖店登录态已过期 %d 分钟（实测寿命约 40 分钟）' % age)
+        else:
+            print('[登录] 登录态时效自检通过（%d 分钟前刷新）' % age)
+        if bad:
+            if UNATTENDED:
+                print('[FAIL] 服务器上无法自助登录（虚拟屏没人能过拼图滑块），终止')
+                print('       请在本机运行 tools/doudian_crawler/login_save_state.py')
+                print('       再运行 tools/doudian_crawler/upload_state.py 上传登录态')
+                return 2
+            print('       本机有头模式，继续尝试邮箱登录（可人工过滑块）')
 
     # 优先用「抖店邮箱账号表.登录状态」（上次会话写回的最新 state）免登录
     reuse = None
