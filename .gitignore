@@ -113,3 +113,10 @@ tools/_*
 # === 登录态 / cookie 备份（含凭据，勿提交）===
 tools/*cookie*.bak*
 tools/*.bak_*
+
+# === 批量建号中间产物（含手机号 / 身份证 / 初始密码，勿提交）===
+# 2026-09-18：accounts_plan.json / 花名册人员.json / 花名册导出.json /
+# 账号初始名单_*.csv 里都是真实身份证与手机号，属个人敏感信息。
+# 注意规则只作用于 .deploy 根目录，不影响 .deploy/stage/ 下已入库的文件。
+.deploy/*.json
+.deploy/*.csv
