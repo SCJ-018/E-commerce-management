@@ -1,11 +1,12 @@
-// ==================== 管理员与权限 Vue 版 ====================
-// 与旧版 App 内部逻辑保持一致，仅用 Vue 响应式重写渲染层。
-// 管理员接口走 ApiService（已封装）；角色接口走 ApiService.getRoles/createRole/updateRole/deleteRole（本次新增）。
-// 不复刻旧版「后端不可用降级 localStorage 假数据」逻辑，正常部署下行为一致。
+// ==================== 账号与权限 Vue 版 ====================
+// 两个 Tab：账号列表（按 6 个大角色做部门按钮切换） / 角色与权限（权限分配悬浮窗）
+// 接口：ApiService.getAdmins(department, keyword) / createAdmin / updateAdmin / deleteAdmin
+//       ApiService.getRoles / createRole / updateRole / deleteRole
+// 权限：账号列表只对 开发人员 / 超级管理员 / 人事行政部 开放（见 app.js navigateTo 硬门槛 + 后端 _can_manage_accounts）
 (function () {
   if (typeof Vue === 'undefined' || typeof ApiService === 'undefined' || typeof App === 'undefined' || typeof EcomUI === 'undefined') return;
 
-  // ---- 权限分配 UI 用的页面清单（静态常量，与旧版 PAGE_CATEGORIES 一致） ----
+  // ---- 权限分配 UI 用的页面清单（与 app.js PAGE_CATEGORIES / index.html 侧边栏保持一一对应） ----
   var PAGE_CATEGORIES = [
     { group: '营销数据', pages: [
       { id: 'marketing-overview', name: '整体营销数据总览' },
@@ -39,12 +40,26 @@
     ]},
   ];
 
+  // ---- 部门按钮 = 6 个大角色 ----
+  var DEPT_TABS = [
+    { key: '全部',  label: '全部',     role: '全部' },
+    { key: '开发人员',   label: '开发人员',   role: '开发人员' },
+    { key: '超级管理员', label: '超级管理员', role: '超级管理员' },
+    { key: '人事行政部', label: '人事行政部', role: '人事行政部' },
+    { key: '财务部',     label: '财务部',     role: '财务部' },
+    { key: '种草部',     label: '种草部',     role: '种草部' },
+    { key: '临时账号',   label: '临时账号',   role: '临时账号' },
+  ];
+
+  var GENDER_TEXT = { male: '男', female: '女' };
+
   // ---- 模块级状态（跨挂载/卸载保留） ----
   var _state = Vue.reactive({
-    activeTab: 'admins',
-    admins: [],
+    activeTab: 'accounts',
+    activeDept: '全部',
+    accounts: [],
     roles: [],
-    search: '',
+    keyword: '',
     pwdVisible: {},
   });
 
@@ -53,51 +68,80 @@
     PAGE_CATEGORIES.forEach(function (cat) { cat.pages.forEach(function (p) { ids.push(p.id); }); });
     return ids;
   }
+  var ALL_PAGE_IDS = allPageIds();
 
   var AdminPage = {
     components: { 'ecom-modal': EcomUI.Modal },
     setup: function () {
-      // 超管判断（会话级，来自 sessionStorage，与旧版 state.currentRole/currentAccount 同源）
-      var _role = sessionStorage.getItem('admin_current_role') || '';
-      var _account = sessionStorage.getItem('admin_current_account') || '';
-      var isSuperAdmin = _role === '超级管理员' || _account === 'admin';
-      var isSuperAdminRole = _role === '超级管理员';
+      var isAccountManager = !!(App.isAccountManager && App.isAccountManager());
 
-      // 搜索框防浏览器自动填充：初始 readonly，浏览器不会填充只读框；首次聚焦时解除
+      // 搜索框防浏览器自动填充：初始 readonly，首次聚焦时解除
       var searchLocked = Vue.ref(true);
       function unlockSearch() { searchLocked.value = false; }
 
       // 弹窗状态
-      var adminModal = Vue.reactive({ visible: false, isEdit: false, form: { id: '', name: '', account: '', password: '', role: '', status: 'enabled' } });
-      var pwdModal = Vue.reactive({ visible: false, adminId: null, adminLabel: '', password: '' });
-      var roleModal = Vue.reactive({ visible: false, isEdit: false, form: { id: '', name: '', permissions: [] }, allChecked: false });
+      var acctModal = Vue.reactive({
+        visible: false, isEdit: false,
+        form: { id: '', name: '', account: '', password: '', role: '', department: '',
+                subDept: '', leader: '', gender: '', status: 'enabled' },
+      });
+      var pwdModal = Vue.reactive({ visible: false, acctId: null, acctLabel: '', password: '' });
+      var roleModal = Vue.reactive({ visible: false, isEdit: false, form: { id: '', name: '', permissions: [] } });
       var confirmBox = Vue.reactive({ visible: false, message: '' });
       var _confirmAction = null;
 
       // ---- 数据加载 ----
-      async function loadData() {
-        var admins = await ApiService.getAdmins();
-        if (admins && admins.length) _state.admins = admins;
+      async function loadAccounts() {
+        if (!isAccountManager) return;
+        var list = await ApiService.getAdmins();
+        _state.accounts = Array.isArray(list) ? list : [];
+        syncRoleCounts();
+      }
+      async function loadRoles() {
         var roles = await ApiService.getRoles();
         if (roles && roles.length) _state.roles = roles;
         syncRoleCounts();
       }
+      function loadData() { loadAccounts(); loadRoles(); }
 
       function syncRoleCounts() {
         _state.roles.forEach(function (r) {
-          r.count = _state.admins.filter(function (a) { return a.role === r.name; }).length;
+          r.count = _state.accounts.filter(function (a) { return a.role === r.name; }).length;
         });
       }
 
-      var filteredAdmins = Vue.computed(function () {
-        var kw = (_state.search || '').toLowerCase();
-        if (!kw) return _state.admins;
-        return _state.admins.filter(function (a) {
+      // 部门按钮上的账号数
+      var deptCounts = Vue.computed(function () {
+        var m = {};
+        _state.accounts.forEach(function (a) {
+          var k = a.role || '';
+          m[k] = (m[k] || 0) + 1;
+        });
+        m['全部'] = _state.accounts.length;
+        return m;
+      });
+
+      var filteredAccounts = Vue.computed(function () {
+        var kw = (_state.keyword || '').trim().toLowerCase();
+        return _state.accounts.filter(function (a) {
+          if (_state.activeDept !== '全部' && a.role !== _state.activeDept) return false;
+          if (!kw) return true;
           return (a.name || '').toLowerCase().indexOf(kw) >= 0
             || (a.account || '').toLowerCase().indexOf(kw) >= 0
-            || (a.role || '').toLowerCase().indexOf(kw) >= 0;
+            || (a.department || '').toLowerCase().indexOf(kw) >= 0
+            || (a.subDept || '').toLowerCase().indexOf(kw) >= 0;
         });
       });
+
+      // 角色下拉选项（按固定顺序，库里没有的也不显示空白）
+      var roleOptions = Vue.computed(function () {
+        return _state.roles.map(function (r) { return r.name; });
+      });
+
+      function switchDept(key) {
+        _state.activeDept = key;
+        _state.keyword = _state.keyword;  // 保持搜索词，仅切换部门
+      }
 
       function rolePermText(r) {
         var perms = r.permissions || [];
@@ -106,90 +150,95 @@
         return { text: '无权限', color: '#94a3b8' };
       }
 
-      // ---- 管理员操作 ----
-      function openAdminModal(id) {
-        var admin = id ? _state.admins.find(function (a) { return a.id === id; }) : null;
-        adminModal.isEdit = !!admin;
-        adminModal.form = {
-          id: admin ? admin.id : '',
-          name: admin ? (admin.name || '') : '',
-          account: admin ? (admin.account || '') : '',
+      function genderText(g) { return GENDER_TEXT[g] || '—'; }
+
+      // ---- 账号操作 ----
+      function openAcctModal(id) {
+        var a = id ? _state.accounts.find(function (x) { return x.id === id; }) : null;
+        acctModal.isEdit = !!a;
+        acctModal.form = {
+          id: a ? a.id : '',
+          name: a ? (a.name || '') : '',
+          account: a ? (a.account || '') : '',
           password: '',
-          role: admin ? (admin.role || '') : (_state.roles.length > 0 ? _state.roles[0].name : ''),
-          status: admin ? (admin.status || 'enabled') : 'enabled',
+          role: a ? (a.role || '') : (_state.roles.length > 0 ? _state.roles[0].name : ''),
+          department: a ? (a.department || '') : '',
+          subDept: a ? (a.subDept || '') : '',
+          leader: a ? (a.leader || '') : '',
+          gender: a ? (a.gender || '') : '',
+          status: a ? (a.status || 'enabled') : 'enabled',
         };
-        adminModal.visible = true;
+        acctModal.visible = true;
       }
 
-      async function saveAdmin() {
-        var f = adminModal.form;
-        if (!f.name.trim() || !f.account.trim() || (!adminModal.isEdit && !f.password.trim())) {
-          App.showToast('请填写完整信息', 'error');
+      async function saveAcct() {
+        var f = acctModal.form;
+        if (!f.name.trim() || !f.account.trim() || (!acctModal.isEdit && !f.password.trim())) {
+          App.showToast('请填写完整信息（姓名 / 账号 / 密码）', 'error');
           return;
         }
-        if (adminModal.isEdit) {
-          var data = { name: f.name.trim(), role: f.role, status: f.status };
-          if (f.password.trim()) data.password = f.password.trim();
-          var r = await ApiService.updateAdmin(parseInt(f.id), data);
-          if (r === null) { App.showToast('更新失败', 'error'); return; }
-          App.showToast('管理员已更新', 'success');
-        } else {
-          var r2 = await ApiService.createAdmin({ name: f.name.trim(), account: f.account.trim(), password: f.password.trim(), role: f.role, status: f.status });
-          if (r2 === null) { App.showToast('创建失败', 'error'); return; }
-          App.showToast('管理员已创建', 'success');
-        }
-        adminModal.visible = false;
-        loadData();
+        var payload = {
+          name: f.name.trim(), account: f.account.trim(), role: f.role, status: f.status,
+          department: f.department.trim(), subDept: f.subDept.trim(),
+          leader: f.leader.trim(), gender: f.gender,
+        };
+        if (f.password.trim()) payload.password = f.password.trim();
+
+        var r = acctModal.isEdit
+          ? await ApiService.updateAdmin(parseInt(f.id), payload)
+          : await ApiService.createAdmin(payload);
+        if (!r || !r.ok) { App.showToast((r && r.msg) || '保存失败', 'error'); return; }
+        acctModal.visible = false;
+        App.showToast(acctModal.isEdit ? '账号已更新' : '账号已创建', 'success');
+        loadAccounts();
       }
 
-      function togglePwdVis(id) {
-        _state.pwdVisible[id] = !_state.pwdVisible[id];
-      }
+      function togglePwdVis(id) { _state.pwdVisible[id] = !_state.pwdVisible[id]; }
 
       function openPwdModal(id) {
-        var admin = _state.admins.find(function (a) { return a.id === id; });
-        if (!admin) return;
-        pwdModal.adminId = id;
-        pwdModal.adminLabel = admin.name + '（' + admin.account + '）';
+        var a = _state.accounts.find(function (x) { return x.id === id; });
+        if (!a) return;
+        pwdModal.acctId = id;
+        pwdModal.acctLabel = a.name + '（' + a.account + '）';
         pwdModal.password = '';
         pwdModal.visible = true;
       }
 
       async function savePwd() {
         if (!pwdModal.password.trim()) { App.showToast('请输入新密码', 'error'); return; }
-        var r = await ApiService.updateAdmin(parseInt(pwdModal.adminId), { password: pwdModal.password.trim() });
-        if (r === null) { App.showToast('密码更新失败', 'error'); return; }
+        var r = await ApiService.updateAdmin(parseInt(pwdModal.acctId), { password: pwdModal.password.trim() });
+        if (!r || !r.ok) { App.showToast((r && r.msg) || '密码更新失败', 'error'); return; }
         pwdModal.visible = false;
         App.showToast('密码已更新', 'success');
-        loadData();
+        loadAccounts();
       }
 
-      function confirmDeleteAdmin(id) {
-        var a = _state.admins.find(function (x) { return x.id === id; });
+      function confirmDeleteAcct(id) {
+        var a = _state.accounts.find(function (x) { return x.id === id; });
         if (!a) return;
         if (a.account === 'admin') { App.showToast('不能删除超级管理员账号', 'error'); return; }
-        confirmBox.message = '确定删除管理员「' + a.name + '」吗？此操作不可恢复。';
+        confirmBox.message = '确定删除账号「' + a.name + '（' + a.account + '）」吗？此操作不可恢复。';
         _confirmAction = async function () {
           await ApiService.deleteAdmin(id);
           confirmBox.visible = false;
-          loadData();
-          App.showToast('管理员已删除', 'success');
+          loadAccounts();
+          App.showToast('账号已删除', 'success');
         };
         confirmBox.visible = true;
       }
 
-      async function toggleAdmin(id) {
-        var a = _state.admins.find(function (x) { return x.id === id; });
+      async function toggleAcct(id) {
+        var a = _state.accounts.find(function (x) { return x.id === id; });
         if (!a) return;
         if (a.account === 'admin') { App.showToast('不能禁用超级管理员账号', 'error'); return; }
         var newStatus = a.status === 'enabled' ? 'disabled' : 'enabled';
         var r = await ApiService.updateAdmin(id, { status: newStatus });
-        if (r === null) { App.showToast('操作失败', 'error'); return; }
-        loadData();
-        App.showToast('管理员已' + (newStatus === 'enabled' ? '启用' : '禁用'), 'success');
+        if (!r || !r.ok) { App.showToast((r && r.msg) || '操作失败', 'error'); return; }
+        loadAccounts();
+        App.showToast('账号已' + (newStatus === 'enabled' ? '启用' : '禁用'), 'success');
       }
 
-      // ---- 角色操作 ----
+      // ---- 角色 / 权限 ----
       function openRolePermModal(id) {
         var role = id ? _state.roles.find(function (r) { return r.id === id; }) : null;
         roleModal.isEdit = !!role;
@@ -198,37 +247,51 @@
         roleModal.form = {
           id: role ? role.id : '',
           name: role ? (role.name || '') : '',
-          permissions: isAll ? allPageIds() : perms.slice(),
+          permissions: isAll ? ALL_PAGE_IDS.slice() : perms.slice(),
         };
-        roleModal.allChecked = isAll;
         roleModal.visible = true;
       }
 
+      var permCount = Vue.computed(function () {
+        return (roleModal.form.permissions || []).length;
+      });
+      var permAllChecked = Vue.computed(function () {
+        return permCount.value === ALL_PAGE_IDS.length;
+      });
+
       function toggleAllPerms() {
-        if (roleModal.allChecked) {
-          roleModal.form.permissions = [];
-          roleModal.allChecked = false;
-        } else {
-          roleModal.form.permissions = allPageIds();
-          roleModal.allChecked = true;
-        }
+        roleModal.form.permissions = permAllChecked.value ? [] : ALL_PAGE_IDS.slice();
+      }
+      function invertPerms() {
+        var cur = roleModal.form.permissions || [];
+        roleModal.form.permissions = ALL_PAGE_IDS.filter(function (id) { return cur.indexOf(id) < 0; });
+      }
+      function groupChecked(cat) {
+        var cur = roleModal.form.permissions || [];
+        return cat.pages.every(function (p) { return cur.indexOf(p.id) >= 0; });
+      }
+      function toggleGroup(cat) {
+        var cur = (roleModal.form.permissions || []).slice();
+        var on = groupChecked(cat);
+        cat.pages.forEach(function (p) {
+          var i = cur.indexOf(p.id);
+          if (on) { if (i >= 0) cur.splice(i, 1); }
+          else if (i < 0) { cur.push(p.id); }
+        });
+        roleModal.form.permissions = cur;
       }
 
       async function saveRolePerm() {
         var f = roleModal.form;
         if (!f.name.trim()) { App.showToast('请输入角色名称', 'error'); return; }
         var data = { name: f.name.trim(), permissions: f.permissions };
-        if (roleModal.isEdit) {
-          var r = await ApiService.updateRole(parseInt(f.id), data);
-          if (r === null) { App.showToast('更新失败', 'error'); return; }
-          App.showToast('角色已更新', 'success');
-        } else {
-          var r2 = await ApiService.createRole(data);
-          if (r2 === null) { App.showToast('创建失败', 'error'); return; }
-          App.showToast('角色已创建', 'success');
-        }
+        var r = roleModal.isEdit
+          ? await ApiService.updateRole(parseInt(f.id), data)
+          : await ApiService.createRole(data);
+        if (r === null) { App.showToast('保存失败', 'error'); return; }
         roleModal.visible = false;
-        loadData();
+        App.showToast(roleModal.isEdit ? '角色已更新' : '角色已创建', 'success');
+        loadRoles();
       }
 
       function confirmDeleteRole(id) {
@@ -239,109 +302,133 @@
         _confirmAction = async function () {
           await ApiService.deleteRole(id);
           confirmBox.visible = false;
-          loadData();
+          loadRoles();
           App.showToast('角色已删除', 'success');
         };
         confirmBox.visible = true;
       }
 
-      function doConfirm() {
-        if (_confirmAction) _confirmAction();
-      }
+      function doConfirm() { if (_confirmAction) _confirmAction(); }
 
-      loadData();
+      if (isAccountManager) loadData();
+      else loadRoles();
 
       return {
         state: _state,
-        PAGE_CATEGORIES,
-        adminModal, pwdModal, roleModal, confirmBox,
-        isSuperAdmin, isSuperAdminRole,
-        filteredAdmins, rolePermText, searchLocked, unlockSearch,
-        openAdminModal, saveAdmin, togglePwdVis, openPwdModal, savePwd,
-        confirmDeleteAdmin, toggleAdmin,
-        openRolePermModal, toggleAllPerms, saveRolePerm, confirmDeleteRole, doConfirm,
+        PAGE_CATEGORIES, DEPT_TABS, ALL_PAGE_IDS,
+        acctModal, pwdModal, roleModal, confirmBox,
+        isAccountManager, filteredAccounts, deptCounts, roleOptions,
+        rolePermText, genderText, searchLocked, unlockSearch, switchDept,
+        openAcctModal, saveAcct, togglePwdVis, openPwdModal, savePwd,
+        confirmDeleteAcct, toggleAcct,
+        openRolePermModal, toggleAllPerms, invertPerms, groupChecked, toggleGroup,
+        saveRolePerm, confirmDeleteRole, doConfirm, permCount, permAllChecked,
       };
     },
 
     template: `
 <div>
   <div class="ap-tabs">
-    <button class="ap-tab" :class="{ active: state.activeTab === 'admins' }" @click="state.activeTab = 'admins'">管理员列表</button>
+    <button class="ap-tab" :class="{ active: state.activeTab === 'accounts' }" @click="state.activeTab = 'accounts'">账号列表</button>
     <button class="ap-tab" :class="{ active: state.activeTab === 'roles' }" @click="state.activeTab = 'roles'">角色与权限</button>
   </div>
 
-  <!-- 管理员面板 -->
-  <div class="ap-panel" :class="{ active: state.activeTab === 'admins' }">
-    <div class="ap-toolbar">
-      <div class="ap-search-wrap">
-        <i class="fa-solid fa-search"></i>
-        <input class="ap-search-input" v-model="state.search" autocomplete="off" :readonly="searchLocked" @focus="unlockSearch" placeholder="搜索管理员姓名或账号...">
+  <!-- ============ 账号列表 ============ -->
+  <div class="ap-panel" :class="{ active: state.activeTab === 'accounts' }">
+    <div v-if="!isAccountManager" style="background:#fff;border:1px solid #f1f5f9;border-radius:12px;padding:48px;text-align:center">
+      <i class="fa-solid fa-lock" style="font-size:30px;color:#cbd5e1"></i>
+      <p style="margin-top:12px;color:#94a3b8;font-size:14px">账号列表仅对「开发人员 / 超级管理员 / 人事行政部」开放</p>
+    </div>
+
+    <template v-else>
+      <div class="acct-deptbar">
+        <button v-for="d in DEPT_TABS" :key="d.key" class="acct-dept"
+                :class="{ active: state.activeDept === d.key }" @click="switchDept(d.key)">
+          {{ d.label }}<span class="cnt">{{ deptCounts[d.key] || 0 }}</span>
+        </button>
       </div>
-      <button class="ap-btn-primary" @click="openAdminModal()"><i class="fa-solid fa-plus"></i> 新增管理员</button>
+
+      <div class="ap-toolbar">
+        <div class="ap-search-wrap">
+          <i class="fa-solid fa-search"></i>
+          <input class="ap-search-input" v-model="state.keyword" autocomplete="off" :readonly="searchLocked" @focus="unlockSearch" placeholder="搜索姓名 / 手机号 / 部门...">
+        </div>
+        <button class="ap-btn-primary" @click="openAcctModal()"><i class="fa-solid fa-plus"></i> 新增账号</button>
+      </div>
+
+      <div class="ap-table-wrap">
+        <table class="ap-table">
+          <thead>
+            <tr>
+              <th style="width:170px">姓名</th>
+              <th style="width:170px">部门</th>
+              <th style="width:140px">账号</th>
+              <th style="width:140px">密码</th>
+              <th style="width:110px">角色</th>
+              <th style="width:80px">状态</th>
+              <th style="width:200px">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="a in filteredAccounts" :key="a.id">
+              <td>
+                <div class="acct-user">
+                  <img v-if="a.avatar" class="acct-avatar" :src="a.avatar" alt="">
+                  <span v-else class="acct-avatar-char">{{ (a.name || '?').charAt(0) }}</span>
+                  <span><strong>{{ a.name }}</strong><span v-if="a.gender" class="acct-sex">{{ genderText(a.gender) }}</span></span>
+                </div>
+              </td>
+              <td>
+                <div>{{ a.department || '—' }}</div>
+                <div class="acct-sub" v-if="a.subDept || a.leader">{{ a.subDept }}<span v-if="a.leader"> · 主管 {{ a.leader }}</span></div>
+              </td>
+              <td style="font-family:'SF Mono','Consolas',monospace;font-size:12px">{{ a.account }}</td>
+              <td>
+                <div class="ap-pwd-cell">
+                  <span class="ap-pwd-text">{{ state.pwdVisible[a.id] ? a.password : '●●●●●●' }}</span>
+                  <button class="ap-pwd-toggle" :class="{ showing: state.pwdVisible[a.id] }" @click="togglePwdVis(a.id)" :title="state.pwdVisible[a.id] ? '隐藏密码' : '显示密码'">
+                    <i class="fa-solid" :class="state.pwdVisible[a.id] ? 'fa-eye-slash' : 'fa-eye'"></i>
+                  </button>
+                </div>
+              </td>
+              <td>{{ a.role }}</td>
+              <td><span class="status-badge" :class="a.status">{{ a.status === 'enabled' ? '已启用' : '已禁用' }}</span></td>
+              <td>
+                <div class="ap-actions">
+                  <button class="ap-btn-sm pwd" @click="openPwdModal(a.id)" title="修改密码"><i class="fa-solid fa-key"></i> 密码</button>
+                  <button class="ap-btn-sm edit" @click="openAcctModal(a.id)"><i class="fa-solid fa-pen"></i> 编辑</button>
+                  <button v-if="a.account !== 'admin'" class="ap-btn-sm toggle" @click="toggleAcct(a.id)" :title="a.status === 'enabled' ? '禁用' : '启用'"><i class="fa-solid fa-power-off"></i></button>
+                  <button v-if="a.account !== 'admin'" class="ap-btn-sm delete" @click="confirmDeleteAcct(a.id)"><i class="fa-solid fa-trash"></i></button>
+                </div>
+              </td>
+            </tr>
+            <tr v-if="filteredAccounts.length === 0"><td colspan="7" style="text-align:center;padding:32px;color:#94a3b8">该部门下暂无账号</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="ap-table-info">共 {{ filteredAccounts.length }} 个账号<span v-if="state.activeDept !== '全部'">（部门：{{ state.activeDept }}）</span></div>
+    </template>
+  </div>
+
+  <!-- ============ 角色与权限 ============ -->
+  <div class="ap-panel" :class="{ active: state.activeTab === 'roles' }">
+    <div style="display:flex;gap:12px;margin-bottom:16px">
+      <button class="ap-btn-primary" @click="openRolePermModal()"><i class="fa-solid fa-plus"></i> 新增角色</button>
     </div>
     <div class="ap-table-wrap">
       <table class="ap-table">
-        <thead>
-          <tr>
-            <th style="width:50px">ID</th>
-            <th style="width:100px">姓名</th>
-            <th style="width:130px">账号</th>
-            <th style="width:150px">密码</th>
-            <th style="width:110px">角色</th>
-            <th style="width:80px">状态</th>
-            <th style="width:140px">最后登录</th>
-            <th style="width:160px">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="a in filteredAdmins" :key="a.id">
-            <td>{{ a.id }}</td>
-            <td><strong>{{ a.name }}</strong></td>
-            <td>{{ a.account }}</td>
-            <td>
-              <div class="ap-pwd-cell">
-                <span class="ap-pwd-text">{{ isSuperAdmin ? (state.pwdVisible[a.id] ? a.password : '●●●●●●') : '●●●●●●' }}</span>
-                <button v-if="isSuperAdmin" class="ap-pwd-toggle" :class="{ showing: state.pwdVisible[a.id] }" @click="togglePwdVis(a.id)" :title="state.pwdVisible[a.id] ? '隐藏密码' : '显示密码'">
-                  <i class="fa-solid" :class="state.pwdVisible[a.id] ? 'fa-eye-slash' : 'fa-eye'"></i>
-                </button>
-              </div>
-            </td>
-            <td>{{ a.role }}</td>
-            <td><span class="status-badge" :class="a.status">{{ a.status === 'enabled' ? '已启用' : '已禁用' }}</span></td>
-            <td>{{ a.lastLogin || '-' }}</td>
-            <td>
-              <div class="ap-actions">
-                <button v-if="isSuperAdmin" class="ap-btn-sm pwd" @click="openPwdModal(a.id)" title="修改密码"><i class="fa-solid fa-key"></i> 密码</button>
-                <button class="ap-btn-sm edit" @click="openAdminModal(a.id)"><i class="fa-solid fa-pen"></i> 编辑</button>
-                <button v-if="a.account !== 'admin'" class="ap-btn-sm toggle" @click="toggleAdmin(a.id)" :title="a.status === 'enabled' ? '禁用' : '启用'"><i class="fa-solid fa-power-off"></i></button>
-                <button v-if="a.account !== 'admin'" class="ap-btn-sm delete" @click="confirmDeleteAdmin(a.id)"><i class="fa-solid fa-trash"></i></button>
-              </div>
-            </td>
-          </tr>
-          <tr v-if="filteredAdmins.length === 0"><td colspan="8" style="text-align:center;padding:32px;color:#94a3b8">暂无管理员数据</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div class="ap-table-info">共 {{ filteredAdmins.length }} 位管理员</div>
-  </div>
-
-  <!-- 角色面板 -->
-  <div class="ap-panel" :class="{ active: state.activeTab === 'roles' }">
-    <div style="display:flex;gap:12px;margin-bottom:16px">
-      <button class="btn btn-primary btn-sm" @click="openRolePermModal()">+ 新增角色</button>
-    </div>
-    <div class="data-table-wrap">
-      <table class="data-table">
-        <thead><tr><th>角色名称</th><th>权限</th><th>成员数</th><th>创建时间</th><th>操作</th></tr></thead>
+        <thead><tr><th style="width:180px">角色名称</th><th>权限</th><th style="width:100px">成员数</th><th style="width:130px">创建时间</th><th style="width:150px">操作</th></tr></thead>
         <tbody>
           <tr v-for="r in state.roles" :key="r.id">
             <td><strong>{{ r.name }}</strong></td>
             <td><span :style="{ color: rolePermText(r).color, fontWeight: rolePermText(r).text === '全部权限' ? '600' : 'normal' }">{{ rolePermText(r).text }}</span></td>
             <td>{{ r.count || 0 }}</td>
-            <td>{{ r.createdAt || '' }}</td>
+            <td style="color:#94a3b8;font-size:12px">{{ r.createdAt || '' }}</td>
             <td>
-              <button v-if="isSuperAdminRole" class="btn btn-sm btn-outline" @click="openRolePermModal(r.id)"><i class="fa-solid fa-pen"></i> 权限</button>
-              <button v-if="isSuperAdminRole && r.name !== '超级管理员'" class="btn btn-sm btn-outline" style="color:#dc2626" @click="confirmDeleteRole(r.id)"><i class="fa-solid fa-trash"></i></button>
+              <div class="ap-actions">
+                <button class="ap-btn-sm edit" @click="openRolePermModal(r.id)"><i class="fa-solid fa-pen"></i> 权限</button>
+                <button v-if="r.name !== '超级管理员'" class="ap-btn-sm delete" @click="confirmDeleteRole(r.id)"><i class="fa-solid fa-trash"></i></button>
+              </div>
             </td>
           </tr>
           <tr v-if="state.roles.length === 0"><td colspan="5" style="text-align:center;padding:32px;color:#94a3b8">暂无角色数据</td></tr>
@@ -350,38 +437,69 @@
     </div>
   </div>
 
-  <!-- 新增/编辑管理员弹窗 -->
-  <ecom-modal :visible="adminModal.visible" :title="adminModal.isEdit ? '编辑管理员' : '新增管理员'" @close="adminModal.visible = false" @save="saveAdmin">
+  <!-- 新增/编辑账号弹窗 -->
+  <ecom-modal :visible="acctModal.visible" :title="acctModal.isEdit ? '编辑账号' : '新增账号'" width="680px" @close="acctModal.visible = false" @save="saveAcct">
     <div class="ap-form-row">
-      <div class="ap-form-group"><label>姓名</label><input class="ap-form-input" v-model="adminModal.form.name" placeholder="请输入姓名"></div>
-      <div class="ap-form-group"><label>账号</label><input class="ap-form-input" v-model="adminModal.form.account" placeholder="请输入账号" :readonly="adminModal.isEdit"></div>
+      <div class="ap-form-group"><label>姓名</label><input class="ap-form-input" v-model="acctModal.form.name" placeholder="请输入姓名"></div>
+      <div class="ap-form-group"><label>手机号（登录账号）</label><input class="ap-form-input" v-model="acctModal.form.account" placeholder="请输入手机号" autocomplete="off"></div>
     </div>
     <div class="ap-form-row">
-      <div class="ap-form-group"><label>密码</label><input class="ap-form-input" type="text" v-model="adminModal.form.password" :placeholder="adminModal.isEdit ? '留空则不修改' : '请输入密码'"></div>
-      <div class="ap-form-group"><label>角色</label><select class="ap-form-input" v-model="adminModal.form.role"><option v-for="r in state.roles" :key="r.id" :value="r.name">{{ r.name }}</option></select></div>
+      <div class="ap-form-group"><label>密码</label><input class="ap-form-input" v-model="acctModal.form.password" :placeholder="acctModal.isEdit ? '留空则不修改' : '请输入密码'" autocomplete="off"></div>
+      <div class="ap-form-group"><label>角色</label><select class="ap-form-input" v-model="acctModal.form.role">
+        <option v-for="r in roleOptions" :key="r" :value="r">{{ r }}</option>
+      </select></div>
     </div>
-    <div class="ap-form-group"><label>状态</label><select class="ap-form-input" v-model="adminModal.form.status"><option value="enabled">已启用</option><option value="disabled">已禁用</option></select></div>
+    <div class="ap-form-row">
+      <div class="ap-form-group"><label>部门</label><input class="ap-form-input" v-model="acctModal.form.department" placeholder="如：总裁办 / 业务一部"></div>
+      <div class="ap-form-group"><label>细分小组</label><input class="ap-form-input" v-model="acctModal.form.subDept" placeholder="如：一部三组"></div>
+    </div>
+    <div class="ap-form-row">
+      <div class="ap-form-group"><label>部门主管</label><input class="ap-form-input" v-model="acctModal.form.leader" placeholder="如：马湘湘"></div>
+      <div class="ap-form-group"><label>性别</label><select class="ap-form-input" v-model="acctModal.form.gender">
+        <option value="">未设置</option><option value="male">男</option><option value="female">女</option>
+      </select></div>
+    </div>
+    <div class="ap-form-group"><label>状态</label><select class="ap-form-input" v-model="acctModal.form.status"><option value="enabled">已启用</option><option value="disabled">已禁用</option></select></div>
   </ecom-modal>
 
   <!-- 修改密码弹窗 -->
   <ecom-modal :visible="pwdModal.visible" title="修改密码" @close="pwdModal.visible = false" @save="savePwd">
-    <div class="ap-form-group"><label>管理员</label><div style="padding:9px 0;font-weight:600;color:#1e293b">{{ pwdModal.adminLabel }}</div></div>
-    <div class="ap-form-group"><label>新密码</label><input class="ap-form-input" type="text" v-model="pwdModal.password" placeholder="请输入新密码"></div>
+    <div class="ap-form-group"><label>账号</label><div style="padding:9px 0;font-weight:600;color:#1e293b">{{ pwdModal.acctLabel }}</div></div>
+    <div class="ap-form-group"><label>新密码</label><input class="ap-form-input" v-model="pwdModal.password" placeholder="请输入新密码" autocomplete="off"></div>
   </ecom-modal>
 
   <!-- 角色权限弹窗 -->
-  <ecom-modal :visible="roleModal.visible" :title="roleModal.isEdit ? '编辑角色' : '新增角色'" width="640px" @close="roleModal.visible = false" @save="saveRolePerm">
+  <ecom-modal :visible="roleModal.visible" :title="roleModal.isEdit ? '编辑角色与权限' : '新增角色'" width="760px" @close="roleModal.visible = false" @save="saveRolePerm">
     <div class="ap-form-group"><label>角色名称</label><input class="ap-form-input" v-model="roleModal.form.name" placeholder="请输入角色名称"></div>
-    <div class="ap-perm-header"><span>权限分配</span><button type="button" class="ap-perm-toggle-btn" @click="toggleAllPerms">{{ roleModal.allChecked ? '取消全选' : '全选' }}</button></div>
-    <div class="ap-perm-scroll">
-      <div class="ap-perm-group" v-for="cat in PAGE_CATEGORIES" :key="cat.group">
-        <div class="ap-perm-group-title">{{ cat.group }}</div>
-        <div class="ap-perm-group-checks">
-          <label class="ap-perm-check" v-for="p in cat.pages" :key="p.id">
-            <input type="checkbox" :value="p.id" v-model="roleModal.form.permissions"> {{ p.name }}
+
+    <div class="rp-head">
+      <div class="rp-head-count">已选 <b>{{ permCount }}</b> / {{ ALL_PAGE_IDS.length }} 个板块</div>
+      <div style="display:flex;gap:8px">
+        <button type="button" class="rp-mini" @click="toggleAllPerms">{{ permAllChecked ? '取消全选' : '全选' }}</button>
+        <button type="button" class="rp-mini" @click="invertPerms">反选</button>
+      </div>
+    </div>
+
+    <div class="rp-scroll">
+      <div class="rp-card" v-for="cat in PAGE_CATEGORIES" :key="cat.group">
+        <div class="rp-card-head">
+          <div class="rp-card-title"><span class="dot"></span>{{ cat.group }}</div>
+          <label class="rp-card-all" @click.prevent="toggleGroup(cat)">
+            <input type="checkbox" :checked="groupChecked(cat)" style="pointer-events:none"> 全选本组
+          </label>
+        </div>
+        <div class="rp-card-body">
+          <label class="rp-item" v-for="p in cat.pages" :key="p.id" :class="{ on: roleModal.form.permissions.indexOf(p.id) >= 0 }">
+            <input type="checkbox" :value="p.id" v-model="roleModal.form.permissions">
+            <span>{{ p.name }}</span>
           </label>
         </div>
       </div>
+    </div>
+
+    <div class="rp-foot">
+      <span>提示：「个人中心设置」对所有账号强制开放，无需勾选也可访问</span>
+      <span>{{ roleModal.form.name || '未命名' }}</span>
     </div>
   </ecom-modal>
 
@@ -411,7 +529,8 @@
     if (!_adminApp) return;
     _adminApp.unmount();
     _adminApp = null;
-    _state.search = '';
+    _state.keyword = '';
+    _state.pwdVisible = {};
     var mount = document.getElementById('page-admin-permissions-vue');
     if (mount) { mount.classList.add('hidden'); mount.innerHTML = ''; }
     var oldSection = document.getElementById('page-admin-permissions');

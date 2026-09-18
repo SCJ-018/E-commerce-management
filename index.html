@@ -277,6 +277,51 @@
     .ap-btn-sm.delete:hover{background:#fee2e2;color:#dc2626;border-color:#fecaca}
     .ap-table-info{padding:10px 16px;font-size:12px;color:#94a3b8;background:#fff;border-radius:0 0 12px 12px;border:1px solid #f1f5f9;border-top:none}
 
+    /* ---- 账号列表：部门切换按钮 ---- */
+    .acct-deptbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+    .acct-dept{display:inline-flex;align-items:center;gap:8px;padding:0 16px;height:38px;border-radius:10px;border:1px solid #e2e8f0;background:#fff;color:#475569;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .16s}
+    .acct-dept:hover{border-color:#bfdbfe;color:#1677ff;background:#f8fbff}
+    .acct-dept.active{background:#1677ff;border-color:#1677ff;color:#fff;box-shadow:0 2px 10px rgba(22,119,255,.25)}
+    .acct-dept .cnt{font-size:11px;font-weight:600;padding:1px 7px;border-radius:9px;background:#f1f5f9;color:#64748b;min-width:20px;text-align:center}
+    .acct-dept.active .cnt{background:rgba(255,255,255,.24);color:#fff}
+    .acct-user{display:flex;align-items:center;gap:9px}
+    .acct-avatar{width:30px;height:30px;border-radius:50%;object-fit:cover;flex-shrink:0;border:1px solid #eef2f7}
+    .acct-avatar-char{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#60a5fa);color:#fff;font-size:13px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+    .acct-sex{margin-left:6px;font-size:11px;font-weight:500;color:#94a3b8}
+    .acct-sub{font-size:11px;color:#94a3b8;margin-top:2px}
+
+    /* ---- 角色权限分配悬浮窗 ---- */
+    .rp-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;background:#f8fafc;border:1px solid #eef2f7;border-radius:12px;margin-bottom:14px}
+    .rp-head-count{font-size:13px;color:#475569;font-weight:600}
+    .rp-head-count b{color:#1677ff;font-size:16px;margin:0 2px}
+    .rp-mini{display:inline-flex;align-items:center;gap:4px;height:30px;padding:0 12px;border-radius:8px;border:1px solid #e2e8f0;background:#fff;color:#475569;font-size:12px;font-weight:500;cursor:pointer;font-family:inherit;transition:all .15s}
+    .rp-mini:hover{border-color:#bfdbfe;color:#1677ff;background:#f6faff}
+    .rp-scroll{max-height:44vh;overflow-y:auto;padding-right:4px;display:flex;flex-direction:column;gap:10px}
+    .rp-card{border:1px solid #eef2f7;border-radius:12px;overflow:hidden;background:#fff}
+    .rp-card-head{display:flex;align-items:center;justify-content:space-between;padding:9px 13px;background:#fafbfc;border-bottom:1px solid #f1f5f9}
+    .rp-card-title{font-size:13px;font-weight:700;color:#334155;display:flex;align-items:center;gap:8px}
+    .rp-card-title .dot{width:6px;height:6px;border-radius:50%;background:#1677ff}
+    .rp-card-all{font-size:12px;color:#1677ff;cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:5px;font-weight:500}
+    .rp-card-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px;padding:8px 10px}
+    .rp-item{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:8px;cursor:pointer;font-size:13px;color:#475569;transition:background .14s;user-select:none}
+    .rp-item:hover{background:#f6f9ff}
+    .rp-item.on{background:#f0f7ff;color:#1677ff;font-weight:600}
+    .rp-item input{width:15px;height:15px;accent-color:#1677ff;cursor:pointer;flex-shrink:0;margin:0}
+    .rp-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;padding-top:11px;border-top:1px solid #f1f5f9;font-size:12px;color:#94a3b8}
+
+    /* ---- 个人中心设置 ---- */
+    .pf-av-wrap{position:relative;width:100px;height:100px;margin:0 auto 16px;border-radius:50%;cursor:pointer;overflow:hidden}
+    .pf-av-img{width:100%;height:100%;object-fit:cover;border-radius:50%;display:block}
+    .pf-av-char{width:100%;height:100%;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#60a5fa);display:flex;align-items:center;justify-content:center;font-size:42px;color:#fff;box-shadow:0 4px 16px rgba(59,130,246,0.3)}
+    .pf-av-mask{position:absolute;inset:0;border-radius:50%;background:rgba(15,23,42,.45);color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;opacity:0;transition:opacity .18s}
+    .pf-av-wrap:hover .pf-av-mask{opacity:1}
+    .pf-kv{display:flex;justify-content:space-between;gap:12px;padding:6px 0;font-size:13px}
+    .pf-k{color:#94a3b8;flex-shrink:0}
+    .pf-v{color:#334155;font-weight:500;text-align:right;word-break:break-all}
+    .pf-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    .pf-warn{display:flex;align-items:flex-start;gap:10px;margin-top:16px;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;color:#b45309;font-size:12px}
+    @media(max-width:1100px){.pf-row{grid-template-columns:1fr}}
+
     /* ======== 店铺账号管理（Vue 页，样式全局注入——Vue3 运行时会丢弃模板内 <style>） ======== */
     .sa-toolbar-left{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0}
     .sa-toolbar-right{display:flex;gap:8px;align-items:center;flex-shrink:0}
@@ -2369,14 +2414,14 @@
   <div class="ai-chat-footer">聚浪网络科技 · AI 服务可能产生误差，请以实际数据为准</div>
 </div>
 
-<script src="js/app.js?v=20260918a"></script>
+<script src="js/app.js?v=20260918c"></script>
 <script src="js/vue/components.js?v=20260917d"></script>
-<script src="js/vue/page-profile.js"></script>
+<script src="js/vue/page-profile.js?v=20260918c"></script>
 <script src="js/vue/page-hr-common.js"></script>
 <script src="js/vue/page-hr-tables.js"></script>
 <script src="js/vue/page-hr.js"></script>
 <script src="js/vue/page-violation.js"></script>
-<script src="js/vue/page-admin.js"></script>
+<script src="js/vue/page-admin.js?v=20260918c"></script>
 <script src="js/vue/page-selection.js?v=20260917d"></script>
 <script src="js/vue/page-seeding.js?v=20260918a"></script>
 <script src="js/vue/page-order-details.js"></script>

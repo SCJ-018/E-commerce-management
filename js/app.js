@@ -133,10 +133,17 @@ const ApiService = (() => {
       return request(path);
     },
 
-    /** 管理员 CRUD */
-    async getAdmins() { return request('/admin/accounts'); },
-    async createAdmin(data) { return request('/admin/accounts', { method: 'POST', body: JSON.stringify(data) }); },
-    async updateAdmin(id, data) { return request('/admin/accounts/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
+    /** 账号列表 CRUD（department = 部门按钮对应的大角色名） */
+    async getAdmins(department, keyword) {
+      let path = '/admin/accounts';
+      const params = [];
+      if (department && department !== '全部') params.push('department=' + encodeURIComponent(department));
+      if (keyword) params.push('keyword=' + encodeURIComponent(keyword));
+      if (params.length) path += '?' + params.join('&');
+      return request(path);
+    },
+    async createAdmin(data) { return requestFull('/admin/accounts', { method: 'POST', body: JSON.stringify(data) }); },
+    async updateAdmin(id, data) { return requestFull('/admin/accounts/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
     async deleteAdmin(id) { return request('/admin/accounts/' + id, { method: 'DELETE' }); },
 
     /** 角色与权限 CRUD */
@@ -144,6 +151,25 @@ const ApiService = (() => {
     async createRole(data) { return request('/admin/roles', { method: 'POST', body: JSON.stringify(data) }); },
     async updateRole(id, data) { return request('/admin/roles/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
     async deleteRole(id) { return request('/admin/roles/' + id, { method: 'DELETE' }); },
+
+    /** 个人中心 — 个人信息 / 修改密码 / 头像 */
+    async getProfile() { return request('/profile/me'); },
+    async updateProfile(data) { return requestFull('/profile/update', { method: 'POST', body: JSON.stringify(data) }); },
+    async updatePassword(data) { return requestFull('/profile/password', { method: 'POST', body: JSON.stringify(data) }); },
+    async uploadAvatar(file) {
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        const res = await fetch(BASE_URL + '/profile/avatar', { method: 'POST', body: fd, credentials: 'same-origin' });
+        if (res.status === 401) { location.reload(); return { ok: false, msg: '登录已过期' }; }
+        const json = await res.json().catch(() => null);
+        if (!json) return { ok: false, msg: 'HTTP ' + res.status };
+        if (json.code !== 0) return { ok: false, msg: json.msg || '上传失败' };
+        return { ok: true, data: json.data, msg: json.msg || '头像已更新' };
+      } catch (e) {
+        return { ok: false, msg: e.message || '网络异常' };
+      }
+    },
 
     /** 店铺账号管理：type = qianniu | doudian | doudian-email | jd */
     async getStoreAccounts(type) { return request('/store-accounts/' + type); },
@@ -718,7 +744,9 @@ const App = (() => {
     // 只要拥有任意一个人事数据表权限，即允许进入人事数据中心页面；具体可见哪张表由页面内部再判定。
     var _hrPermHit = page === 'hr' && _ALLOWED_PAGES !== null &&
       _ALLOWED_PAGES.some(function (p) { return String(p).indexOf('hr-') === 0; });
-    if (_ALLOWED_PAGES !== null && !_ALLOWED_PAGES.includes(page) && page !== 'profile' && !_hrPermHit) {
+    // ★ 账号列表硬门槛：非 开发人员/超级管理员/人事行政部 一律进不去（即使被分配了该板块）
+    var _accDeny = page === 'admin-permissions' && !_CAN_MANAGE_ACCOUNTS;
+    if (_accDeny || (_ALLOWED_PAGES !== null && !_ALLOWED_PAGES.includes(page) && page !== 'profile' && !_hrPermHit)) {
       _showPermissionDenied();
       // 高亮当前点击的菜单项
       document.querySelectorAll('.nav-item').forEach(function(el) {
@@ -2488,6 +2516,10 @@ const App = (() => {
   // ==================== 角色权限配置（数据库驱动） ====================
   var _ALLOWED_PAGES = null;  // null = 全部页面，array = 限定页面
 
+  // ★ 「账号列表（管理员与权限）」只开放给这三个角色（需求：1.2.3 号角色可查看与编辑）
+  var ACCOUNT_MANAGER_ROLES = ['开发人员', '超级管理员', '人事行政部'];
+  var _CAN_MANAGE_ACCOUNTS = false;
+
   function _initPermissions() {
     // 优先从 sessionStorage 读取（由登录 API 返回的 permissions 数组）
     var perms = state.currentPermissions;
@@ -2495,14 +2527,21 @@ const App = (() => {
       try { perms = JSON.parse(sessionStorage.getItem('admin_permissions')); }
       catch (e) { perms = null; }
     }
-    if (!perms || !perms.length) { _ALLOWED_PAGES = null; return; }
+
+    var role = state.currentRole || sessionStorage.getItem('admin_current_role') || '';
+    _CAN_MANAGE_ACCOUNTS = ACCOUNT_MANAGER_ROLES.indexOf(role) >= 0;
+    sessionStorage.setItem('admin_is_account_manager', _CAN_MANAGE_ACCOUNTS ? '1' : '0');
+
     // '*' 表示全部权限
     if (perms === '*' || (Array.isArray(perms) && perms[0] === '*')) {
       _ALLOWED_PAGES = null;
       return;
     }
+
+    // ★ 空权限 = 只能进「个人中心设置」（个人中心对所有账号强制开放，见 navigateTo）
+    perms = Array.isArray(perms) ? perms.slice() : [];
+    if (perms.indexOf('profile') < 0) perms.push('profile');
     _ALLOWED_PAGES = perms;
-    // 保存到 sessionStorage
     sessionStorage.setItem('admin_permissions', JSON.stringify(perms));
   }
 
@@ -5859,6 +5898,8 @@ const App = (() => {
     goToPage, filterTable,
     showToast, toggleSidebar,
     logout: handleLogout,
+    // ★ 账号列表权限判定（1/2/3 号角色才可查看与编辑）
+    isAccountManager: function () { return _CAN_MANAGE_ACCOUNTS; },
     // Admin & Permissions
     openAdminModal, editAdmin, deleteAdmin, toggleAdmin, togglePwdVis, openPwdModal,
     openRolePermModal, deleteRole, apToggleAllPerms,

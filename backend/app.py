@@ -1983,6 +1983,21 @@ def _require_auth():
     return None
 
 
+def _current_session():
+    """取当前请求的登录会话记录（无则返回 {}）"""
+    token = request.cookies.get('token', '')
+    return _AUTH_TOKENS.get(token) or {}
+
+
+# ★ 只有这三个角色能查看/编辑「账号列表」（开发人员 / 超级管理员 / 人事行政部）
+ACCOUNT_MANAGER_ROLES = {'开发人员', '超级管理员', '人事行政部'}
+
+
+def _can_manage_accounts(sess=None):
+    sess = sess if sess is not None else _current_session()
+    return (sess.get('role') or '') in ACCOUNT_MANAGER_ROLES
+
+
 # ======================== 管理员账户管理 ========================
 
 @app.route('/api/auth/login', methods=['POST'])
@@ -2133,11 +2148,32 @@ def admin_roles_delete(role_id):
 
 @app.route('/api/admin/accounts', methods=['GET'])
 def admin_list():
-    """管理员列表"""
+    """账号列表（可按部门=角色 或关键字筛选）
+
+    权限：仅 开发人员 / 超级管理员 / 人事行政部 可查看。
+    """
     try:
-        rows = db_execute(
-            'SELECT id, name, account, password, role, status, last_login, created_at FROM admin_accounts ORDER BY id'
-        )
+        sess = _current_session()
+        if not _can_manage_accounts(sess):
+            return fail('无权查看账号列表')
+
+        dept = (request.args.get('department') or '').strip()
+        kw = (request.args.get('keyword') or '').strip()
+
+        sql = ('SELECT id, name, account, password, role, status, last_login, created_at, '
+               'department, sub_dept, leader, avatar, gender FROM admin_accounts')
+        conds, params = [], []
+        if dept and dept not in ('全部', 'all'):
+            conds.append('role = %s')
+            params.append(dept)
+        if kw:
+            conds.append('(name LIKE %s OR account LIKE %s OR department LIKE %s)')
+            params.extend(['%' + kw + '%'] * 3)
+        if conds:
+            sql += ' WHERE ' + ' AND '.join(conds)
+        sql += ' ORDER BY id'
+
+        rows = db_execute(sql, params)
         admins = []
         for r in rows:
             admins.append({
@@ -2146,6 +2182,11 @@ def admin_list():
                 'account': r['account'],
                 'password': r['password'],
                 'role': r['role'],
+                'department': r.get('department') or '',
+                'subDept': r.get('sub_dept') or '',
+                'leader': r.get('leader') or '',
+                'avatar': r.get('avatar') or '',
+                'gender': r.get('gender') or '',
                 'status': r['status'],
                 'lastLogin': r['last_login'] or '',
                 'createdAt': str(r['created_at']) if r['created_at'] else '',
@@ -2157,14 +2198,20 @@ def admin_list():
 
 @app.route('/api/admin/accounts', methods=['POST'])
 def admin_create():
-    """新增管理员"""
+    """新增账号"""
     try:
+        if not _can_manage_accounts():
+            return fail('无权新增账号')
         data = request.get_json(force=True)
         name = data.get('name', '').strip()
         account = data.get('account', '').strip()
         password = data.get('password', '').strip()
-        role = data.get('role', '运营主管').strip()
+        role = data.get('role', '').strip()
         status = data.get('status', 'enabled').strip()
+        department = (data.get('department') or '').strip()
+        sub_dept = (data.get('subDept') or data.get('sub_dept') or '').strip()
+        leader = (data.get('leader') or '').strip()
+        gender = (data.get('gender') or '').strip()
 
         if not name or not account or not password:
             return fail('请填写完整信息')
@@ -2175,34 +2222,53 @@ def admin_create():
             return fail('账号已存在')
 
         new_id = db_execute_insert(
-            'INSERT INTO admin_accounts (name, account, password, role, status) VALUES (%s,%s,%s,%s,%s)',
-            [name, account, password, role, status]
+            'INSERT INTO admin_accounts '
+            '(name, account, password, role, status, department, sub_dept, leader, gender) '
+            'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+            [name, account, password, role, status, department, sub_dept, leader, gender]
         )
-        return success({'id': new_id}, '管理员已创建')
+        return success({'id': new_id}, '账号已创建')
     except Exception as e:
         return fail(str(e))
 
 
 @app.route('/api/admin/accounts/<int:aid>', methods=['PUT'])
 def admin_update(aid):
-    """更新管理员信息（姓名、密码、角色、状态）"""
+    """更新账号信息（姓名、账号、密码、角色、状态、部门、主管、性别）"""
     try:
+        if not _can_manage_accounts():
+            return fail('无权限修改账号')
         data = request.get_json(force=True)
         updates = []
         params = []
 
+        def _set(col, val):
+            updates.append(col + ' = %s')
+            params.append(val)
+
         if 'name' in data:
-            updates.append('name = %s')
-            params.append(data['name'].strip())
-        if 'password' in data and data['password'].strip():
-            updates.append('password = %s')
-            params.append(data['password'].strip())
+            _set('name', str(data['name']).strip())
+        if 'account' in data and str(data['account']).strip():
+            new_acc = str(data['account']).strip()
+            dup = db_execute('SELECT id FROM admin_accounts WHERE account = %s AND id <> %s',
+                             [new_acc, aid])
+            if dup:
+                return fail('该账号（手机号）已被占用')
+            _set('account', new_acc)
+        if 'password' in data and str(data['password']).strip():
+            _set('password', str(data['password']).strip())
         if 'role' in data:
-            updates.append('role = %s')
-            params.append(data['role'].strip())
+            _set('role', str(data['role']).strip())
         if 'status' in data:
-            updates.append('status = %s')
-            params.append(data['status'].strip())
+            _set('status', str(data['status']).strip())
+        if 'department' in data:
+            _set('department', str(data['department']).strip())
+        if 'subDept' in data or 'sub_dept' in data:
+            _set('sub_dept', str(data.get('subDept', data.get('sub_dept'))).strip())
+        if 'leader' in data:
+            _set('leader', str(data['leader']).strip())
+        if 'gender' in data:
+            _set('gender', str(data['gender']).strip())
 
         if not updates:
             return fail('没有要更新的数据')
@@ -2210,7 +2276,7 @@ def admin_update(aid):
         # 不允许修改 admin 账号的角色和状态（保护超级管理员）
         row = db_execute('SELECT account FROM admin_accounts WHERE id = %s', [aid])
         if not row:
-            return fail('管理员不存在')
+            return fail('账号不存在')
         if row[0]['account'] == 'admin':
             # admin 只能改自己的密码
             allowed = [u for u in updates if 'password' in u or 'name' in u]
@@ -2227,15 +2293,168 @@ def admin_update(aid):
 
 @app.route('/api/admin/accounts/<int:aid>', methods=['DELETE'])
 def admin_delete(aid):
-    """删除管理员"""
+    """删除账号"""
     try:
+        if not _can_manage_accounts():
+            return fail('无权限删除账号')
         row = db_execute('SELECT account FROM admin_accounts WHERE id = %s', [aid])
         if not row:
-            return fail('管理员不存在')
+            return fail('账号不存在')
         if row[0]['account'] == 'admin':
             return fail('不能删除超级管理员账号')
         db_execute('DELETE FROM admin_accounts WHERE id = %s', [aid], fetch=False)
         return success(None, '已删除')
+    except Exception as e:
+        return fail(str(e))
+
+
+# ======================== 个人中心（个人信息 / 修改密码 / 头像上传） ========================
+
+# 头像存放目录（线上：/opt/ecom/uploads/avatar）
+AVATAR_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'uploads', 'avatar')
+_ALLOWED_AVATAR_EXT = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
+
+
+def _profile_row(account):
+    """按登录账号取本人记录（含 password，供当前密码校验）"""
+    rows = db_execute(
+        'SELECT id, name, account, password, role, status, avatar, gender, department, '
+        'sub_dept, leader, created_at, last_login FROM admin_accounts WHERE account = %s',
+        [account])
+    return rows[0] if rows else None
+
+
+@app.route('/api/profile/me', methods=['GET'])
+def profile_me():
+    """当前登录者的个人资料"""
+    try:
+        sess = _current_session()
+        if not sess:
+            return fail('未登录')
+        a = _profile_row(sess.get('account'))
+        if not a:
+            return fail('账号不存在')
+        return success({
+            'id': a['id'],
+            'name': a['name'],
+            'account': a['account'],
+            'role': a['role'],
+            'avatar': a['avatar'] or '',
+            'gender': a['gender'] or '',
+            'department': a['department'] or '',
+            'subDept': a['sub_dept'] or '',
+            'leader': a['leader'] or '',
+            'status': a['status'],
+            'createdAt': str(a['created_at']) if a['created_at'] else '',
+            'lastLogin': a['last_login'] or '',
+        })
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/profile/update', methods=['POST'])
+def profile_update():
+    """更新个人信息
+
+    ★ 改手机号（=登录账号）必须带 current_password 且校验通过；
+      改完后 admin_accounts 就是账号列表读的同一张表，天然同步。
+    """
+    try:
+        sess = _current_session()
+        if not sess:
+            return fail('未登录')
+        a = _profile_row(sess.get('account'))
+        if not a:
+            return fail('账号不存在')
+        data = request.get_json(force=True) or {}
+
+        name = str(data.get('name', a['name'])).strip()
+        gender = str(data.get('gender', a['gender'] or '')).strip()
+        new_acc = str(data.get('account', a['account'])).strip() or a['account']
+        if not name:
+            return fail('姓名不能为空')
+
+        changed_account = (new_acc != a['account'])
+        if changed_account:
+            cur_pwd = str(data.get('current_password', '')).strip()
+            if not cur_pwd:
+                return fail('修改手机号需要先验证当前密码')
+            if cur_pwd != (a['password'] or ''):
+                return fail('当前密码不正确')
+            dup = db_execute('SELECT id FROM admin_accounts WHERE account = %s AND id <> %s',
+                             [new_acc, a['id']])
+            if dup:
+                return fail('该手机号已被其他账号使用')
+
+        db_execute('UPDATE admin_accounts SET name = %s, account = %s, gender = %s WHERE id = %s',
+                   [name, new_acc, gender, a['id']], fetch=False)
+
+        # 同步内存会话，避免改完手机号把自己踢下线
+        for rec in list(_AUTH_TOKENS.values()):
+            if rec.get('account') == a['account']:
+                rec['account'] = new_acc
+                rec['name'] = name
+
+        return success({'account': new_acc, 'name': name, 'gender': gender}, '个人信息已保存')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/profile/password', methods=['POST'])
+def profile_password():
+    """修改密码 — 当前密码校验不通过一律拒绝"""
+    try:
+        sess = _current_session()
+        if not sess:
+            return fail('未登录')
+        a = _profile_row(sess.get('account'))
+        if not a:
+            return fail('账号不存在')
+        data = request.get_json(force=True) or {}
+        cur_pwd = str(data.get('current_password', '')).strip()
+        new_pwd = str(data.get('new_password', '')).strip()
+
+        if not cur_pwd:
+            return fail('请输入当前密码')
+        if cur_pwd != (a['password'] or ''):
+            return fail('当前密码不正确')
+        if not new_pwd:
+            return fail('请输入新密码')
+        if len(new_pwd) < 6:
+            return fail('新密码至少 6 位')
+        if new_pwd == cur_pwd:
+            return fail('新密码不能与当前密码相同')
+
+        db_execute('UPDATE admin_accounts SET password = %s WHERE id = %s',
+                   [new_pwd, a['id']], fetch=False)
+        return success(None, '密码修改成功')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/profile/avatar', methods=['POST'])
+def profile_avatar():
+    """头像上传 — 落盘到 uploads/avatar/，库里只存相对路径"""
+    try:
+        sess = _current_session()
+        if not sess:
+            return fail('未登录')
+        a = _profile_row(sess.get('account'))
+        if not a:
+            return fail('账号不存在')
+        f = request.files.get('file')
+        if f is None or not f.filename:
+            return fail('未选择图片')
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext not in _ALLOWED_AVATAR_EXT:
+            return fail('只支持 png / jpg / jpeg / webp / gif 格式')
+        os.makedirs(AVATAR_DIR, exist_ok=True)
+        fname = 'u%d_%d%s' % (a['id'], int(time.time() * 1000), ext)
+        f.save(os.path.join(AVATAR_DIR, fname))
+        url = '/uploads/avatar/' + fname
+        db_execute('UPDATE admin_accounts SET avatar = %s WHERE id = %s',
+                   [url, a['id']], fetch=False)
+        return success({'avatar': url}, '头像已更新')
     except Exception as e:
         return fail(str(e))
 
@@ -4746,6 +4965,12 @@ def serve_css(filename):
 def serve_js(filename):
     """托管 JS 文件"""
     return send_from_directory(os.path.join(FRONTEND_DIR, 'js'), filename)
+
+
+@app.route('/uploads/avatar/<path:filename>')
+def serve_avatar(filename):
+    """托管头像文件（无需登录态，路径带随机串）"""
+    return send_from_directory(AVATAR_DIR, filename)
 
 
 # ======================== PaddleOCR 图片文字识别 ========================
