@@ -40,6 +40,7 @@
     ]},
     { group: '工具箱', pages: [
       { id: 'toolbox-violation-check', name: '违规词检测' },
+      { id: 'toolbox-announce', name: '通告发放' },
     ]},
     { group: '系统管理', pages: [
       { id: 'admin-permissions', name: '管理员与权限' },
