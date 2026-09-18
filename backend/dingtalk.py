@@ -94,21 +94,30 @@ class DingTalkClient:
 
     def upload_file(self, filename, content, content_type='application/pdf'):
         """上传文件到钉钉，返回 media_id（文件有效期 30 天，单文件上限 20MB）"""
+        return self._upload_media('file', filename, content, content_type)
+
+    def upload_image(self, filename, content, content_type='image/jpeg'):
+        """上传图片到钉钉，返回 media_id（仅支持 jpg/png，单图上限 10MB）"""
+        return self._upload_media('image', filename, content, content_type)
+
+    def _upload_media(self, media_type, filename, content, content_type):
+        """media/upload 公共实现（type=file / type=image）"""
         token = self.get_token()
         try:
             resp = requests.post(
                 _OAPI_BASE + '/media/upload',
-                params={'access_token': token, 'type': 'file'},
+                params={'access_token': token, 'type': media_type},
                 files={'media': (filename, content, content_type)},
                 timeout=120,
             )
             data = resp.json()
         except Exception as e:
-            raise DingTalkError('上传文件失败：%s' % e)
+            raise DingTalkError('上传%s失败：%s' % ('图片' if media_type == 'image' else '文件', e))
 
         media_id = data.get('media_id')
         if not media_id:
-            raise DingTalkError('上传文件失败：%s(%s)' % (data.get('errmsg'), data.get('errcode')))
+            raise DingTalkError('上传%s失败：%s(%s)' % ('图片' if media_type == 'image' else '文件',
+                                                      data.get('errmsg'), data.get('errcode')))
         return media_id
 
     def _robot_code_candidates(self):
@@ -189,6 +198,11 @@ class DingTalkClient:
         """发送纯文本消息（sampleText），用于连通性测试"""
         return self._oto_send(user_ids, 'sampleText', json.dumps({'content': content}, ensure_ascii=False))
 
+    def send_image(self, user_ids, media_id):
+        """发送图片消息（sampleImage，photoMediaId 为 upload_image 返回的 media_id）"""
+        param = {'photoMediaId': media_id}
+        return self._oto_send(user_ids, 'sampleImage', json.dumps(param, ensure_ascii=False))
+
     # ---------------- 通讯录 ----------------
 
     def get_userid_by_mobile(self, mobile):
@@ -223,3 +237,92 @@ class DingTalkClient:
         if not userid:
             raise DingTalkError('手机号 %s 未匹配到企业成员' % mobile)
         return userid
+
+    # ---------------- 组织架构（通讯录） ----------------
+    # 供「通告发放」读取钉钉部门树 + 成员列表使用。
+    # 需要应用开通「成员信息读权限」「部门信息读权限」（钉钉开放平台 → 权限管理）。
+
+    def list_sub_departments(self, parent_id=1):
+        """列出某部门的子部门（parent_id=1 为根部门），不递归"""
+        token = self.get_token()
+        try:
+            resp = requests.post(
+                _OAPI_BASE + '/topapi/v2/department/listsub',
+                params={'access_token': token},
+                json={'dept_id': int(parent_id)},
+                timeout=20,
+            )
+            data = resp.json()
+        except Exception as e:
+            raise DingTalkError('获取部门列表失败：%s' % e)
+        if data.get('errcode') != 0:
+            raise DingTalkError('获取部门列表失败：%s(%s)，请确认应用已开通「部门信息读权限」'
+                                % (data.get('errmsg'), data.get('errcode')))
+        return data.get('result') or []
+
+    def list_dept_users(self, dept_id, max_pages=50):
+        """分页拉取某部门下的成员（每页 100），返回 [{userid, name, ...}]"""
+        token = self.get_token()
+        users, cursor = [], 0
+        for _ in range(max_pages):
+            try:
+                resp = requests.post(
+                    _OAPI_BASE + '/topapi/v2/user/list',
+                    params={'access_token': token},
+                    json={'dept_id': int(dept_id), 'cursor': cursor, 'size': 100},
+                    timeout=20,
+                )
+                data = resp.json()
+            except Exception as e:
+                raise DingTalkError('获取部门成员失败：%s' % e)
+            if data.get('errcode') != 0:
+                raise DingTalkError('获取部门成员失败：%s(%s)，请确认应用已开通「成员信息读权限」'
+                                    % (data.get('errmsg'), data.get('errcode')))
+            result = data.get('result') or {}
+            users.extend(result.get('list') or [])
+            if not result.get('has_more'):
+                break
+            cursor = result.get('next_cursor') or 0
+        return users
+
+    def fetch_all_contacts(self):
+        """拉取整个组织架构：返回 (departments, users)
+
+        departments: [{deptId, name, parentId}]（含根节点 1）
+        users:       [{userid, name, deptIds:[...]}]（跨部门成员会去重）
+        """
+        departments = [{'deptId': 1, 'name': '全公司', 'parentId': 0}]
+        users, seen = [], set()
+
+        def _walk(parent):
+            subs = self.list_sub_departments(parent)
+            for d in subs:
+                departments.append({
+                    'deptId': d.get('dept_id'),
+                    'name': d.get('name') or '',
+                    'parentId': parent,
+                })
+            for d in subs:
+                _walk(d.get('dept_id'))
+
+        _walk(1)
+
+        for d in list(departments):
+            dept_id = d['deptId']
+            try:
+                raw = self.list_dept_users(dept_id)
+            except DingTalkError:
+                # 单个部门无权限/不存在不阻断整体
+                continue
+            for u in raw:
+                uid = u.get('userid')
+                if not uid or uid in seen:
+                    continue
+                seen.add(uid)
+                users.append({
+                    'userid': uid,
+                    'name': u.get('name') or '',
+                    'title': u.get('title') or '',
+                    'deptIds': [dept_id],
+                })
+        return departments, users

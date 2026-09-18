@@ -1023,6 +1023,7 @@ const App = (() => {
       'admin-permissions': '管理员与权限',
       profile: '个人中心设置',
       'toolbox-violation-check': '违规词检测',
+      'toolbox-announce': '通告发放',
       'order-details': '订单详情',
       'category-marketing': '品类营销数据',
       'seeding-monitor': '种草监测中台',
@@ -1043,6 +1044,7 @@ const App = (() => {
     // 判据用「-vue 挂载容器是否存在」：容器缺失时自动回退到旧渲染，不会白屏。
     const _VUE_PAGES = ['marketing-overview', 'platform-store', 'daily-analysis',
       'product-selection', 'admin-permissions', 'profile', 'toolbox-violation-check',
+      'toolbox-announce',
       'order-details', 'category-marketing', 'seeding-monitor'];
     const _skipLegacyRender = _VUE_PAGES.indexOf(page) >= 0
       && !!document.getElementById('page-' + page + '-vue');
@@ -2815,6 +2817,7 @@ const App = (() => {
     ]},
     { group: '工具箱', pages: [
       { id: 'toolbox-violation-check', name: '违规词检测' },
+      { id: 'toolbox-announce', name: '通告发放' },
     ]},
     { group: '系统管理', pages: [
       { id: 'admin-permissions', name: '管理员与权限' },
@@ -3410,6 +3413,7 @@ const App = (() => {
       'marketing-overview', 'platform-store',
       'store-account', 'operation-performance', 'product-selection', 'finance', 'hr',
       'admin-permissions', 'profile', 'daily-analysis', 'toolbox-violation-check', 'order-details', 'category-marketing',
+      'toolbox-announce',
       'seeding-monitor',
       'data-import',
     ];

@@ -4188,7 +4188,391 @@ def push_now():
         return fail(str(e))
 
 
-# ======================== 种草监测中台 ========================
+# ======================== 工具箱 · 通告发放 ========================
+# 需求：通告内容支持 文本 / 图片（可粘贴）/ 办公文件，通过钉钉机器人单聊发送；
+#       接收人支持 网站账号列表 / 网站部门 / 钉钉组织架构 / 钉钉联系人（姓名匹配）。
+# ★ 凭证配置完全独立（announce_config 表），在本页面「发送设置」里维护，
+#   不复用「每日数据分析 → 钉钉推送」的 dingtalk_push_config，互不影响。
+#
+# 接口：
+#   GET  /api/announce/options             网站账号列表 + 部门 + 已维护的钉钉推送人
+#   GET  /api/announce/dingtalk/contacts   同步钉钉组织架构（部门树 + 成员，含缓存）
+#   POST /api/announce/send                发送通告（multipart：payload JSON + files 附件）
+#   GET  /api/announce/config              读取本页钉钉应用凭证（secret 掩码）
+#   POST /api/announce/config              保存本页钉钉应用凭证
+#   POST /api/announce/config/test         连通性测试（取 token / 可选发测试消息）
+
+# 钉钉组织架构缓存（同步一次全量较慢，10 分钟内复用）
+_ANNOUNCE_CONTACTS_CACHE = {'ts': 0.0, 'departments': [], 'users': []}
+_ANNOUNCE_CONTACTS_TTL = 600
+# 钉钉单条 markdown 消息安全长度（超长自动分段发送）
+_ANNOUNCE_MD_CHUNK = 1800
+# 单个附件上限（media/upload 的硬限制：图片 10MB / 文件 20MB）
+_ANNOUNCE_IMG_MAX = 10 * 1024 * 1024
+_ANNOUNCE_FILE_MAX = 20 * 1024 * 1024
+# 通告发放独立配置（与「钉钉推送」的 dingtalk_push_config 完全隔离）
+_ANNOUNCE_CFG_DEFAULTS = {
+    'app_key': '',
+    'app_secret': '',
+    'robot_code': '',
+    'agent_id': '',
+}
+
+
+def _announce_ensure_table():
+    """建表：通告发放独立配置 + 发送记录（模块导入时执行，gunicorn 下也生效）"""
+    try:
+        db_execute("""
+            CREATE TABLE IF NOT EXISTS announce_config (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                cfg_key VARCHAR(64) NOT NULL UNIQUE,
+                cfg_value TEXT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """, fetch=False)
+        db_execute("""
+            CREATE TABLE IF NOT EXISTS announce_logs (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                send_date DATE,
+                status VARCHAR(20) DEFAULT '',
+                total INT DEFAULT 0,
+                ok_count INT DEFAULT 0,
+                detail TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """, fetch=False)
+        print('[通告发放] 数据表就绪（announce_config / announce_logs，独立于钉钉推送）')
+    except Exception as e:
+        print('[通告发放] 建表失败: %s' % e)
+
+
+def _announce_config():
+    """读取通告发放自己的钉钉配置（缺失项回落空值）"""
+    cfg = dict(_ANNOUNCE_CFG_DEFAULTS)
+    try:
+        rows = db_execute('SELECT cfg_key, cfg_value FROM announce_config') or []
+        for r in rows:
+            k = r.get('cfg_key')
+            if k in cfg and r.get('cfg_value') is not None:
+                cfg[k] = r.get('cfg_value')
+    except Exception as e:
+        print('[通告发放] 读取配置失败: %s' % e)
+    return cfg
+
+
+def _announce_config_save(items):
+    """保存通告发放配置，返回 (ok, msg)"""
+    if not items:
+        return True, ''
+    try:
+        for k, v in items.items():
+            db_execute(
+                'INSERT INTO announce_config (cfg_key, cfg_value) VALUES (%s, %s) '
+                'ON DUPLICATE KEY UPDATE cfg_value = VALUES(cfg_value)',
+                [k, '' if v is None else str(v)], fetch=False)
+        return True, ''
+    except Exception as e:
+        return False, str(e)
+
+
+def _announce_client(cfg=None):
+    """构造通告发放专用的钉钉客户端；凭证不全时抛 DingTalkError"""
+    if DingTalkClient is None:
+        raise DingTalkError('钉钉模块未加载（backend/dingtalk.py 缺失或依赖异常）')
+    cfg = cfg or _announce_config()
+    if not (cfg.get('app_key') or '').strip():
+        raise DingTalkError('未配置 Client ID，请先在「通告发放 → 发送设置」里填写')
+    if not (cfg.get('app_secret') or '').strip():
+        raise DingTalkError('未配置 Client Secret，请先在「通告发放 → 发送设置」里填写')
+    return DingTalkClient(cfg.get('app_key'), cfg.get('app_secret'),
+                          cfg.get('robot_code'), cfg.get('agent_id'))
+
+
+def _announce_apply_robot_code(cfg, robot_code):
+    """机器人接口实际生效的 robotCode 与配置不一致时回写 announce_config"""
+    robot_code = (robot_code or '').strip()
+    if not robot_code or robot_code == (cfg.get('robot_code') or '').strip():
+        return
+    ok, _ = _announce_config_save({'robot_code': robot_code})
+    if ok:
+        cfg['robot_code'] = robot_code
+        print('[通告发放] robotCode 已自动记录为 %s' % robot_code)
+
+
+def _announce_contacts(force=False):
+    """读取钉钉组织架构（带缓存）；失败抛 DingTalkError（含可展示原因）"""
+    now = time.time()
+    if (not force and _ANNOUNCE_CONTACTS_CACHE['users']
+            and now - _ANNOUNCE_CONTACTS_CACHE['ts'] < _ANNOUNCE_CONTACTS_TTL):
+        return _ANNOUNCE_CONTACTS_CACHE
+    client = _announce_client()
+    departments, users = client.fetch_all_contacts()
+    _ANNOUNCE_CONTACTS_CACHE.update(ts=now, departments=departments, users=users)
+    return _ANNOUNCE_CONTACTS_CACHE
+
+
+def _announce_match_by_name(name):
+    """按姓名在钉钉组织架构中匹配 userid，返回 [userid...]；组织架构不可用时抛 DingTalkError"""
+    cache = _announce_contacts()
+    return [u['userid'] for u in cache['users'] if u.get('name') == name]
+
+
+def _announce_resolve_recipient(client, r):
+    """把前端传来的接收人解析成钉钉 userid 列表，返回 (user_ids, err_msg)"""
+    name = (r.get('name') or '').strip()
+    user_id = (r.get('userId') or '').strip()
+    mobile = (r.get('mobile') or '').strip()
+
+    if user_id:
+        return [user_id], ''
+    if mobile:
+        try:
+            return [client.get_userid_by_mobile(mobile)], ''
+        except DingTalkError as e:
+            return [], str(e)
+    if not name:
+        return [], '姓名 / 手机号 / userId 均为空，无法匹配'
+
+    # 钉钉组织架构按姓名匹配（重名会全部命中，由发送明细区分）
+    try:
+        hits = _announce_match_by_name(name)
+    except DingTalkError as e:
+        return [], '无法通过姓名匹配：%s' % e
+    if hits:
+        return hits, ''
+    return [], '未找到姓名为「%s」的钉钉成员（可先在「钉钉组织架构 / 钉钉联系人」页签同步）' % name
+
+
+@app.route('/api/announce/options', methods=['GET'])
+def announce_options():
+    """通告发放的可选数据源：网站账号（按部门聚合）+ 本页钉钉配置状态"""
+    try:
+        rows = db_execute('SELECT id, name, account, role, status, department, sub_dept '
+                          'FROM admin_accounts ORDER BY department, id') or []
+        accounts = []
+        departments = []
+        dept_set = set()
+        for r in rows:
+            dept = (r.get('department') or '').strip()
+            if dept and dept not in dept_set:
+                dept_set.add(dept)
+                departments.append(dept)
+            accounts.append({
+                'id': r['id'], 'name': r['name'], 'account': r['account'],
+                'role': r.get('role') or '', 'department': dept,
+                'subDept': r.get('sub_dept') or '', 'status': r.get('status') or '',
+            })
+        cfg = _announce_config()
+        return success({'accounts': accounts, 'departments': departments,
+                        'configReady': bool((cfg.get('app_key') or '').strip()
+                                            and (cfg.get('app_secret') or '').strip())})
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/announce/dingtalk/contacts', methods=['GET'])
+def announce_dingtalk_contacts():
+    """同步钉钉组织架构到前端（部门树 + 成员列表）
+
+    失败时明确返回「不能实现该功能」+ 原因（凭证缺失 / 无通讯录权限等）。
+    """
+    try:
+        cache = _announce_contacts(force=True)
+        return success({
+            'departments': cache['departments'],
+            'users': [{'userid': u['userid'], 'name': u.get('name') or '',
+                       'title': u.get('title') or '', 'deptIds': u.get('deptIds') or []}
+                      for u in cache['users']],
+            'syncedAt': time.strftime('%Y-%m-%d %H:%M:%S'),
+        })
+    except DingTalkError as e:
+        return fail('不能实现该功能：无法读取钉钉组织架构 —— %s' % e)
+    except Exception as e:
+        return fail('不能实现该功能：无法读取钉钉组织架构 —— %s' % e)
+
+
+@app.route('/api/announce/send', methods=['POST'])
+def announce_send():
+    """发送通告：multipart 表单（payload=JSON 字符串 + files=附件）
+
+    payload: { title, text, recipients: [{source, name, userId, mobile}] }
+    附件按 content-type 自动区分图片（sampleImage）与文件（sampleFile）。
+    """
+    try:
+        try:
+            payload = json.loads(request.form.get('payload') or '{}')
+        except Exception:
+            return fail('请求数据格式不正确（payload 解析失败）')
+
+        title = (payload.get('title') or '').strip()
+        text = (payload.get('text') or '').strip()
+        recipients = payload.get('recipients') or []
+        files = request.files.getlist('files')
+
+        if not title and not text and not files:
+            return fail('通告内容为空：请填写文字、粘贴图片或添加附件')
+        if not recipients:
+            return fail('请先选择接收人')
+        for f in files:
+            if f.filename and f.content_type and f.content_type.startswith('image/') \
+                    and f.content_length and f.content_length > _ANNOUNCE_IMG_MAX:
+                return fail('图片「%s」超过 10MB 上限，请压缩后再发' % f.filename)
+            elif f.content_length and f.content_length > _ANNOUNCE_FILE_MAX:
+                return fail('附件「%s」超过 20MB 上限，请拆分后再发' % f.filename)
+
+        client = _announce_client()
+        cfg = _announce_config()
+
+        # ---- 解析接收人 → 钉钉 userid ----
+        resolved, resolve_fails = {}, []
+        for r in recipients:
+            ids, err = _announce_resolve_recipient(client, r)
+            if err:
+                resolve_fails.append('%s：%s' % (r.get('name') or r.get('userId') or '(未命名)', err))
+            for uid in ids:
+                resolved.setdefault(uid, (r.get('name') or uid))
+        user_ids = list(resolved.keys())
+        if not user_ids:
+            return fail('所有接收人均无法匹配钉钉账号 —— ' + '；'.join(resolve_fails))
+
+        # ---- 附件分类 ----
+        images, docs = [], []
+        for f in files:
+            fname = f.filename or ('附件_%d' % (len(images) + len(docs) + 1))
+            ct = (f.content_type or '').lower()
+            content = f.read()
+            if ct.startswith('image/'):
+                images.append((fname, content, ct))
+            else:
+                docs.append((fname, content, ct))
+
+        # ---- 组装文本消息（markdown，超长分段）----
+        body = (('### %s\n\n' % title) if title else '') + text
+        chunks = [body[i:i + _ANNOUNCE_MD_CHUNK] for i in range(0, len(body), _ANNOUNCE_MD_CHUNK)] \
+            if body else []
+
+        invalid_users, send_ok, send_details = set(), 0, []
+
+        def _send_one(desc, fn):
+            """执行一次批量发送并统计，返回是否全部成功"""
+            nonlocal send_ok
+            try:
+                result = fn()
+                bad = (result or {}).get('invalidStaffIdList') or []
+                if bad:
+                    for uid in bad:
+                        invalid_users.add(uid)
+                        send_details.append('%s：成员 %s 不在机器人应用可见范围内'
+                                            % (desc, resolved.get(uid, uid)))
+                    return False
+                _announce_apply_robot_code(cfg, (result or {}).get('robotCode'))
+                send_ok += 1
+                return True
+            except Exception as e:
+                send_details.append('%s：发送失败 - %s' % (desc, e))
+                return False
+
+        all_ok = True
+        for idx, chunk in enumerate(chunks):
+            label = '文字内容' + ('(第%d段)' % (idx + 1) if len(chunks) > 1 else '')
+            all_ok = _send_one(label, lambda c=chunk: client.send_markdown(
+                user_ids, title or '通告发放', c)) and all_ok
+        for fname, content, ct in images:
+            all_ok = _send_one('图片「%s」' % fname, (lambda fn=fname, co=content, t=ct: client.send_image(
+                user_ids, client.upload_image(fn, co, t or 'image/jpeg')))) and all_ok
+        for fname, content, ct in docs:
+            all_ok = _send_one('附件「%s」' % fname, (lambda fn=fname, co=content, t=ct: client.send_file(
+                user_ids, client.upload_file(fn, co, t or 'application/octet-stream'), fn))) and all_ok
+
+        status = 'success' if (all_ok and not invalid_users and not resolve_fails) else (
+            'partial' if send_ok else 'fail')
+        detail = '；'.join(resolve_fails + send_details) or (
+            '已发送给 %d 位成员' % len(user_ids))
+        try:
+            db_execute(
+                'INSERT INTO announce_logs (send_date, status, total, ok_count, detail) '
+                'VALUES (%s, %s, %s, %s, %s)',
+                [date.today(), status, len(user_ids) + len(resolve_fails),
+                 len(user_ids) - len(invalid_users), detail], fetch=False)
+        except Exception:
+            pass
+
+        result = {
+            'totalUsers': len(user_ids), 'okUsers': len(user_ids) - len(invalid_users),
+            'resolveFails': resolve_fails, 'sendDetails': send_details,
+            'status': status,
+        }
+        if status == 'fail':
+            return fail('通告发送失败：' + detail, code=1)
+        return success(result, '通告已发送给 %d/%d 位成员' % (result['okUsers'], result['totalUsers']))
+    except DingTalkError as e:
+        return fail(str(e))
+    except Exception as e:
+        traceback.print_exc()
+        return fail(str(e))
+
+
+@app.route('/api/announce/config', methods=['GET'])
+def announce_config_get():
+    """读取通告发放自己的钉钉应用凭证（secret 掩码，不回传明文）"""
+    try:
+        _announce_ensure_table()
+        cfg = _announce_config()
+        return success({
+            'appKey': cfg.get('app_key', ''),
+            'appSecret': _PUSH_SECRET_MASK if cfg.get('app_secret') else '',
+            'hasAppSecret': bool(cfg.get('app_secret')),
+            'robotCode': cfg.get('robot_code', ''),
+            'agentId': cfg.get('agent_id', ''),
+        })
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/announce/config', methods=['POST'])
+def announce_config_save():
+    """保存通告发放自己的钉钉应用凭证（secret 回传掩码时保持原值不变）"""
+    try:
+        _announce_ensure_table()
+        d = request.get_json(force=True) or {}
+        items = {}
+        if 'appKey' in d:
+            items['app_key'] = (d.get('appKey') or '').strip()
+        if 'appSecret' in d:
+            v = (d.get('appSecret') or '').strip()
+            if v and v != _PUSH_SECRET_MASK:
+                items['app_secret'] = v
+        if 'robotCode' in d:
+            items['robot_code'] = (d.get('robotCode') or '').strip()
+        if 'agentId' in d:
+            items['agent_id'] = (d.get('agentId') or '').strip()
+        ok, msg = _announce_config_save(items)
+        if not ok:
+            return fail(msg)
+        return success(None, '发送设置已保存')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/announce/config/test', methods=['POST'])
+def announce_config_test():
+    """连通性测试：验证凭证可换取 accessToken；传入 userId 时补发一条测试消息"""
+    try:
+        client = _announce_client()
+        client.get_token(force=True)
+        sent = False
+        user_id = ((request.get_json(silent=True) or {}).get('userId') or '').strip()
+        if user_id:
+            client.send_text([user_id], '【测试】「通告发放」钉钉通道连通正常。')
+            sent = True
+        return success({'tokenOk': True, 'testSent': sent},
+                       '凭证有效，可正常获取 accessToken' if not sent else '凭证有效，测试消息已发送')
+    except DingTalkError as e:
+        return fail(str(e))
+    except Exception as e:
+        return fail(str(e))
+
+
 
 _SEEDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools')
 _SEEDING_ACCOUNTS_FILE = os.path.join(_SEEDING_DIR, 'seeding_accounts.json')
@@ -8702,6 +9086,8 @@ _seeding_auto_thread.start()
 # ======================== 每日分析报告 → 钉钉推送 ========================
 # 建表放这里（模块导入即执行）：线上用 gunicorn 启动不会跑 __main__ 里的建表逻辑
 _push_ensure_tables()
+# 通告发放独立配置表（独立于钉钉推送的 dingtalk_push_config）
+_announce_ensure_table()
 # 种草专有表：推送人名单 / 爆文库 / 优化建议（同样必须在导入阶段建好）
 _seeding_ensure_tables()
 
