@@ -152,25 +152,27 @@ def handle_one():
 
 
 def selftest():
-    """只测连通性 + 密钥，不执行任何登录动作"""
+    """只测连通性 + 密钥，不执行任何登录动作
+
+    ⚠ 别拿 /slider/status 当探针：那是页面接口、要求浏览器登录态，助手调它必然 401。
+      助手只关心 /slider/pending（带 X-Slider-Key），顺带会上报心跳。
+    """
     log('连通性自检 → %s' % API_BASE)
-    try:
-        r = _req('/api/fetch/doudian/slider/status', timeout=10)
-        log('  status 接口 OK：code=%s' % r.get('code'))
-    except Exception as e:
-        log('  ! status 接口失败：%s' % e)
-        return 1
     try:
         r = _req('/api/fetch/doudian/slider/pending?host=%s&pid=%s'
                  % (quote(HOSTNAME), os.getpid()), timeout=10)
-        log('  pending 接口 OK（密钥有效）：code=%s' % r.get('code'))
+        log('  pending 接口 OK：code=%s，密钥正确' % r.get('code'))
+        log('  已顺带上报心跳 —— 后台页面现在应显示「本机助手在线」')
     except urllib.error.HTTPError as e:
-        log('  ! pending 返回 HTTP %s —— 密钥不匹配（检查 SLIDER_AGENT_KEY）' % e.code)
-        return 2
+        if e.code == 403:
+            log('  ! 返回 403 —— 密钥不匹配（对照 backend/app.py 的 _SLIDER_KEY）')
+            return 2
+        log('  ! 返回 HTTP %s' % e.code)
+        return 1
     except Exception as e:
-        log('  ! pending 失败：%s' % e)
-        return 3
-    log('自检通过：助手能连上后台，密钥正确。')
+        log('  ! 连不上后台：%s' % e)
+        return 1
+    log('自检通过：助手能连上后台、密钥正确。')
     return 0
 
 

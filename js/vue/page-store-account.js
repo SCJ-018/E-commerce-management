@@ -687,7 +687,7 @@
 
         <div v-if="sa.slider && !sa.slider.agentOnline" class="sa-slider-warn">
           <i class="fa-solid fa-triangle-exclamation"></i>
-          本机滑块助手没在运行 —— 请先在本机双击「<strong>启动滑块助手.bat</strong>」（保持窗口开着），再点下方「重试」。
+          本机滑块助手没在运行 —— 请先在本机双击「<strong>启动滑块助手.bat</strong>」（保持窗口开着），助手启动后会自动领走这个任务。
         </div>
 
         <div class="sa-slider-tip">
