@@ -58,6 +58,13 @@
     view: 'form', job: null, submitting: false, fetchReady: true, fetchErr: '',
     // 每日抓取对账记录（抓取程序跑完与账号列表对照的结果）
     recon: [], reconLoading: false,
+    // 抖店「手动拖滑块」：任务只能在本机执行（服务器没窗口能拖），
+    // 页面只负责下发任务 + 轮询回显，执行端是 tools/doudian_crawler/slider_agent.py
+    slider: null, sliderOpen: false, sliderBusy: false, sliderErr: '',
+    // 抖店邮箱账号表的登录态时效（徽章 + 「是不是该去拖滑块了」）
+    loginState: null,
+    // 「更新数据」被登录态时效拦下时置 true，用于在错误提示旁挂「去拖滑块」按钮
+    fetchErrSlider: false,
   });
 
   // 轮询定时器（非响应式，避免被 Vue 代理）
@@ -74,6 +81,10 @@
   var _pollBusy = false;
   var _pollStartAt = 0;
   var POLL_TIMEOUT_MS = 15000;
+
+  // 滑块任务轮询：同样是 3 秒一拍，同样带 in-flight 守卫（理由同上）
+  var _sliderTimer = null;
+  var _sliderPollBusy = false;
 
   // 日期选择器的原生 input 引用（用于 showPicker 强制弹出日历）
   var upStartInput = Vue.ref(null);
@@ -138,6 +149,50 @@
         });
       });
 
+      // ---- 抖店「手动拖滑块」：状态文案 / 徽章 / 是否可重试 ----
+      // 把后端返回的 status 映射成人话 + 图标（服务器只负责记任务，执行在本机）
+      var SLIDER_TEXT = {
+        idle: { icon: 'fa-circle-info', title: '尚未下发任务', desc: '稍等，正在获取当前状态…' },
+        pending: { icon: 'fa-paper-plane', title: '任务已下发', desc: '正在等待本机滑块助手领取…' },
+        claimed: { icon: 'fa-spinner fa-spin', title: '本机助手已领取', desc: '正在打开本机 Chrome…' },
+        running: { icon: 'fa-hand-pointer', title: '请拖动滑块', desc: '本机 Chrome 已打开 —— 完成邮箱登录、把拼图滑块拖过去即可。登录态会自动上传，无需其他操作。' },
+        done: { icon: 'fa-circle-check', title: '登录态已更新', desc: '已上传到服务器云库。请立刻去点「更新数据」（有效期约 40 分钟）。' },
+        fail: { icon: 'fa-circle-exclamation', title: '本机登录未完成', desc: '请查看本机助手窗口里的日志，然后点「重试」。' },
+        timeout: { icon: 'fa-clock', title: '等待超时', desc: '任务超过 10 分钟没有完成。请确认本机助手在运行，然后点「重试」。' },
+      };
+      var SLIDER_BUSY_ST = ['pending', 'claimed', 'running'];
+
+      // ★ 这几个是 setup 的顶层绑定，模板里必须裸写（sliderInfo.title），
+      //   不能写成 state.sliderInfo.title —— 那样取到 undefined、绑定静默失效。
+      var sliderStatus = Vue.computed(function () {
+        return (_sa.slider && _sa.slider.status) || 'idle';
+      });
+      var sliderInfo = Vue.computed(function () {
+        return SLIDER_TEXT[sliderStatus.value] || SLIDER_TEXT.idle;
+      });
+      var canRetrySlider = Vue.computed(function () {
+        return SLIDER_BUSY_ST.indexOf(sliderStatus.value) < 0;
+      });
+      // 登录邮箱徽章：把「上次保存登录态过去多久」翻译成「现在能不能抓」
+      var loginBadge = Vue.computed(function () {
+        var l = _sa.loginState;
+        if (!l) return { text: '登录态检测中…', cls: 'sa-login-unknown', tip: '' };
+        if (!l.hasState) {
+          return { text: '从未登录', cls: 'sa-login-bad',
+                   tip: '抖店从未保存过登录态，抓取必然失败，请先拖一次滑块' };
+        }
+        var age = l.ageMinutes;
+        if (age === null || age === undefined) age = 0;
+        if (l.expired) {
+          return { text: '已过期 ' + age + ' 分钟', cls: 'sa-login-bad',
+                   tip: '实测寿命约 40 分钟，已超过预检阈值 ' + l.maxMinutes + ' 分钟，抓取会被服务器拦下' };
+        }
+        var left = l.maxMinutes - age;
+        return { text: '有效 · 剩余约 ' + left + ' 分钟',
+                 cls: left <= 8 ? 'sa-login-warn' : 'sa-login-ok',
+                 tip: '最后更新：' + (l.updatedAt || '') };
+      });
+
       async function loadAll() {
         _sa.loading = true;
         var parts = await Promise.all([
@@ -171,6 +226,7 @@
         loadAll();
         loadFetchStatus();
         loadRecon();
+        loadSliderStatus();   // 登录邮箱徽章（登录态还剩多久）
         // 刷新页面后若已有任务在跑，自动接回进度
         ApiService.getFetchLatestJob().then(function (j) {
           if (j && j.status === 'running') {
@@ -182,7 +238,7 @@
         });
       });
 
-      Vue.onUnmounted(function () { stopPoll(); });
+      Vue.onUnmounted(function () { stopPoll(); stopSliderPoll(); });
 
       // ---------------- 抓取任务轮询 ----------------
       function stopPoll() {
@@ -222,6 +278,65 @@
         if (!_sa.job || !_sa.job.jobId) return;
         var r = await ApiService.stopFetch(_sa.job.jobId);
         App.showToast((r && r.ok) ? '已请求停止' : ((r && r.msg) || '操作失败'), (r && r.ok) ? 'info' : 'error');
+      }
+
+      // ---------------- 抖店「手动拖滑块」----------------
+      // 服务器是 IDC IP + Xvfb 虚拟屏：过不了拼图滑块，也没有窗口能让人拖。
+      // 所以后台按钮只做两件事：下发任务 + 轮询回显；浏览器弹在**本机**。
+      function stopSliderPoll() {
+        if (_sliderTimer) { clearInterval(_sliderTimer); _sliderTimer = null; }
+        _sliderPollBusy = false;
+      }
+      function startSliderPoll() {
+        stopSliderPoll();
+        _sliderTimer = setInterval(pollSlider, 3000);
+      }
+      async function loadSliderStatus() {
+        var r = await ApiService.getDoudianSliderStatus();
+        if (!r) return null;
+        _sa.slider = r;
+        if (r.login) _sa.loginState = r.login;
+        return r;
+      }
+      async function pollSlider() {
+        if (_sliderPollBusy) return;          // 上一发没回来就跳过这一拍（同抓取轮询）
+        _sliderPollBusy = true;
+        var r = null;
+        try { r = await ApiService.getDoudianSliderStatus(); }
+        finally { _sliderPollBusy = false; }
+        if (!r) return;
+        _sa.slider = r;
+        if (r.login) _sa.loginState = r.login;
+        if (SLIDER_BUSY_ST.indexOf(r.status) < 0) {
+          stopSliderPoll();
+          if (r.status === 'done') App.showToast('抖店登录态已更新，可以点「更新数据」了', 'success');
+        }
+      }
+      // 点「手动拖滑块」= 下发任务 + 打开进度界面
+      async function openSlider() {
+        _sa.sliderErr = '';
+        _sa.sliderOpen = true;
+        await requestSlider();
+      }
+      async function requestSlider() {
+        if (_sa.sliderBusy) return;
+        _sa.sliderBusy = true;
+        _sa.sliderErr = '';
+        var r = await ApiService.requestDoudianSlider();
+        _sa.sliderBusy = false;
+        if (!r || !r.ok) {
+          _sa.sliderErr = (r && r.msg) || '下发滑块任务失败，请重试';
+          return;
+        }
+        _sa.slider = r.data;
+        if (r.data && r.data.login) _sa.loginState = r.data.login;
+        startSliderPoll();
+      }
+      function closeSlider() { _sa.sliderOpen = false; }
+      // 「更新数据」被登录态时效拦下 → 关掉该弹窗，直接进滑块界面
+      function goSlider() {
+        _sa.showUpdate = false;
+        openSlider();
       }
 
       function switchTab(t) { _sa.tab = t; _sa.search = ''; }
@@ -324,10 +439,13 @@
         if (!_sa.fetchReady) { App.showToast('本机未找到抓取程序（/opt/pw），无法触发', 'error'); return; }
         _sa.submitting = true;
         _sa.fetchErr = '';
+        _sa.fetchErrSlider = false;
         var r = await ApiService.triggerFetch(buildTriggerPayload());
         _sa.submitting = false;
         if (!r || !r.ok) {
           _sa.fetchErr = (r && r.msg) || '触发失败，请重试';
+          // 抖店登录态过期：后端带 sliderNeeded 标记 → 在错误提示旁挂「去拖滑块」按钮
+          _sa.fetchErrSlider = !!(r && r.data && r.data.sliderNeeded);
           App.showToast(_sa.fetchErr, 'error');
           return;
         }
@@ -392,6 +510,11 @@
         selectAll: selectAll, clearAll: clearAll, selectGroup: selectGroup,
         openUpdate: openUpdate, submitUpdate: submitUpdate, closeUpdate: closeUpdate,
         pickDate: pickDate, unlockInput: unlockInput,
+        // 抖店「手动拖滑块」：这几个 computed 是顶层绑定，模板里裸写
+        openSlider: openSlider, requestSlider: requestSlider, closeSlider: closeSlider,
+        goSlider: goSlider, loadSliderStatus: loadSliderStatus,
+        sliderStatus: sliderStatus, sliderInfo: sliderInfo,
+        canRetrySlider: canRetrySlider, loginBadge: loginBadge,
         upStartInput: upStartInput, upEndInput: upEndInput,
         tabClass: tabClass, tabStyle: tabStyle, tabIcoStyle: tabIcoStyle, activeText: activeText,
         // 抓取任务 / 对账
@@ -431,8 +554,11 @@
 
   <div v-if="sa.tab === 'doudian'" class="sa-email-panel">
     <div class="sa-email-head">
-      <div><i class="fa-solid fa-envelope" style="color:#6366f1"></i> <strong>抖店登录邮箱</strong><span style="color:#94a3b8;font-size:12px;margin-left:8px">邮箱登录后逐个切换店铺抓取</span></div>
-      <button class="ap-btn-sm edit" @click="openCreate('doudian-email')"><i class="fa-solid fa-plus"></i> 新增邮箱</button>
+      <div><i class="fa-solid fa-envelope" style="color:#6366f1"></i> <strong>抖店登录邮箱</strong><span style="color:#94a3b8;font-size:12px;margin-left:8px">邮箱登录后逐个切换店铺抓取</span><span class="sa-login-badge" :class="loginBadge.cls" :title="loginBadge.tip">{{ loginBadge.text }}</span></div>
+      <div class="sa-email-actions">
+        <button class="ap-btn-sm slider" @click="openSlider"><i class="fa-solid fa-hand-pointer"></i> 手动拖滑块</button>
+        <button class="ap-btn-sm edit" @click="openCreate('doudian-email')"><i class="fa-solid fa-plus"></i> 新增邮箱</button>
+      </div>
     </div>
     <table class="ap-table">
       <thead><tr><th style="width:220px">邮箱</th><th style="width:160px">密码</th><th style="width:90px">状态</th><th style="width:80px">操作</th></tr></thead>
@@ -536,6 +662,56 @@
     </table>
   </div>
 
+  <div v-if="sa.sliderOpen" class="sa-modal-mask" @click.self="closeSlider">
+    <div class="sa-modal" style="max-width:580px">
+      <div class="sa-up-head">
+        <div class="sa-up-title">
+          <span class="sa-up-ico"><i class="fa-solid fa-hand-pointer"></i></span>
+          <div><strong>手动拖滑块</strong><span class="sa-up-sub">浏览器弹在你自己的电脑上 —— 服务器上没有窗口能拖</span></div>
+        </div>
+        <button type="button" class="sa-modal-close" @click="closeSlider"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="sa-modal-body">
+        <div class="sa-slider-state" :class="'st-' + sliderStatus">
+          <span class="sa-slider-ico"><i class="fa-solid" :class="sliderInfo.icon"></i></span>
+          <div class="sa-slider-txt">
+            <div class="sa-slider-title">{{ sliderInfo.title }}</div>
+            <div class="sa-slider-desc">{{ sliderInfo.desc }}</div>
+            <div class="sa-slider-meta">
+              <span v-if="sa.slider && sa.slider.requestedAt">下发：{{ sa.slider.requestedAt }}</span>
+              <span v-if="sa.slider && sa.slider.finishedAt">完成：{{ sa.slider.finishedAt }}</span>
+              <span v-if="sa.slider && sa.slider.message">{{ sa.slider.message }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="sa.slider && !sa.slider.agentOnline" class="sa-slider-warn">
+          <i class="fa-solid fa-triangle-exclamation"></i>
+          本机滑块助手没在运行 —— 请先在本机双击「<strong>启动滑块助手.bat</strong>」（保持窗口开着），再点下方「重试」。
+        </div>
+
+        <div class="sa-slider-tip">
+          <i class="fa-solid fa-circle-info"></i>
+          流程：下发任务 → 本机自动弹出 Chrome → 你完成邮箱登录并把拼图滑块拖过去 → 登录态自动上传服务器。有效期约 40 分钟，传完请尽快点「更新数据」。
+        </div>
+
+        <div class="sa-slider-login" v-if="sa.loginState">
+          <i class="fa-solid fa-clock-rotate-left"></i> 当前登录态：<strong :class="loginBadge.cls">{{ loginBadge.text }}</strong>
+          <span v-if="sa.loginState && sa.loginState.email" style="color:#94a3b8;margin-left:6px">（{{ sa.loginState.email }}）</span>
+        </div>
+
+        <div v-if="sa.sliderErr" class="sa-up-err"><i class="fa-solid fa-circle-exclamation"></i> {{ sa.sliderErr }}</div>
+      </div>
+      <div class="sa-modal-foot">
+        <button v-if="canRetrySlider" class="ap-btn-primary sa-btn-update" :disabled="sa.sliderBusy" @click="requestSlider">
+          <i class="fa-solid" :class="sa.sliderBusy ? 'fa-spinner fa-spin' : 'fa-rotate-right'"></i>
+          {{ sa.sliderBusy ? '下发中…' : (sliderStatus === 'idle' ? '下发任务' : '重试') }}
+        </button>
+        <button class="ap-btn-plain" @click="closeSlider">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <div v-if="sa.modal" class="sa-modal-mask" @click.self="closeModal">
     <div class="sa-modal">
       <div class="sa-modal-head"><strong>{{ sa.editingId ? '编辑' : '新增' }}</strong><button type="button" class="sa-modal-close" @click="closeModal"><i class="fa-solid fa-xmark"></i></button></div>
@@ -601,7 +777,12 @@
             </div>
           </div>
         </div>
-        <div v-if="sa.fetchErr" class="sa-up-err"><i class="fa-solid fa-circle-exclamation"></i> {{ sa.fetchErr }}</div>
+        <div v-if="sa.fetchErr" class="sa-up-err">
+          <div><i class="fa-solid fa-circle-exclamation"></i> {{ sa.fetchErr }}</div>
+          <button v-if="sa.fetchErrSlider" class="ap-btn-primary sa-btn-update" style="margin-top:10px" @click="goSlider">
+            <i class="fa-solid fa-hand-pointer"></i> 去手动拖滑块
+          </button>
+        </div>
       </div>
 
       <div class="sa-modal-body" v-else-if="sa.job">

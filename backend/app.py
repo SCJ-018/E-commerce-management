@@ -1956,7 +1956,13 @@ _AUTH_TOKENS = {}
 _AUTH_TOKEN_TTL = 24 * 3600  # 24 小时，滑动续期
 
 # 无需登录即可访问的接口（登录本身、退出、健康检查）
-_AUTH_PUBLIC_PATHS = {'/api/auth/login', '/api/auth/logout', '/api/health'}
+_AUTH_PUBLIC_PATHS = {
+    '/api/auth/login', '/api/auth/logout', '/api/health',
+    # ★ 本机滑块助手（tools/doudian_crawler/slider_agent.py）没有浏览器登录态，
+    #   这两个接口在路由内用共享密钥 X-Slider-Key 自校验，比依赖 token 简单且不受
+    #   「重启 ecom 全员掉线」影响（token 存内存，见 token 说明）。
+    '/api/fetch/doudian/slider/pending', '/api/fetch/doudian/slider/report',
+}
 
 
 @app.before_request
@@ -7803,7 +7809,10 @@ def api_fetch_trigger():
         if 'doudian' in platforms:
             why = _fetch_dd_state_check()
             if why:
-                return fail(why)
+                # data 里带结构化标记：前端据此在错误提示旁挂一个「手动拖滑块」按钮，
+                # 让用户不用退出弹窗、跑去桌面找 bat（见 api_slider_request）
+                return jsonify({'code': 1, 'msg': why,
+                                'data': {'sliderNeeded': True}})
     except ValueError as e:
         return fail(str(e))
     except Exception as e:
@@ -7899,6 +7908,209 @@ def api_fetch_reconcile():
         return success(out)
     except Exception as e:
         return fail('对账记录读取失败：%s' % e)
+
+
+# ==================== 抖店「手动拖滑块」：本机助手任务中继 ====================
+# 为什么要有这层中继（2026-09-18 加）：
+#   抖店登录态是**账号级**的短效凭证（14 家店共用 1 个邮箱，实测约 40 分钟失效）。
+#   服务器是 IDC IP + Xvfb 虚拟屏（640x480）：拼图滑块过不去，而且**没有任何窗口
+#   存在于人的屏幕上** —— 脚本里那句「请在浏览器窗口人工拖拽」在服务器上物理上做不到。
+#   所以登录 + 拖滑块只能在本机（李自豪的 Windows 电脑）完成。原流程要人跑去桌面
+#   双击「启动抖店登录.bat」，痛点是「人得离开后台页面去找那个 bat」。
+#   现在：后台点「手动拖滑块」→ 后端记一条任务 → 本机常驻助手
+#   （tools/doudian_crawler/slider_agent.py）每 3 秒轮询领走 → 自动拉起本机 Chrome
+#   → 人工拖滑块完成登录 → 助手把 state 传回云库 → 页面回显结果。
+#
+# ★ 助手没有浏览器登录态 → pending/report 走共享密钥 X-Slider-Key（已进白名单）。
+# ★ 任务状态落 json 文件而不是内存：本项目一天要重启 ecom 几十次，重启不该把用户
+#   刚点下的任务弄丢，否则页面会一直转圈。助手心跳则放内存（30 秒就过期，无需持久化）。
+_SLIDER_STATE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', 'tools', '_doudian_slider.json')
+# 与 tools/doudian_crawler/slider_agent.py 的 KEY 保持一致；线上可用环境变量覆盖
+_SLIDER_KEY = os.environ.get('SLIDER_AGENT_KEY', 'julang-doudian-slider-2026')
+# 单条任务总时限（秒）：超时未完成即降级为 timeout，避免页面无限转圈
+_SLIDER_TASK_TTL = 600
+# 本机助手离线判定（秒）：助手每 3 秒轮询一次，30 秒没动静即认为没在跑
+_SLIDER_ALIVE_GAP = 30
+# 「进行中」的三个状态；其余（idle/done/fail/timeout）都算终态
+_SLIDER_BUSY = ('pending', 'claimed', 'running')
+_slider_lock = threading.Lock()
+# 本机助手心跳（内存即可）：[lastSeen, host, pid]
+_slider_agent_seen = [0.0, '', '']
+
+
+def _slider_read():
+    """读任务状态文件；不存在/损坏一律当空状态（不抛异常、不影响接口）"""
+    try:
+        with open(_SLIDER_STATE_FILE, 'r', encoding='utf-8') as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _slider_write(st):
+    try:
+        d = os.path.dirname(_SLIDER_STATE_FILE)
+        if not os.path.isdir(d):
+            os.makedirs(d, exist_ok=True)
+        # 先写临时文件再原子替换：status 接口不加锁读，避免读到写了一半的 json
+        tmp = _SLIDER_STATE_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(st, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, _SLIDER_STATE_FILE)
+    except Exception as e:
+        print('[滑块] 状态落盘失败: %s' % e)
+
+
+def _slider_eff_status(t):
+    """任务的有效状态：pending/claimed/running 超过 TTL 一律降级为 timeout"""
+    if not t:
+        return 'idle'
+    s = t.get('status') or 'idle'
+    if s in _SLIDER_BUSY and (time.time() - float(t.get('ts') or 0)) > _SLIDER_TASK_TTL:
+        return 'timeout'
+    return s
+
+
+def _slider_dd_login_state():
+    """抖店邮箱账号表的登录态时效（前端徽章 + 「是不是该去拖滑块了」的判断依据）"""
+    rows = db_execute(
+        'SELECT `邮箱`, `状态更新时间`, '
+        'TIMESTAMPDIFF(MINUTE, `状态更新时间`, NOW()) AS mins '
+        'FROM `抖店邮箱账号表` WHERE `是否运营` = 1 ORDER BY `id` LIMIT 1') or []
+    if not rows:
+        return {'email': '', 'updatedAt': '', 'ageMinutes': None,
+                'hasState': False, 'expired': True, 'maxMinutes': _FETCH_DD_STATE_MAX_MIN}
+    r = rows[0]
+    has = bool(r.get('状态更新时间'))
+    mins = r.get('mins')
+    age = int(mins) if mins is not None else None
+    return {
+        'email': r.get('邮箱') or '',
+        'updatedAt': str(r.get('状态更新时间') or ''),
+        'ageMinutes': age,
+        'hasState': has,
+        'expired': (not has) or (age is None) or (age > _FETCH_DD_STATE_MAX_MIN),
+        'maxMinutes': _FETCH_DD_STATE_MAX_MIN,
+    }
+
+
+def _slider_view(st):
+    """给前端的状态视图（status / request / report 共用）"""
+    st = st or {}
+    t = st.get('task') or {}
+    seen = _slider_agent_seen
+    return {
+        'taskId': t.get('id') or '',
+        'status': _slider_eff_status(t),
+        'step': t.get('step') or '',
+        'message': t.get('message') or '',
+        'requestedAt': t.get('requestedAt') or '',
+        'requestedBy': t.get('requestedBy') or '',
+        'finishedAt': t.get('finishedAt') or '',
+        'agentOnline': (time.time() - float(seen[0] or 0)) < _SLIDER_ALIVE_GAP,
+        'agentHost': seen[1] or '',
+        'login': _slider_dd_login_state(),
+    }
+
+
+def _slider_key_ok():
+    """本机助手接口的鉴权：共享密钥放 header，避免公开一个能拉起本机浏览器的入口"""
+    return request.headers.get('X-Slider-Key', '') == _SLIDER_KEY
+
+
+@app.route('/api/fetch/doudian/slider/status')
+def api_slider_status():
+    """页面轮询：当前滑块任务状态 + 抖店登录态时效
+
+    只读 + 原子写落盘，所以这里不加锁（避免 DB 慢时拖住本机助手的轮询）。
+    """
+    return success(_slider_view(_slider_read()))
+
+
+@app.route('/api/fetch/doudian/slider/request', methods=['POST'])
+def api_slider_request():
+    """页面点「手动拖滑块」：下发一条任务给本机助手（幂等，重复点不会叠加）"""
+    try:
+        tok = request.cookies.get('token', '')
+        who = (_AUTH_TOKENS.get(tok) or {}).get('name') or ''
+        with _slider_lock:
+            st = _slider_read()
+            cur = st.get('task') or {}
+            if _slider_eff_status(cur) in _SLIDER_BUSY:
+                return success(_slider_view(st), '已有滑块任务在执行，未重复下发')
+            seq = int(st.get('seq') or 0) + 1
+            st['seq'] = seq
+            st['task'] = {
+                'id': 's%d' % seq, 'status': 'pending',
+                'step': '等待本机滑块助手领取任务…',
+                'message': '', 'requestedAt': _fetch_now(), 'requestedBy': who,
+                'claimedAt': '', 'finishedAt': '', 'ts': time.time(),
+            }
+            _slider_write(st)
+            print('[滑块] 收到拖滑块请求：%s（来自 %s）' % (st['task']['id'], who or '?'))
+            return success(_slider_view(st), '已下发滑块任务，请留意本机弹出的 Chrome')
+    except Exception as e:
+        traceback.print_exc()
+        return fail('下发滑块任务失败：%s' % e)
+
+
+@app.route('/api/fetch/doudian/slider/pending')
+def api_slider_pending():
+    """本机助手轮询：顺便当心跳；有 pending 任务就领走并标 claimed
+
+    没有任务时也每 3 秒被调一次，所以心跳放在这里更新最省事。
+    """
+    if not _slider_key_ok():
+        return jsonify({'code': 403, 'msg': '滑块助手密钥无效', 'data': None}), 403
+    _slider_agent_seen[0] = time.time()
+    _slider_agent_seen[1] = request.args.get('host') or request.headers.get('X-Slider-Host') or ''
+    _slider_agent_seen[2] = request.args.get('pid') or ''
+    with _slider_lock:
+        st = _slider_read()
+        t = st.get('task') or {}
+        take = None
+        if t and _slider_eff_status(t) == 'pending':
+            t['status'] = 'claimed'
+            t['claimedAt'] = _fetch_now()
+            t['step'] = '本机助手已领取，正在打开浏览器…'
+            t['ts'] = time.time()
+            st['task'] = t
+            _slider_write(st)
+            take = {'taskId': t['id'], 'action': 'login'}
+            print('[滑块] %s 已被本机助手领取' % t['id'])
+    return success({'task': take})
+
+
+@app.route('/api/fetch/doudian/slider/report', methods=['POST'])
+def api_slider_report():
+    """本机助手回报进度：{taskId, status: running|done|fail, step, message}"""
+    if not _slider_key_ok():
+        return jsonify({'code': 403, 'msg': '滑块助手密钥无效', 'data': None}), 403
+    try:
+        data = request.get_json(force=True) or {}
+    except Exception:
+        data = {}
+    want = str(data.get('taskId') or '')
+    status = str(data.get('status') or '')
+    if status not in ('running', 'done', 'fail'):
+        return fail('status 只支持 running / done / fail')
+    with _slider_lock:
+        st = _slider_read()
+        t = st.get('task') or {}
+        if not t or (want and t.get('id') != want):
+            return fail('任务不存在或已被替换')
+        t['status'] = status
+        t['step'] = str(data.get('step') or t.get('step') or '')
+        t['message'] = str(data.get('message') or '')
+        t['ts'] = time.time()
+        if status in ('done', 'fail'):
+            t['finishedAt'] = _fetch_now()
+        st['task'] = t
+        _slider_write(st)
+        print('[滑块] %s → %s %s' % (t.get('id'), status, t.get('message') or ''))
+    return success(_slider_view(st), '已记录')
 
 
 # ======================== 开发告警：接口与全局异常钩子 ========================

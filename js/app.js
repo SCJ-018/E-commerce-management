@@ -68,7 +68,8 @@ const ApiService = (() => {
       }
       const json = await res.json().catch(() => null);
       if (!json) return { ok: false, msg: `HTTP ${res.status}` };
-      if (json.code !== 0) return { ok: false, msg: json.msg || '请求失败' };
+      // data 也带出去：抓取触发失败时会带 {sliderNeeded:true}，前端据此挂「手动拖滑块」按钮
+      if (json.code !== 0) return { ok: false, msg: json.msg || '请求失败', data: json.data };
       return { ok: true, data: json.data, msg: json.msg || '' };
     } catch (e) {
       console.warn('[API] 请求失败:', path, e.message);
@@ -159,6 +160,11 @@ const ApiService = (() => {
     async triggerFetch(payload) { return requestFull('/fetch/trigger', { method: 'POST', body: JSON.stringify(payload || {}) }); },
     async stopFetch(jobId) { return requestFull('/fetch/stop', { method: 'POST', body: JSON.stringify({ jobId: jobId }) }); },
     async getFetchReconcile(limit) { return request('/fetch/reconcile?limit=' + (limit || 60)); },
+
+    // ---- 抖店「手动拖滑块」（本机常驻助手执行，见 tools/doudian_crawler/slider_agent.py）----
+    // 服务器过不了滑块也没窗口能拖，所以点按钮只是「下发任务」，真正的浏览器弹在本机
+    async requestDoudianSlider() { return requestFull('/fetch/doudian/slider/request', { method: 'POST', body: JSON.stringify({}) }); },
+    async getDoudianSliderStatus() { return request('/fetch/doudian/slider/status'); },
 
     /** 员工花名册（旧接口，保留兼容） */
     async getHrEmployees() { return request('/hr/employees'); },

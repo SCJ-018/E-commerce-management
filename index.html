@@ -289,6 +289,27 @@
     .ap-btn-primary.sa-btn-update:hover{background:linear-gradient(135deg,#0284c7,#4f46e5);box-shadow:0 2px 8px rgba(14,165,233,.25)}
     .sa-email-panel{background:#fff;border:1px solid #eef0f3;border-radius:12px;padding:14px 16px;margin-bottom:16px}
     .sa-email-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+    /* === 抖店「手动拖滑块」：登录态徽章 + 进度界面 === */
+    .sa-email-actions{display:flex;gap:8px;flex-shrink:0}
+    .sa-login-badge{display:inline-block;margin-left:10px;font-size:11.5px;padding:2px 9px;border-radius:20px;border:1px solid transparent;vertical-align:middle}
+    .sa-login-ok{background:#e6f7ee;color:#0f9d58;border-color:#bfe8d0}
+    .sa-login-warn{background:#fff7e6;color:#b45309;border-color:#fde68a}
+    .sa-login-bad{background:#fef2f2;color:#b91c1c;border-color:#fecaca}
+    .sa-login-unknown{background:#f2f3f5;color:#9aa0a6;border-color:#e0e0e0}
+    .ap-btn-sm.slider{background:#eef2ff;color:#4f46e5;border-color:#c7d2fe}
+    .ap-btn-sm.slider:hover{background:#e0e7ff;border-color:#a5b4fc}
+    .sa-slider-state{display:flex;gap:12px;align-items:flex-start;padding:14px;border-radius:10px;border:1px solid #eef0f3;background:#f8fafc}
+    .sa-slider-ico{flex:0 0 40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:17px;background:#eef2ff;color:#6366f1}
+    .sa-slider-txt{flex:1;min-width:0}
+    .sa-slider-title{font-weight:600;color:#1e293b;font-size:14px}
+    .sa-slider-desc{font-size:12.5px;color:#64748b;margin-top:4px;line-height:1.65}
+    .sa-slider-meta{font-size:11.5px;color:#94a3b8;margin-top:6px;display:flex;gap:12px;flex-wrap:wrap}
+    .st-done .sa-slider-ico{background:#e6f7ee;color:#0f9d58}
+    .st-fail .sa-slider-ico,.st-timeout .sa-slider-ico{background:#fef2f2;color:#b91c1c}
+    .st-claimed .sa-slider-ico,.st-running .sa-slider-ico{background:#fff7e6;color:#d97706}
+    .sa-slider-warn{margin-top:10px;font-size:12.5px;color:#b45309;background:#fff7e6;border:1px solid #fde68a;border-radius:8px;padding:9px 12px;line-height:1.65}
+    .sa-slider-tip{margin-top:10px;font-size:12px;color:#64748b;background:#f8fafc;border:1px solid #eef0f3;border-radius:8px;padding:9px 12px;line-height:1.65}
+    .sa-slider-login{margin-top:10px;font-size:12.5px;color:#475569}
     .sa-modal-mask{position:fixed;inset:0;background:rgba(15,23,42,.45);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;z-index:9999;animation:saFade .18s ease}
     .sa-modal{background:#fff;border-radius:16px;width:460px;max-width:92vw;max-height:88vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.22);animation:saPop .22s ease}
     @keyframes saFade{from{opacity:0}to{opacity:1}}
@@ -348,7 +369,7 @@
     .sa-prog-cur{font-size:12px;color:#4f46e5;margin-bottom:8px;word-break:break-all}
     .sa-prog-stat{display:flex;gap:14px;font-size:12px;color:#475569;margin-bottom:10px}
     .sa-prog-log{max-height:220px;overflow:auto;background:#f8fafc;border:1px solid #eef0f3;color:#334155;border-radius:8px;padding:10px 12px;font-size:11.5px;line-height:1.55;margin:0;white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-    .sa-up-err{font-size:12px;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 12px;margin-top:10px}
+    .sa-up-err{font-size:12px;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 12px;margin-top:10px;white-space:pre-line;line-height:1.65}
 
     /* 抓取对账记录 */
     .sa-recon-panel{background:#fff;border:1px solid #eef0f3;border-radius:12px;padding:14px 16px;margin-top:16px}
@@ -2348,7 +2369,7 @@
   <div class="ai-chat-footer">聚浪网络科技 · AI 服务可能产生误差，请以实际数据为准</div>
 </div>
 
-<script src="js/app.js?v=20260917d"></script>
+<script src="js/app.js?v=20260918a"></script>
 <script src="js/vue/components.js?v=20260917d"></script>
 <script src="js/vue/page-profile.js"></script>
 <script src="js/vue/page-hr-common.js"></script>
@@ -2363,7 +2384,7 @@
 <script src="js/vue/page-category-marketing.js?v=20260917b"></script>
 <script src="js/vue/page-marketing-overview.js"></script>
     <script src="js/vue/page-daily-analysis.js?v=20260917c"></script>
-    <script src="js/vue/page-store-account.js?v=20260917d"></script>
+    <script src="js/vue/page-store-account.js?v=20260918a"></script>
 <script src="js/vue/page-operation-performance.js"></script>
 <script src="js/vue/page-finance.js"></script>
 </body>
