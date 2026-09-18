@@ -296,8 +296,8 @@
     .rp-head-count b{color:#1677ff;font-size:16px;margin:0 2px}
     .rp-mini{display:inline-flex;align-items:center;gap:4px;height:30px;padding:0 12px;border-radius:8px;border:1px solid #e2e8f0;background:#fff;color:#475569;font-size:12px;font-weight:500;cursor:pointer;font-family:inherit;transition:all .15s}
     .rp-mini:hover{border-color:#bfdbfe;color:#1677ff;background:#f6faff}
-    .rp-scroll{max-height:44vh;overflow-y:auto;padding-right:4px;display:flex;flex-direction:column;gap:10px}
-    .rp-card{border:1px solid #eef2f7;border-radius:12px;overflow:hidden;background:#fff}
+    .rp-scroll{max-height:46vh;min-height:0;overflow-y:auto;padding-right:4px;display:flex;flex-direction:column;gap:10px}
+    .rp-card{border:1px solid #eef2f7;border-radius:12px;overflow:hidden;background:#fff;flex:0 0 auto}
     .rp-card-head{display:flex;align-items:center;justify-content:space-between;padding:9px 13px;background:#fafbfc;border-bottom:1px solid #f1f5f9}
     .rp-card-title{font-size:13px;font-weight:700;color:#334155;display:flex;align-items:center;gap:8px}
     .rp-card-title .dot{width:6px;height:6px;border-radius:50%;background:#1677ff}
@@ -863,8 +863,8 @@
     <div class="login-card-form-panel">
       <h2>欢迎回来</h2><p class="form-subtitle">登录您的管理员账号</p>
       <form id="loginForm">
-        <div class="form-group"><label for="username">账号</label><input class="form-input" id="username" name="username" placeholder="admin" autocomplete="username" aria-label="账号"></div>
-        <div class="form-group"><label for="password">密码</label><div class="form-input-wrap"><input class="form-input" id="password" name="password" type="password" placeholder="········" autocomplete="current-password" aria-label="密码"><button type="button" class="pwd-toggle" onclick="var p=document.getElementById('password');p.type=p.type==='password'?'text':'password'" aria-label="切换密码显示"><i class="fa-regular fa-eye"></i></button></div></div>
+        <div class="form-group"><label for="username">账号</label><input class="form-input" id="username" name="username" placeholder="请输入手机号" autocomplete="username" aria-label="账号"></div>
+        <div class="form-group"><label for="password">密码</label><div class="form-input-wrap"><input class="form-input" id="password" name="password" type="password" placeholder="默认密码为身份证生日（年月日）8位数字" autocomplete="current-password" aria-label="密码"><button type="button" class="pwd-toggle" onclick="var p=document.getElementById('password');p.type=p.type==='password'?'text':'password'" aria-label="切换密码显示"><i class="fa-regular fa-eye"></i></button></div></div>
         <div class="form-options"><label><input type="checkbox" id="remember"> 记住密码</label><a href="#">忘记密码？</a></div>
         <button type="submit" class="btn btn-primary">登 录</button>
         <div class="login-error" id="loginError"></div>
