@@ -814,10 +814,10 @@
         <div class="dh-title-group">
           <h2 class="dh-title">种草监测中台</h2>
           <span class="dh-subtitle">Seeding Monitoring Center</span>
-          <span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;margin-right:4px" :style="{ color: state.statusDotColor }"></i>监测种草账号作品数据 · 数据更新时间
-            <span style="font-weight:600;margin-left:2px" :style="{ color: state.fresh.douyin.color }">抖音 {{ state.updateTimes.douyin }}</span>
+          <span class="dh-status"><i class="fa-solid fa-circle" style="font-size:6px;margin-right:4px" :style="{ color: statusDotColor }"></i>监测种草账号作品数据 · 数据更新时间
+            <span style="font-weight:600;margin-left:2px" :style="{ color: fresh.douyin.color }">抖音 {{ state.updateTimes.douyin }}</span>
             <span style="color:#cbd5e1;margin:0 6px">|</span>
-            <span style="font-weight:600" :style="{ color: state.fresh.xhs.color }">小红书 {{ state.updateTimes.xhs }}</span>
+            <span style="font-weight:600" :style="{ color: fresh.xhs.color }">小红书 {{ state.updateTimes.xhs }}</span>
           </span>
         </div>
       </div>
