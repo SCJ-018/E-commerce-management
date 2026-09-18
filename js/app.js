@@ -149,11 +149,14 @@ const ApiService = (() => {
     /** 单条读取账号明文密码 —— 列表不下发密码，点「眼睛」时才按 id 取这一条 */
     async getAdminPassword(id) { return requestFull('/admin/accounts/' + id + '/password'); },
 
-    /** 角色与权限 CRUD */
+    /** 角色与权限 CRUD（仅开发人员 / 超级管理员，后端有 _can_manage_roles 硬门槛） */
     async getRoles() { return request('/admin/roles'); },
     async createRole(data) { return request('/admin/roles', { method: 'POST', body: JSON.stringify(data) }); },
     async updateRole(id, data) { return request('/admin/roles/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
     async deleteRole(id) { return request('/admin/roles/' + id, { method: 'DELETE' }); },
+
+    /** 当前登录者的管辖范围（super / lead / none + 可授权限上限） */
+    async getMyScope() { return request('/admin/my-scope'); },
 
     /** 个人中心 — 个人信息 / 修改密码 / 头像 */
     async getProfile() { return request('/profile/me'); },
@@ -712,7 +715,28 @@ const App = (() => {
     document.getElementById('loginPage').classList.add('hidden');
     document.getElementById('appPage').classList.remove('hidden');
     document.getElementById('currentUser').textContent = state.currentUser;
+    // ★ 登录后立刻拉一次管辖范围：主管身份决定「管理员与权限」页能否进入、
+    //   以及页内能看到哪些按钮。失败不阻断登录（退化为非主管，后端仍会拦）。
+    try { await _fetchMyScope(); } catch (e) {}
     initApp();
+  }
+
+  /** 拉取后端管辖范围（模块内部用；对外暴露为 App.fetchMyScope） */
+  async function _fetchMyScope() {
+    try {
+      const r = await fetch('/api/admin/my-scope', { credentials: 'same-origin' });
+      const j = await r.json();
+      if (j && j.code === 0 && j.data) {
+        _MY_SCOPE = j.data;
+        _IS_DEPT_LEAD = _MY_SCOPE.level === 'lead';
+        _CAN_MANAGE_ACCOUNTS = !!_MY_SCOPE.canManageAccounts
+          || ACCOUNT_MANAGER_ROLES.indexOf(_MY_SCOPE.role || '') >= 0;
+        _CAN_MANAGE_ROLES = !!_MY_SCOPE.canManageRoles;
+        sessionStorage.setItem('admin_is_account_manager', _CAN_MANAGE_ACCOUNTS ? '1' : '0');
+        sessionStorage.setItem('admin_is_role_manager', _CAN_MANAGE_ROLES ? '1' : '0');
+      }
+    } catch (e) {}
+    return _MY_SCOPE;
   }
 
   function handleLogout() {
@@ -755,8 +779,15 @@ const App = (() => {
     // 只要拥有任意一个人事数据表权限，即允许进入人事数据中心页面；具体可见哪张表由页面内部再判定。
     var _hrPermHit = page === 'hr' && _ALLOWED_PAGES !== null &&
       _ALLOWED_PAGES.some(function (p) { return String(p).indexOf('hr-') === 0; });
-    // ★ 账号列表硬门槛：非 开发人员/超级管理员/人事行政部 一律进不去（即使被分配了该板块）
-    var _accDeny = page === 'admin-permissions' && !_CAN_MANAGE_ACCOUNTS;
+    // ★★ 账号列表硬门槛（2026-09-18 调整）：
+    //   · 超级层（开发人员/超级管理员）→ 放行
+    //   · 部门主管 → 也放行（页面内再看本部门，最终以后端 my-scope 为准）
+    //   · 其余角色 → 即便被分配了该板块也进不去
+    //   注意：_IS_DEPT_LEAD 由 _MY_SCOPE 异步填充，首次进入页面时若尚未拉到，
+    //   先按「非主管」处理，由页面内部再纠正（不会误放行敏感操作，因为后端有硬校验）。
+    var _accDeny = page === 'admin-permissions'
+      && !_CAN_MANAGE_ACCOUNTS && !_IS_DEPT_LEAD;
+
     if (_accDeny || (_ALLOWED_PAGES !== null && !_ALLOWED_PAGES.includes(page) && page !== 'profile' && !_hrPermHit)) {
       _showPermissionDenied();
       // 高亮当前点击的菜单项
@@ -2527,9 +2558,22 @@ const App = (() => {
   // ==================== 角色权限配置（数据库驱动） ====================
   var _ALLOWED_PAGES = null;  // null = 全部页面，array = 限定页面
 
-  // ★ 「账号列表（管理员与权限）」只开放给这三个角色（需求：1.2.3 号角色可查看与编辑）
-  var ACCOUNT_MANAGER_ROLES = ['开发人员', '超级管理员', '人事行政部'];
+  // ★★ 「管理员与权限」页面权限模型（2026-09-18 调整）
+  //
+  //   第 1 层  开发人员 / 超级管理员 —— 全库账号 + 角色与权限，无限制
+  //   第 2 层  部门主管             —— 只能管本部门账号；看不到「角色与权限」
+  //   第 3 层  普通员工             —— 无账号管理入口
+  //
+  // ★ 与原行为差异：ACCOUNT_MANAGER_ROLES 由 {开发人员,超级管理员,人事行政部} 收窄为
+  //   前两者。判定最终以后端 /api/admin/my-scope 为准（前端只做显示层，
+  //   真正的拦截在后端 _my_scope / _can_manage_roles）。
+  var ACCOUNT_MANAGER_ROLES = ['开发人员', '超级管理员'];
+  var ROLE_PERM_MANAGER_ROLES = ['开发人员', '超级管理员'];
   var _CAN_MANAGE_ACCOUNTS = false;
+  var _CAN_MANAGE_ROLES = false;
+  var _IS_DEPT_LEAD = false;
+  // 后端 /api/admin/my-scope 的返回（进入页面时拉一次），主管相关显示都基于它
+  var _MY_SCOPE = null;
 
   function _initPermissions() {
     // 优先从 sessionStorage 读取（由登录 API 返回的 permissions 数组）
@@ -2541,7 +2585,10 @@ const App = (() => {
 
     var role = state.currentRole || sessionStorage.getItem('admin_current_role') || '';
     _CAN_MANAGE_ACCOUNTS = ACCOUNT_MANAGER_ROLES.indexOf(role) >= 0;
+    _CAN_MANAGE_ROLES = ROLE_PERM_MANAGER_ROLES.indexOf(role) >= 0;
     sessionStorage.setItem('admin_is_account_manager', _CAN_MANAGE_ACCOUNTS ? '1' : '0');
+    sessionStorage.setItem('admin_is_role_manager', _CAN_MANAGE_ROLES ? '1' : '0');
+
 
     // '*' 表示全部权限
     if (perms === '*' || (Array.isArray(perms) && perms[0] === '*')) {
@@ -5908,8 +5955,14 @@ const App = (() => {
     goToPage, filterTable,
     showToast, toggleSidebar,
     logout: handleLogout,
-    // ★ 账号列表权限判定（1/2/3 号角色才可查看与编辑）
+    // ★ 账号列表权限判定
+    //   isAccountManager = 超级层（全库）；isCanManageRoles = 角色与权限 Tab
     isAccountManager: function () { return _CAN_MANAGE_ACCOUNTS; },
+    isCanManageRoles: function () { return _CAN_MANAGE_ROLES; },
+    isDeptLead: function () { return _IS_DEPT_LEAD; },
+    /** 后端 my-scope 拉取结果（页面挂载时取一次；失败返回 null，前端退化为「非主管」） */
+    fetchMyScope: function () { return _fetchMyScope(); },
+    getMyScope: function () { return _MY_SCOPE; },
     // Admin & Permissions
     openAdminModal, editAdmin, deleteAdmin, toggleAdmin, togglePwdVis, openPwdModal,
     openRolePermModal, deleteRole, apToggleAllPerms,

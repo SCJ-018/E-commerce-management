@@ -1989,13 +1989,143 @@ def _current_session():
     return _AUTH_TOKENS.get(token) or {}
 
 
-# ★ 只有这三个角色能查看/编辑「账号列表」（开发人员 / 超级管理员 / 人事行政部）
-ACCOUNT_MANAGER_ROLES = {'开发人员', '超级管理员', '人事行政部'}
+# ★★ 「管理员与权限」页面权限模型（2026-09-18 调整）
+#
+# 三层结构：
+#   第 1 层  开发人员 / 超级管理员 —— 全库账号 + 角色权限，无限制
+#   第 2 层  部门主管             —— 只能管【本部门】账号；看不到「角色与权限」；
+#                                   给账号赋的权限必须 ⊆ 自己的权限
+#   第 3 层  普通员工             —— 无账号管理入口
+#
+# 部门主管的识别口径：admin_accounts.leader == 自己的 name（不新增角色、不改数据）。
+#   现状命中 6 人：刘颖/和鹏伟/马湘湘/路颜欣/冯照辉（种草部 5 个业务部）+ 陈子轩（人事行政部）。
+#
+# ★ 与原行为的差异：ACCOUNT_MANAGER_ROLES 由 {开发人员,超级管理员,人事行政部} 收窄为
+#   前两者 —— 人事行政部不再能进「账号列表」。这是需求明确要求的
+#   「角色与权限界面仅有开发人员和超级管理员有权限」，一并收窄后语义才自洽。
+ACCOUNT_MANAGER_ROLES = {'开发人员', '超级管理员'}
+
+# ★ 「角色与权限」Tab 的硬门槛（与账号列表同集合；独立常量便于将来再拆）
+ROLE_PERM_MANAGER_ROLES = {'开发人员', '超级管理员'}
+
+# ★ 主管管辖判定的兜底口径：当「本人姓名」为空或部门为空时不做主管判定。
+#   （leader 字段历史上有过填「上级姓名」而非自己的写法，故必须 leader==name 才算。）
 
 
 def _can_manage_accounts(sess=None):
+    """能否查看/编辑账号列表（第 1 层，全库）"""
     sess = sess if sess is not None else _current_session()
     return (sess.get('role') or '') in ACCOUNT_MANAGER_ROLES
+
+
+def _can_manage_roles(sess=None):
+    """能否查看/编辑「角色与权限」（仅第 1 层）"""
+    sess = sess if sess is not None else _current_session()
+    return (sess.get('role') or '') in ROLE_PERM_MANAGER_ROLES
+
+
+def _role_permissions(role_name):
+    """取某角色的权限列表；返回 (perms, 是否存在该角色)
+
+    perms 为 list；'*' 以 ['*'] 表示（调用方自行判断全权）。
+    """
+    if not role_name:
+        return [], False
+    rows = db_execute('SELECT permissions FROM admin_roles WHERE name = %s', [role_name])
+    if not rows:
+        return [], False
+    raw = rows[0]['permissions']
+    if isinstance(raw, str):
+        try:
+            perms = json.loads(raw)
+        except Exception:
+            perms = []
+    else:
+        perms = raw or []
+    return (perms if isinstance(perms, list) else []), True
+
+
+def _is_all_perm(perms):
+    """['*'] 或 '*' 视为全权"""
+    if perms == '*':
+        return True
+    return bool(isinstance(perms, list) and perms and perms[0] == '*')
+
+
+def _load_self_account(sess=None):
+    """按登录会话取本人 admin_accounts 记录（无则 None）"""
+    sess = sess if sess is not None else _current_session()
+    acct = (sess.get('account') or '').strip()
+    if not acct:
+        return None
+    rows = db_execute(
+        'SELECT id, name, account, role, department, sub_dept, leader, status '
+        'FROM admin_accounts WHERE account = %s', [acct])
+    return rows[0] if rows else None
+
+
+def _my_scope(sess=None):
+    """当前登录者的管辖范围描述。
+
+    {
+      'level': 'super' | 'lead' | 'none',
+      'role':      角色名,
+      'department': 管辖部门（lead 时为本人部门；super 时为空表示不限）,
+      'isLead':    是否为部门主管,
+      'perms':     list —— 当前者可授权的权限上限（super 为 ['*']）,
+      'allPerm':   bool —— 是否不受权限子集限制,
+    }
+
+    level 语义：
+      super = 开发人员/超级管理员（全库 + 角色权限）
+      lead  = 部门主管（本部门账号，权限 ⊆ 自己）
+      none  = 无权进入账号管理页
+    """
+    sess = sess if sess is not None else _current_session()
+    role = (sess.get('role') or '').strip()
+    if role in ACCOUNT_MANAGER_ROLES:
+        perms, _ = _role_permissions(role)
+        return {'level': 'super', 'role': role, 'department': '', 'isLead': False,
+                'perms': perms if perms else ['*'], 'allPerm': True}
+
+    me = _load_self_account(sess)
+    if not me:
+        return {'level': 'none', 'role': role, 'department': '', 'isLead': False,
+                'perms': [], 'allPerm': False}
+
+    name = (me.get('name') or '').strip()
+    dept = (me.get('department') or '').strip()
+    # ★ leader == 本人姓名 且 部门非空 才判定为主管
+    is_lead = bool(name) and bool(dept) and (me.get('leader') or '').strip() == name
+    if is_lead:
+        perms, _ = _role_permissions(role)
+        return {'level': 'lead', 'role': role, 'department': dept, 'isLead': True,
+                'perms': perms, 'allPerm': _is_all_perm(perms)}
+
+    return {'level': 'none', 'role': role, 'department': dept, 'isLead': False,
+            'perms': [], 'allPerm': False}
+
+
+def _scope_can_touch(scope, target_row):
+    """scope 是否有权查看/修改 target_row 这条账号记录"""
+    if scope.get('level') == 'super':
+        return True
+    if scope.get('level') != 'lead':
+        return False
+    tgt_dept = (target_row.get('department') or '').strip()
+    return bool(tgt_dept) and tgt_dept == scope.get('department')
+
+
+def _perm_subset_of(sub, upper, upper_all=False):
+    """sub 是否 ⊆ upper（upper_all=True 时无条件通过）。全部返回 (ok, 越权项)"""
+    if upper_all:
+        return True, []
+    upper_set = set(upper or [])
+    # 自己就是全权时，任何勾选都合法
+    if '*' in upper_set:
+        return True, []
+    extra = [p for p in (sub or []) if p not in upper_set]
+    return (not extra), extra
 
 
 # ======================== 管理员账户管理 ========================
@@ -2074,12 +2204,17 @@ def auth_logout():
 
 
 # ======================== 角色与权限管理 API ========================
+#
+# ★★ 全部 4 个接口共用硬门槛：仅 开发人员 / 超级管理员（_can_manage_roles）。
+#    部门主管与普通员工一律 403 语义（返回 code!=0 的 fail），
+#    前端同样隐藏该 Tab —— 两层都拦，防止直接调接口。
 
 @app.route('/api/admin/roles', methods=['GET'])
 def admin_roles_list():
-    """获取所有角色及其权限"""
+    """获取所有角色及其权限（仅开发人员 / 超级管理员）"""
     try:
-        import json
+        if not _can_manage_roles():
+            return fail('无权查看角色与权限')
         rows = db_execute('SELECT id, name, permissions, created_at FROM admin_roles ORDER BY id')
         result = []
         for r in rows:
@@ -2097,9 +2232,10 @@ def admin_roles_list():
 
 @app.route('/api/admin/roles', methods=['POST'])
 def admin_roles_create():
-    """新增角色"""
+    """新增角色（仅开发人员 / 超级管理员）"""
     try:
-        import json
+        if not _can_manage_roles():
+            return fail('无权新增角色')
         data = request.get_json(force=True)
         name = data.get('name', '').strip()
         permissions = data.get('permissions', [])
@@ -2119,9 +2255,10 @@ def admin_roles_create():
 
 @app.route('/api/admin/roles/<int:role_id>', methods=['PUT'])
 def admin_roles_update(role_id):
-    """更新角色权限"""
+    """更新角色权限（仅开发人员 / 超级管理员）"""
     try:
-        import json
+        if not _can_manage_roles():
+            return fail('无权修改角色权限')
         data = request.get_json(force=True)
         name = data.get('name', '').strip()
         permissions = data.get('permissions', [])
@@ -2138,8 +2275,10 @@ def admin_roles_update(role_id):
 
 @app.route('/api/admin/roles/<int:role_id>', methods=['DELETE'])
 def admin_roles_delete(role_id):
-    """删除角色"""
+    """删除角色（仅开发人员 / 超级管理员）"""
     try:
+        if not _can_manage_roles():
+            return fail('无权删除角色')
         db_execute('DELETE FROM admin_roles WHERE id = %s', [role_id], fetch=False)
         return success(None, '角色已删除')
     except Exception as e:
@@ -2148,13 +2287,15 @@ def admin_roles_delete(role_id):
 
 @app.route('/api/admin/accounts', methods=['GET'])
 def admin_list():
-    """账号列表（可按部门=角色 或关键字筛选）
+    """账号列表
 
-    权限：仅 开发人员 / 超级管理员 / 人事行政部 可查看。
+    权限分两层（2026-09-18）：
+      · 开发人员 / 超级管理员 —— 全库，可按部门筛选
+      · 部门主管             —— **只返回本部门账号**（服务端强制，前端传什么都无效）
     """
     try:
-        sess = _current_session()
-        if not _can_manage_accounts(sess):
+        scope = _my_scope()
+        if scope['level'] == 'none':
             return fail('无权查看账号列表')
 
         dept = (request.args.get('department') or '').strip()
@@ -2165,6 +2306,10 @@ def admin_list():
         sql = ('SELECT id, name, account, role, status, last_login, created_at, '
                'department, sub_dept, leader, avatar, gender FROM admin_accounts')
         conds, params = [], []
+        # ★ 主管：无条件追加本部门条件（不能靠前端传参决定，否则可越权拉全库）
+        if scope['level'] == 'lead':
+            conds.append('department = %s')
+            params.append(scope['department'])
         if dept and dept not in ('全部', 'all'):
             conds.append('role = %s')
             params.append(dept)
@@ -2177,6 +2322,10 @@ def admin_list():
 
         rows = db_execute(sql, params)
         admins = []
+        my_name = ''
+        me = _load_self_account()
+        if me:
+            my_name = (me.get('name') or '').strip()
         for r in rows:
             admins.append({
                 'id': r['id'],
@@ -2191,8 +2340,33 @@ def admin_list():
                 'status': r['status'],
                 'lastLogin': r['last_login'] or '',
                 'createdAt': str(r['created_at']) if r['created_at'] else '',
+                # ★ 供前端置灰「编辑/删除」按钮：主管只能动本部门，且不能动自己
+                'manageable': True if scope['level'] == 'super' else (
+                    (r.get('department') or '').strip() == scope['department']),
+                'isSelf': bool(my_name) and (r['name'] or '').strip() == my_name,
             })
         return success(admins)
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/admin/my-scope', methods=['GET'])
+def admin_my_scope():
+    """当前登录者的管辖范围 —— 前端据此决定页面显示/锁定/置灰
+
+    {
+      level: 'super' | 'lead' | 'none',
+      role, department, isLead, allPerm,
+      perms:  可授权的权限上限（super 为 ['*']，代表全部）
+      canManageRoles: 能否进「角色与权限」
+    }
+    """
+    try:
+        scope = _my_scope()
+        out = dict(scope)
+        out['canManageRoles'] = _can_manage_roles()
+        out['canManageAccounts'] = scope['level'] != 'none'
+        return success(out)
     except Exception as e:
         return fail(str(e))
 
@@ -2203,14 +2377,18 @@ def admin_get_password(aid):
 
     ★ 与列表接口分离：列表不下发 password，避免一次请求就把全库明文密码
     送到前端；这里一次只返回一条，把风险从「全库」收窄为「单条」。
-    权限：仅 开发人员 / 超级管理员 / 人事行政部。
+    权限：开发人员 / 超级管理员（全库）；部门主管（限本部门）。
     """
     try:
-        if not _can_manage_accounts():
+        scope = _my_scope()
+        if scope['level'] == 'none':
             return fail('无权查看密码')
-        rows = db_execute('SELECT password FROM admin_accounts WHERE id = %s', [aid])
+        rows = db_execute(
+            'SELECT password, department FROM admin_accounts WHERE id = %s', [aid])
         if not rows:
             return fail('账号不存在')
+        if not _scope_can_touch(scope, rows[0]):
+            return fail('无权查看其他部门账号的密码')
         return success({'id': aid, 'password': rows[0]['password'] or ''})
     except Exception as e:
         return fail(str(e))
@@ -2218,9 +2396,18 @@ def admin_get_password(aid):
 
 @app.route('/api/admin/accounts', methods=['POST'])
 def admin_create():
-    """新增账号"""
+    """新增账号
+
+    权限分两层（2026-09-18）：
+      · 开发人员 / 超级管理员 —— 任意角色、任意部门
+      · 部门主管 —— 三条硬约束：
+          ① role 强制为本人角色（不接受前端传值）
+          ② department 强制为本人部门（不接受前端传值）
+          ③ 新账号继承该角色的权限，必须 ⊆ 主管自己的权限（防越权提权）
+    """
     try:
-        if not _can_manage_accounts():
+        scope = _my_scope()
+        if scope['level'] == 'none':
             return fail('无权新增账号')
         data = request.get_json(force=True)
         name = data.get('name', '').strip()
@@ -2235,6 +2422,30 @@ def admin_create():
 
         if not name or not account or not password:
             return fail('请填写完整信息')
+
+        if scope['level'] == 'lead':
+            # ① 部门锁定：强制本部门，忽略前端传值
+            if department and department != scope['department']:
+                return fail('只能在本部门「%s」下新增账号' % scope['department'])
+            department = scope['department']
+            # ② 角色锁定：只能建自己那个角色
+            if role and role != scope['role']:
+                return fail('只能新增「%s」角色的账号' % scope['role'])
+            role = scope['role']
+            # ③ 权限子集：新账号继承本角色权限，但不得超出主管自己的权限
+            want_perms = data.get('permissions')
+            if isinstance(want_perms, list):
+                base_perms = want_perms
+            else:
+                base_perms, _ = _role_permissions(role)
+            ok, extra = _perm_subset_of(base_perms, scope['perms'], scope['allPerm'])
+            if not ok:
+                return fail('无权授予超出自身范围的权限：%s' % '、'.join(extra))
+            # ★ 主管不得把新账号挂到别人名下：leader 只能填自己，或留空
+            me = _load_self_account()
+            my_name = (me.get('name') or '').strip() if me else ''
+            if leader and leader != my_name:
+                return fail('部门主管字段只能填写本人')
 
         # 检查账号是否已存在
         existing = db_execute('SELECT id FROM admin_accounts WHERE account = %s', [account])
@@ -2254,11 +2465,34 @@ def admin_create():
 
 @app.route('/api/admin/accounts/<int:aid>', methods=['PUT'])
 def admin_update(aid):
-    """更新账号信息（姓名、账号、密码、角色、状态、部门、主管、性别）"""
+    """更新账号信息（姓名、账号、密码、角色、状态、部门、主管、性别）
+
+    权限分两层（2026-09-18）：
+      · 开发人员 / 超级管理员 —— 任意账号
+      · 部门主管 —— 仅本部门账号；且
+          · 不能改 role（防把自己/部门升级成开发人员）
+          · 不能改 department 到别的部门
+          · 不能改 leader 为他人
+          · 不能被自己提拔为「开发人员/超级管理员」等管理角色
+    """
     try:
-        if not _can_manage_accounts():
+        scope = _my_scope()
+        if scope['level'] == 'none':
             return fail('无权限修改账号')
         data = request.get_json(force=True)
+
+        # 目标账号必须存在，且在当前者管辖范围内
+        tgt = db_execute(
+            'SELECT id, name, account, role, department FROM admin_accounts WHERE id = %s', [aid])
+        if not tgt:
+            return fail('账号不存在')
+        tgt = tgt[0]
+        if not _scope_can_touch(scope, tgt):
+            return fail('只能管理本部门「%s」的账号' % scope['department'])
+
+        me = _load_self_account()
+        my_name = (me.get('name') or '').strip() if me else ''
+
         updates = []
         params = []
 
@@ -2267,7 +2501,11 @@ def admin_update(aid):
             params.append(val)
 
         if 'name' in data:
-            _set('name', str(data['name']).strip())
+            new_name = str(data['name']).strip()
+            # ★ 主管不能改自己姓名（避免 leader 判定错乱）
+            if scope['level'] == 'lead' and aid == (me or {}).get('id') and new_name != my_name:
+                return fail('不能修改本人姓名，请联系管理员')
+            _set('name', new_name)
         if 'account' in data and str(data['account']).strip():
             new_acc = str(data['account']).strip()
             dup = db_execute('SELECT id FROM admin_accounts WHERE account = %s AND id <> %s',
@@ -2278,15 +2516,35 @@ def admin_update(aid):
         if 'password' in data and str(data['password']).strip():
             _set('password', str(data['password']).strip())
         if 'role' in data:
-            _set('role', str(data['role']).strip())
+            new_role = str(data['role']).strip()
+            if scope['level'] == 'lead':
+                # ★ 主管不得改角色（防止把自己部门的人提权到开发人员/超级管理员）
+                if new_role != (tgt.get('role') or ''):
+                    return fail('无权修改账号角色')
+            else:
+                # 连超级管理员也不能把别人挂成超管角色以外的越权组合时留白；
+                # 这里只做「必须存在该角色」的校验，保持原行为
+                pass
+            _set('role', new_role)
         if 'status' in data:
-            _set('status', str(data['status']).strip())
+            new_status = str(data['status']).strip()
+            # ★ 主管不能禁用/启用自己，避免把自己锁死
+            if scope['level'] == 'lead' and aid == (me or {}).get('id'):
+                return fail('不能修改本人账号状态')
+            _set('status', new_status)
         if 'department' in data:
-            _set('department', str(data['department']).strip())
+            new_dept = str(data['department']).strip()
+            if scope['level'] == 'lead':
+                if new_dept != scope['department']:
+                    return fail('只能把账号留在本部门「%s」' % scope['department'])
+            _set('department', new_dept)
         if 'subDept' in data or 'sub_dept' in data:
             _set('sub_dept', str(data.get('subDept', data.get('sub_dept'))).strip())
         if 'leader' in data:
-            _set('leader', str(data['leader']).strip())
+            new_leader = str(data['leader']).strip()
+            if scope['level'] == 'lead' and new_leader and new_leader != my_name:
+                return fail('部门主管字段只能填写本人')
+            _set('leader', new_leader)
         if 'gender' in data:
             _set('gender', str(data['gender']).strip())
 
@@ -2294,10 +2552,7 @@ def admin_update(aid):
             return fail('没有要更新的数据')
 
         # 不允许修改 admin 账号的角色和状态（保护超级管理员）
-        row = db_execute('SELECT account FROM admin_accounts WHERE id = %s', [aid])
-        if not row:
-            return fail('账号不存在')
-        if row[0]['account'] == 'admin':
+        if tgt['account'] == 'admin':
             # admin 只能改自己的密码
             allowed = [u for u in updates if 'password' in u or 'name' in u]
             if len(allowed) != len(updates):
@@ -2313,15 +2568,26 @@ def admin_update(aid):
 
 @app.route('/api/admin/accounts/<int:aid>', methods=['DELETE'])
 def admin_delete(aid):
-    """删除账号"""
+    """删除账号
+
+    权限分两层：全库（第 1 层）；仅本部门（部门主管），且不能删自己。
+    """
     try:
-        if not _can_manage_accounts():
+        scope = _my_scope()
+        if scope['level'] == 'none':
             return fail('无权限删除账号')
-        row = db_execute('SELECT account FROM admin_accounts WHERE id = %s', [aid])
+        row = db_execute(
+            'SELECT id, account, department FROM admin_accounts WHERE id = %s', [aid])
         if not row:
             return fail('账号不存在')
-        if row[0]['account'] == 'admin':
+        row = row[0]
+        if row['account'] == 'admin':
             return fail('不能删除超级管理员账号')
+        if not _scope_can_touch(scope, row):
+            return fail('只能管理本部门「%s」的账号' % scope['department'])
+        me = _load_self_account()
+        if me and aid == me.get('id'):
+            return fail('不能删除本人账号')
         db_execute('DELETE FROM admin_accounts WHERE id = %s', [aid], fetch=False)
         return success(None, '已删除')
     except Exception as e:

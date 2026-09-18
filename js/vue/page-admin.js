@@ -1,8 +1,15 @@
 // ==================== 账号与权限 Vue 版 ====================
-// 两个 Tab：账号列表（按 6 个大角色做部门按钮切换） / 角色与权限（权限分配悬浮窗）
-// 接口：ApiService.getAdmins(department, keyword) / createAdmin / updateAdmin / deleteAdmin
-//       ApiService.getRoles / createRole / updateRole / deleteRole
-// 权限：账号列表只对 开发人员 / 超级管理员 / 人事行政部 开放（见 app.js navigateTo 硬门槛 + 后端 _can_manage_accounts）
+// 两个 Tab：账号列表（按角色做部门按钮切换） / 角色与权限（权限分配悬浮窗）
+// 接口：ApiService.getAdmins / createAdmin / updateAdmin / deleteAdmin / getAdminPassword
+//       ApiService.getRoles / createRole / updateRole / deleteRole / getMyScope
+//
+// ★★ 权限模型（2026-09-18 调整）—— 三层：
+//     第 1 层 开发人员 / 超级管理员 —— 全库账号 + 角色与权限 Tab
+//     第 2 层 部门主管（leader==本人姓名）—— 只能管本部门账号；
+//              「角色与权限」Tab 对其隐藏；给账号赋权 ≤ 自己的权限
+//     第 3 层 普通员工 —— 无入口
+//   ★ 前端只做显示层（隐藏/置灰/锁定下拉）。真正的拦截在后端
+//     _my_scope() / _can_manage_roles()，即使绕过前端直接调接口也会被拒。
 (function () {
   if (typeof Vue === 'undefined' || typeof ApiService === 'undefined' || typeof App === 'undefined' || typeof EcomUI === 'undefined') return;
 
@@ -74,7 +81,24 @@
   var AdminPage = {
     components: { 'ecom-modal': EcomUI.Modal },
     setup: function () {
-      var isAccountManager = !!(App.isAccountManager && App.isAccountManager());
+      // ---- 身份与管辖范围 ----
+      // 先用 app.js 里已有的静态判定兜底，再用后端 my-scope 校正（挂载时异步拉）
+      var isSuper = Vue.ref(!!(App.isAccountManager && App.isAccountManager()));
+      var canManageRoles = Vue.ref(!!(App.isCanManageRoles && App.isCanManageRoles()));
+      var isLead = Vue.ref(!!(App.isDeptLead && App.isDeptLead()));
+      var scope = Vue.reactive({ level: 'none', role: '', department: '', perms: [], allPerm: false, loaded: false });
+      var canManageAccounts = Vue.ref(isSuper.value || isLead.value);
+
+      // 主管：被锁定的一组值
+      var lockRole = Vue.computed(function () { return isLead.value && !isSuper.value; });
+      var lockDept = Vue.computed(function () { return isLead.value && !isSuper.value; });
+
+      // 可授权的权限上限（主管 = 自己权限；超管 = 全部）
+      var grantablePerms = Vue.computed(function () {
+        if (!scope.loaded) return null;               // 未加载 = 不限制(交给后端)
+        if (scope.allPerm) return null;               // 全权 = 不限制
+        return scope.perms || [];
+      });
 
       // 搜索框防浏览器自动填充：初始 readonly，首次聚焦时解除
       var searchLocked = Vue.ref(true);
@@ -92,8 +116,29 @@
       var _confirmAction = null;
 
       // ---- 数据加载 ----
+      async function loadScope() {
+        var s = await ApiService.getMyScope();
+        if (s && typeof s === 'object') {
+          scope.level = s.level || 'none';
+          scope.role = s.role || '';
+          scope.department = s.department || '';
+          scope.perms = Array.isArray(s.perms) ? s.perms : [];
+          scope.allPerm = !!s.allPerm;
+          scope.loaded = true;
+          isLead.value = scope.level === 'lead';
+          isSuper.value = scope.level === 'super';
+          canManageRoles.value = !!s.canManageRoles;
+          canManageAccounts.value = !!s.canManageAccounts;
+          // ★ 主管登录时把部门按钮钉死在「全部」（= 本部门），由 visibleDeptTabs 限制可选项
+          if (isLead.value && !isSuper.value) {
+            _state.activeDept = '全部';
+          }
+        }
+        return scope;
+      }
+
       async function loadAccounts() {
-        if (!isAccountManager) return;
+        if (!canManageAccounts.value) return;
         var list = await ApiService.getAdmins();
         _state.accounts = Array.isArray(list) ? list : [];
         // 列表刷新说明密码可能已变，清掉已取出的明文与展开状态
@@ -102,13 +147,15 @@
         syncRoleCounts();
       }
       async function loadRoles() {
+        if (!canManageRoles.value) return;   // 主管无权拉角色表（后端也会拒）
         var roles = await ApiService.getRoles();
         if (roles && roles.length) _state.roles = roles;
         syncRoleCounts();
       }
-      function loadData() { loadAccounts(); loadRoles(); }
 
       function syncRoleCounts() {
+        // 主管拿不到角色表（_state.roles 为空）→ 直接跳过，避免空转
+        if (!_state.roles.length) return;
         _state.roles.forEach(function (r) {
           r.count = _state.accounts.filter(function (a) { return a.role === r.name; }).length;
         });
@@ -125,6 +172,17 @@
         return m;
       });
 
+      // ★ 主管只能看到「全部」+ 自己那一个部门按钮；超管看全部
+      var visibleDeptTabs = Vue.computed(function () {
+        if (isLead.value && !isSuper.value) {
+          return [
+            { key: '全部', label: '本部门', role: '全部' },
+            { key: scope.role, label: scope.role, role: scope.role },
+          ];
+        }
+        return DEPT_TABS;
+      });
+
       var filteredAccounts = Vue.computed(function () {
         var kw = (_state.keyword || '').trim().toLowerCase();
         return _state.accounts.filter(function (a) {
@@ -137,10 +195,27 @@
         });
       });
 
-      // 角色下拉选项（按固定顺序，库里没有的也不显示空白）
+      // 角色下拉选项：主管被锁死为本人角色
       var roleOptions = Vue.computed(function () {
+        if (isLead.value && !isSuper.value) return scope.role ? [scope.role] : [];
         return _state.roles.map(function (r) { return r.name; });
       });
+
+      // ★ 某条账号是否可被当前者操作（后端也返回 manageable，前端优先用它）
+      function canTouchAccount(a) {
+        if (!a) return false;
+        if (a.manageable === false) return false;
+        if (isSuper.value) return true;
+        if (!isLead.value) return false;
+        if (a.isSelf) return false;                       // 主管不能改自己
+        return (a.department || '') === scope.department; // 仅本部门
+      }
+
+      // ★ 权限是否超出可授权上限（超出则前端置灰不可勾）
+      function permOverLimit(pid) {
+        if (!grantablePerms.value) return false;          // null = 不限
+        return grantablePerms.value.indexOf(pid) < 0;
+      }
 
       function switchDept(key) {
         _state.activeDept = key;
@@ -160,15 +235,18 @@
       function openAcctModal(id) {
         var a = id ? _state.accounts.find(function (x) { return x.id === id; }) : null;
         acctModal.isEdit = !!a;
+        // ★ 主管新增：部门/角色/主管 三项预填并锁定为本人所属
+        var locked = isLead.value && !isSuper.value;
         acctModal.form = {
           id: a ? a.id : '',
           name: a ? (a.name || '') : '',
           account: a ? (a.account || '') : '',
           password: '',
-          role: a ? (a.role || '') : (_state.roles.length > 0 ? _state.roles[0].name : ''),
-          department: a ? (a.department || '') : '',
+          role: a ? (a.role || '') : (locked ? scope.role
+                : (_state.roles.length > 0 ? _state.roles[0].name : '')),
+          department: a ? (a.department || '') : (locked ? scope.department : ''),
           subDept: a ? (a.subDept || '') : '',
-          leader: a ? (a.leader || '') : '',
+          leader: a ? (a.leader || '') : (locked ? (sessionStorage.getItem('admin_current_user') || '') : ''),
           gender: a ? (a.gender || '') : '',
           status: a ? (a.status || 'enabled') : 'enabled',
         };
@@ -230,9 +308,11 @@
         var a = _state.accounts.find(function (x) { return x.id === id; });
         if (!a) return;
         if (a.account === 'admin') { App.showToast('不能删除超级管理员账号', 'error'); return; }
+        if (!canTouchAccount(a)) { App.showToast('只能管理本部门账号', 'error'); return; }
         confirmBox.message = '确定删除账号「' + a.name + '（' + a.account + '）」吗？此操作不可恢复。';
         _confirmAction = async function () {
-          await ApiService.deleteAdmin(id);
+          var r = await ApiService.deleteAdmin(id);
+          if (!r || !r.ok) { App.showToast((r && r.msg) || '删除失败', 'error'); return; }
           confirmBox.visible = false;
           loadAccounts();
           App.showToast('账号已删除', 'success');
@@ -244,11 +324,19 @@
         var a = _state.accounts.find(function (x) { return x.id === id; });
         if (!a) return;
         if (a.account === 'admin') { App.showToast('不能禁用超级管理员账号', 'error'); return; }
+        if (!canTouchAccount(a)) { App.showToast('只能管理本部门账号', 'error'); return; }
         var newStatus = a.status === 'enabled' ? 'disabled' : 'enabled';
         var r = await ApiService.updateAdmin(id, { status: newStatus });
         if (!r || !r.ok) { App.showToast((r && r.msg) || '操作失败', 'error'); return; }
         loadAccounts();
         App.showToast('账号已' + (newStatus === 'enabled' ? '启用' : '禁用'), 'success');
+      }
+
+      function openPwdModalFor(id) {
+        var a = _state.accounts.find(function (x) { return x.id === id; });
+        if (!a) return;
+        if (!canTouchAccount(a)) { App.showToast('只能管理本部门账号', 'error'); return; }
+        openPwdModal(id);
       }
 
       // ---- 角色 / 权限 ----
@@ -273,11 +361,20 @@
       });
 
       function toggleAllPerms() {
+        if (grantablePerms.value) {
+          // 主管：全选 = 只勾自己有权的那部分
+          roleModal.form.permissions = ALL_PAGE_IDS.filter(function (id) {
+            return !permOverLimit(id);
+          });
+          return;
+        }
         roleModal.form.permissions = permAllChecked.value ? [] : ALL_PAGE_IDS.slice();
       }
       function invertPerms() {
         var cur = roleModal.form.permissions || [];
-        roleModal.form.permissions = ALL_PAGE_IDS.filter(function (id) { return cur.indexOf(id) < 0; });
+        roleModal.form.permissions = ALL_PAGE_IDS.filter(function (id) {
+          return cur.indexOf(id) < 0 && !permOverLimit(id);
+        });
       }
       function groupChecked(cat) {
         var cur = roleModal.form.permissions || [];
@@ -289,7 +386,7 @@
         cat.pages.forEach(function (p) {
           var i = cur.indexOf(p.id);
           if (on) { if (i >= 0) cur.splice(i, 1); }
-          else if (i < 0) { cur.push(p.id); }
+          else if (i < 0 && !permOverLimit(p.id)) { cur.push(p.id); }   // 超限的不给勾
         });
         roleModal.form.permissions = cur;
       }
@@ -323,16 +420,32 @@
 
       function doConfirm() { if (_confirmAction) _confirmAction(); }
 
-      if (isAccountManager) loadData();
-      else loadRoles();
+      // ★ 挂载顺序：先拉 my-scope 确定身份与管辖范围，再按权限加载数据。
+      //   主管拿不到角色表（后端会拒），所以 loadRoles 在内部自行判权后跳过。
+      (async function initPage() {
+        await loadScope();
+        if (canManageAccounts.value) await loadAccounts();
+        if (canManageRoles.value) await loadRoles();
+        // 主管进页面时若 my-scope 慢于首次渲染，纠正部门按钮选中项
+        if (isLead.value && !isSuper.value) _state.activeDept = '全部';
+      })();
+
+      // 主管默认停在「全部」（= 本部门），避免误显示别的部门按钮计数
+      if (isLead.value && !isSuper.value && _state.activeDept !== '全部') {
+        _state.activeDept = '全部';
+      }
 
       return {
         state: _state,
         PAGE_CATEGORIES, DEPT_TABS, ALL_PAGE_IDS,
         acctModal, pwdModal, roleModal, confirmBox,
-        isAccountManager, filteredAccounts, deptCounts, roleOptions,
+        // 身份与范围
+        isAccountManager: canManageAccounts, canManageRoles, isLead, isSuper, scope,
+        lockRole, lockDept, visibleDeptTabs, canTouchAccount, permOverLimit, grantablePerms,
+        // 原 isAccountManager 绑定点（模板里用到）保持同名，指向新的可计算值
+        filteredAccounts, deptCounts, roleOptions,
         rolePermText, genderText, searchLocked, unlockSearch, switchDept,
-        openAcctModal, saveAcct, togglePwdVis, openPwdModal, savePwd,
+        openAcctModal, saveAcct, togglePwdVis, openPwdModal: openPwdModalFor, savePwd,
         confirmDeleteAcct, toggleAcct,
         openRolePermModal, toggleAllPerms, invertPerms, groupChecked, toggleGroup,
         saveRolePerm, confirmDeleteRole, doConfirm, permCount, permAllChecked,
@@ -343,19 +456,24 @@
 <div>
   <div class="ap-tabs">
     <button class="ap-tab" :class="{ active: state.activeTab === 'accounts' }" @click="state.activeTab = 'accounts'">账号列表</button>
-    <button class="ap-tab" :class="{ active: state.activeTab === 'roles' }" @click="state.activeTab = 'roles'">角色与权限</button>
+    <button v-if="canManageRoles" class="ap-tab" :class="{ active: state.activeTab === 'roles' }" @click="state.activeTab = 'roles'">角色与权限</button>
   </div>
 
   <!-- ============ 账号列表 ============ -->
   <div class="ap-panel" :class="{ active: state.activeTab === 'accounts' }">
-    <div v-if="!isAccountManager" style="background:#fff;border:1px solid #f1f5f9;border-radius:12px;padding:48px;text-align:center">
+    <div v-if="!isAccountManager && !isLead" style="background:#fff;border:1px solid #f1f5f9;border-radius:12px;padding:48px;text-align:center">
       <i class="fa-solid fa-lock" style="font-size:30px;color:#cbd5e1"></i>
-      <p style="margin-top:12px;color:#94a3b8;font-size:14px">账号列表仅对「开发人员 / 超级管理员 / 人事行政部」开放</p>
+      <p style="margin-top:12px;color:#94a3b8;font-size:14px">账号列表仅对「开发人员 / 超级管理员」及各部门主管开放</p>
     </div>
 
     <template v-else>
+      <div v-if="isLead && !isSuper" class="ap-scope-tip">
+        <i class="fa-solid fa-circle-info"></i>
+        您是该部门主管，仅可管理本部门「{{ scope.department }}」的账号，且只能授予不超出自身范围的权限
+      </div>
+
       <div class="acct-deptbar">
-        <button v-for="d in DEPT_TABS" :key="d.key" class="acct-dept"
+        <button v-for="d in visibleDeptTabs" :key="d.key" class="acct-dept"
                 :class="{ active: state.activeDept === d.key }" @click="switchDept(d.key)">
           {{ d.label }}<span class="cnt">{{ deptCounts[d.key] || 0 }}</span>
         </button>
@@ -408,10 +526,11 @@
               <td><span class="status-badge" :class="a.status">{{ a.status === 'enabled' ? '已启用' : '已禁用' }}</span></td>
               <td>
                 <div class="ap-actions">
-                  <button class="ap-btn-sm pwd" @click="openPwdModal(a.id)" title="修改密码"><i class="fa-solid fa-key"></i> 密码</button>
-                  <button class="ap-btn-sm edit" @click="openAcctModal(a.id)"><i class="fa-solid fa-pen"></i> 编辑</button>
-                  <button v-if="a.account !== 'admin'" class="ap-btn-sm toggle" @click="toggleAcct(a.id)" :title="a.status === 'enabled' ? '禁用' : '启用'"><i class="fa-solid fa-power-off"></i></button>
-                  <button v-if="a.account !== 'admin'" class="ap-btn-sm delete" @click="confirmDeleteAcct(a.id)"><i class="fa-solid fa-trash"></i></button>
+                  <button v-if="canTouchAccount(a) || a.isSelf" class="ap-btn-sm pwd" @click="openPwdModal(a.id)" title="修改密码"><i class="fa-solid fa-key"></i> 密码</button>
+                  <button v-if="canTouchAccount(a)" class="ap-btn-sm edit" @click="openAcctModal(a.id)"><i class="fa-solid fa-pen"></i> 编辑</button>
+                  <button v-if="canTouchAccount(a) && a.account !== 'admin'" class="ap-btn-sm toggle" @click="toggleAcct(a.id)" :title="a.status === 'enabled' ? '禁用' : '启用'"><i class="fa-solid fa-power-off"></i></button>
+                  <button v-if="canTouchAccount(a) && a.account !== 'admin'" class="ap-btn-sm delete" @click="confirmDeleteAcct(a.id)"><i class="fa-solid fa-trash"></i></button>
+                  <span v-if="a.isSelf" class="ap-self-tag">本人</span>
                 </div>
               </td>
             </tr>
@@ -423,8 +542,8 @@
     </template>
   </div>
 
-  <!-- ============ 角色与权限 ============ -->
-  <div class="ap-panel" :class="{ active: state.activeTab === 'roles' }">
+  <!-- ============ 角色与权限（仅 开发人员 / 超级管理员） ============ -->
+  <div v-if="canManageRoles" class="ap-panel" :class="{ active: state.activeTab === 'roles' }">
     <div style="display:flex;gap:12px;margin-bottom:16px">
       <button class="ap-btn-primary" @click="openRolePermModal()"><i class="fa-solid fa-plus"></i> 新增角色</button>
     </div>
@@ -452,27 +571,36 @@
 
   <!-- 新增/编辑账号弹窗 -->
   <ecom-modal :visible="acctModal.visible" :title="acctModal.isEdit ? '编辑账号' : '新增账号'" width="680px" @close="acctModal.visible = false" @save="saveAcct">
+    <div v-if="lockRole" class="ap-perm-hint">
+      <i class="fa-solid fa-lock"></i>
+      部门主管只能在本部门「{{ scope.department }}」新增「{{ scope.role }}」角色的账号，角色与部门已锁定
+    </div>
     <div class="ap-form-row">
       <div class="ap-form-group"><label>姓名</label><input class="ap-form-input" v-model="acctModal.form.name" placeholder="请输入姓名"></div>
       <div class="ap-form-group"><label>手机号（登录账号）</label><input class="ap-form-input" v-model="acctModal.form.account" placeholder="请输入手机号" autocomplete="off"></div>
     </div>
     <div class="ap-form-row">
       <div class="ap-form-group"><label>密码</label><input class="ap-form-input" v-model="acctModal.form.password" :placeholder="acctModal.isEdit ? '留空则不修改' : '请输入密码'" autocomplete="off"></div>
-      <div class="ap-form-group"><label>角色</label><select class="ap-form-input" v-model="acctModal.form.role">
+      <div class="ap-form-group"><label>角色</label><select class="ap-form-input" v-model="acctModal.form.role" :disabled="lockRole">
         <option v-for="r in roleOptions" :key="r" :value="r">{{ r }}</option>
       </select></div>
     </div>
     <div class="ap-form-row">
-      <div class="ap-form-group"><label>部门</label><input class="ap-form-input" v-model="acctModal.form.department" placeholder="如：总裁办 / 业务一部"></div>
+      <div class="ap-form-group"><label>部门</label><input class="ap-form-input" v-model="acctModal.form.department" :readonly="lockDept" :placeholder="lockDept ? '' : '如：总裁办 / 业务一部'"></div>
       <div class="ap-form-group"><label>细分小组</label><input class="ap-form-input" v-model="acctModal.form.subDept" placeholder="如：一部三组"></div>
     </div>
     <div class="ap-form-row">
-      <div class="ap-form-group"><label>部门主管</label><input class="ap-form-input" v-model="acctModal.form.leader" placeholder="如：马湘湘"></div>
+      <div class="ap-form-group"><label>部门主管</label><input class="ap-form-input" v-model="acctModal.form.leader" :readonly="lockRole" placeholder="如：马湘湘"></div>
       <div class="ap-form-group"><label>性别</label><select class="ap-form-input" v-model="acctModal.form.gender">
         <option value="">未设置</option><option value="male">男</option><option value="female">女</option>
       </select></div>
     </div>
-    <div class="ap-form-group"><label>状态</label><select class="ap-form-input" v-model="acctModal.form.status"><option value="enabled">已启用</option><option value="disabled">已禁用</option></select></div>
+    <div class="ap-form-group"><label>状态</label><select class="ap-form-input" v-model="acctModal.form.status" :disabled="acctModal.form.id && isLead && !isSuper"><option value="enabled">已启用</option><option value="disabled">已禁用</option></select></div>
+
+    <div class="ap-perm-hint" v-if="lockRole">
+      <i class="fa-solid fa-shield-halved"></i>
+      新账号将获得「{{ scope.role }}」角色的权限：{{ (scope.perms || []).length ? scope.perms.length + ' 项' : '无' }}（不超出您自身的权限范围）
+    </div>
   </ecom-modal>
 
   <!-- 修改密码弹窗 -->
@@ -502,9 +630,11 @@
           </label>
         </div>
         <div class="rp-card-body">
-          <label class="rp-item" v-for="p in cat.pages" :key="p.id" :class="{ on: roleModal.form.permissions.indexOf(p.id) >= 0 }">
-            <input type="checkbox" :value="p.id" v-model="roleModal.form.permissions">
+          <label class="rp-item" v-for="p in cat.pages" :key="p.id"
+                 :class="{ on: roleModal.form.permissions.indexOf(p.id) >= 0, off: permOverLimit(p.id) }">
+            <input type="checkbox" :value="p.id" v-model="roleModal.form.permissions" :disabled="permOverLimit(p.id)">
             <span>{{ p.name }}</span>
+            <em v-if="permOverLimit(p.id)" class="rp-lock">超范围</em>
           </label>
         </div>
       </div>
