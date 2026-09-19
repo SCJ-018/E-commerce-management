@@ -3,8 +3,9 @@
 //   ① 内容输入：文本（支持直接粘贴图片）、图片、办公文件（拖拽 / 点击选择）
 //   ② 接收人：网站账号列表 / 网站整个部门 / 钉钉组织架构 / 钉钉联系人（姓名匹配）
 //   ③ 发送：走后端 /api/announce/send → 钉钉机器人单聊（文本 markdown / 图片 sampleImage / 文件 sampleFile）
-// ★ 2026-09-19：钉钉凭证改由服务端统一下发（announce_config 内置默认值），前端配置页已下线；
-//   钉钉组织架构/联系人在进页面时自动同步（后端带 10 分钟缓存 + 启动预热），无需手动点同步。
+// ★ 2026-09-19：钉钉凭证由服务端统一下发（announce_config 内置默认值），前端配置页已下线；
+//   钉钉名单（组织架构/联系人）由服务端每天 08:30 自动刷新并落库，前端进页面只读缓存，
+//   无任何「同步 / 加载」按钮，也不需要人工点击。
 (function () {
   if (typeof Vue === 'undefined' || typeof ApiService === 'undefined' || typeof App === 'undefined') return;
 
@@ -23,10 +24,12 @@
     // ---- 网站账号数据源 ----
     optionsLoaded: false,
     optionsLoading: false,
+    optionsError: '',
     accounts: [],
     departments: [],
     accountKw: '',
-    // ---- 钉钉数据源 ----
+    // ---- 钉钉名单（服务端每天 08:30 自动刷新并落库，前端只读） ----
+    roster: null,            // {ready, userCount, deptCount, syncedAt}
     contacts: null,          // {departments, users, syncedAt}
     contactsLoading: false,
     contactsError: '',
@@ -212,23 +215,31 @@
     else addPicked(p);
   }
 
-  // ---- 数据加载 ----
+  // ---- 数据加载（进页面自动执行，前端无任何「加载/同步」入口） ----
   async function loadOptions() {
-    if (_state.optionsLoaded || _state.optionsLoading) return;
+    if (_state.optionsLoading) return;
     _state.optionsLoading = true;
+    _state.optionsError = '';
     try {
       var data = await ApiService.request('/announce/options');
       if (data) {
         _state.accounts = data.accounts || [];
         _state.departments = data.departments || [];
+        if (data.roster) _state.roster = data.roster;
         _state.optionsLoaded = true;
+      } else if (!_state.optionsLoaded) {
+        _state.optionsError = '账号列表加载失败，请刷新页面重试';
+      }
+    } catch (e) {
+      if (!_state.optionsLoaded) {
+        _state.optionsError = (e && e.message) || '账号列表加载失败，请刷新页面重试';
       }
     } finally {
       _state.optionsLoading = false;
     }
   }
 
-  // 进页面自动同步钉钉组织架构 / 联系人（后端 10 分钟缓存，启动时已预热，通常秒回）
+  // 读取服务端已生成好的钉钉名单（后端落库 + 每日 08:30 自动更新，此处只读，秒回）
   async function syncContacts() {
     if (_state.contactsLoading) return;
     _state.contactsLoading = true;
@@ -236,17 +247,34 @@
     var r = await ApiService.requestFull('/announce/dingtalk/contacts');
     _state.contactsLoading = false;
     if (!r.ok) {
-      _state.contactsError = r.msg || '自动同步失败';
+      _state.contactsError = r.msg || '名单读取失败';
       _state.contacts = null;
       return;
     }
     _state.contacts = r.data;
+    if (r.data) {
+      _state.roster = {
+        ready: true, userCount: r.data.userCount || (r.data.users || []).length,
+        deptCount: r.data.deptCount || (r.data.departments || []).length,
+        syncedAt: r.data.syncedAt || '',
+      };
+    }
     // 默认展开根部门
     var ex = {};
     ((r.data || {}).departments || []).forEach(function (d) {
       if (d.parentId === 0 || d.parentId === 1) ex[d.deptId] = true;
     });
     _state.expanded = ex;
+  }
+
+  // 进页面自动拉取（账号列表 + 钉钉名单），失败自动重试一次
+  function autoLoad() {
+    loadOptions();
+    syncContacts();
+    setTimeout(function () {
+      if (!_state.optionsLoaded && !_state.optionsLoading) loadOptions();
+      if (!_state.contacts && !_state.contactsLoading && !_state.contactsError) syncContacts();
+    }, 2500);
   }
 
   // ---- 组织架构树（扁平化渲染，避免递归组件） ----
@@ -392,7 +420,7 @@
   var AnnouncePage = {
     name: 'AnnouncePage',
     setup: function () {
-      Vue.onMounted(function () { loadOptions(); syncContacts(); });
+      Vue.onMounted(function () { autoLoad(); });
 
       return {
         state: _state,
@@ -411,6 +439,7 @@
         isPicked: isPicked,
         syncContacts: syncContacts,
         loadOptions: loadOptions,
+        autoLoad: autoLoad,
         treeRows: treeRows,
         filteredAccounts: filteredAccounts,
         filteredContacts: filteredContacts,
@@ -505,13 +534,23 @@
     <div class="an-card">
       <div class="an-card-head">
         <span class="an-card-title"><i class="fa-solid fa-user-plus" style="color:#6366f1"></i> 接收人</span>
-        <span class="an-card-hint">已选 {{ state.picked.length }} 人</span>
+        <span class="an-card-hint">
+          <template v-if="state.roster && state.roster.ready">
+            <i class="fa-solid fa-circle-check" style="color:#16a34a"></i>
+            钉钉名单 {{ state.roster.userCount }} 人 · 更新于 {{ state.roster.syncedAt }}
+          </template>
+          <template v-else-if="state.contactsError">
+            <i class="fa-solid fa-circle-exclamation" style="color:#ea580c"></i> 钉钉名单读取异常
+          </template>
+          <template v-else><i class="fa-solid fa-spinner fa-spin"></i> 名单加载中…</template>
+          · 已选 {{ state.picked.length }} 人
+        </span>
       </div>
       <div class="an-tabs">
-        <button class="an-tab" :class="{active: state.activeTab === 'accounts'}" @click="state.activeTab = 'accounts'; loadOptions()">
+        <button class="an-tab" :class="{active: state.activeTab === 'accounts'}" @click="state.activeTab = 'accounts'">
           <i class="fa-solid fa-list-check"></i> 账号列表
         </button>
-        <button class="an-tab" :class="{active: state.activeTab === 'dept'}" @click="state.activeTab = 'dept'; loadOptions()">
+        <button class="an-tab" :class="{active: state.activeTab === 'dept'}" @click="state.activeTab = 'dept'">
           <i class="fa-solid fa-sitemap"></i> 整个部门
         </button>
         <button class="an-tab" :class="{active: state.activeTab === 'org'}" @click="state.activeTab = 'org'">
@@ -528,10 +567,12 @@
           <i class="fa-solid fa-magnifying-glass"></i>
           <input v-model="state.accountKw" placeholder="搜索姓名 / 账号 / 部门 / 角色">
         </div>
-        <div class="an-notice info" v-if="!state.optionsLoaded && !state.optionsLoading">
-          <button style="border:none;background:none;color:#1d4ed8;cursor:pointer;font-size:12.5px" @click="loadOptions()">点击加载网站账号列表</button>
+        <div class="an-empty" v-if="state.optionsLoading"><i class="fa-solid fa-spinner fa-spin"></i>正在自动加载账号列表…</div>
+        <div class="an-notice err" v-else-if="state.optionsError">
+          {{ state.optionsError }}<br>
+          <button style="border:none;background:none;color:#1d4ed8;cursor:pointer;font-size:12.5px;padding:0" @click="loadOptions()">重新加载</button>
         </div>
-        <div class="an-empty" v-else-if="state.optionsLoading"><i class="fa-solid fa-spinner fa-spin"></i>正在加载账号列表…</div>
+        <div class="an-empty" v-else-if="!state.optionsLoaded"><i class="fa-solid fa-spinner fa-spin"></i>正在自动加载账号列表…</div>
         <div class="an-list" v-else>
           <div class="an-empty" v-if="!filteredAccounts.length"><i class="fa-solid fa-user-slash"></i>没有匹配的账号</div>
           <label class="an-row" v-for="a in filteredAccounts" :key="a.id">
@@ -554,11 +595,11 @@
         </div>
       </template>
 
-      <!-- Tab 3：钉钉组织架构（进页面已自动同步） -->
+      <!-- Tab 3：钉钉组织架构（服务端每日 08:30 自动更新，前端只读） -->
       <template v-if="state.activeTab === 'org'">
         <div class="an-card-body" style="padding-top:10px">
-          <span class="an-card-hint" v-if="state.contactsLoading"><i class="fa-solid fa-spinner fa-spin"></i> 正在自动同步钉钉组织架构…</span>
-          <span class="an-card-hint" v-else-if="state.contacts"><i class="fa-solid fa-circle-check" style="color:#16a34a"></i> 组织架构已自动同步于 {{ state.contacts.syncedAt }}</span>
+          <span class="an-card-hint" v-if="state.contactsLoading"><i class="fa-solid fa-spinner fa-spin"></i> 正在读取钉钉组织架构…</span>
+          <span class="an-card-hint" v-else-if="state.contacts"><i class="fa-solid fa-circle-check" style="color:#16a34a"></i> 名单更新于 {{ state.contacts.syncedAt }}（服务端每日自动刷新，无需手动同步）</span>
         </div>
         <div class="an-notice err" v-if="state.contactsError">
           <b>不能实现该功能</b>：{{ state.contactsError }}<br>
@@ -584,25 +625,25 @@
           </template>
         </div>
         <div class="an-empty" v-else-if="!state.contactsLoading && !state.contactsError">
-          <i class="fa-solid fa-cloud-arrow-down"></i>正在自动同步钉钉组织架构…
+          <i class="fa-solid fa-cloud-arrow-down"></i>正在读取服务端名单…
         </div>
       </template>
 
-      <!-- Tab 4：钉钉联系人（进页面已自动同步，按姓名搜索） -->
+      <!-- Tab 4：钉钉联系人（服务端名单，按姓名搜索） -->
       <template v-if="state.activeTab === 'contact'">
         <div class="an-search">
           <i class="fa-solid fa-magnifying-glass"></i>
           <input v-model="state.contactKw" placeholder="输入姓名搜索钉钉联系人">
         </div>
         <div class="an-card-body" style="padding-top:4px">
-          <span class="an-card-hint" v-if="state.contactsLoading"><i class="fa-solid fa-spinner fa-spin"></i> 正在自动同步联系人列表…</span>
-          <span class="an-card-hint" v-else-if="state.contacts"><i class="fa-solid fa-circle-check" style="color:#16a34a"></i> 联系人列表已自动同步（{{ (state.contacts.users || []).length }} 人）</span>
+          <span class="an-card-hint" v-if="state.contactsLoading"><i class="fa-solid fa-spinner fa-spin"></i> 正在读取钉钉联系人…</span>
+          <span class="an-card-hint" v-else-if="state.contacts"><i class="fa-solid fa-circle-check" style="color:#16a34a"></i> 联系人名单 {{ (state.contacts.users || []).length }} 人 · 更新于 {{ state.contacts.syncedAt }}</span>
         </div>
         <div class="an-notice err" v-if="state.contactsError">
           <b>不能实现该功能</b>：{{ state.contactsError }}
         </div>
         <div class="an-notice info" v-if="!state.contacts && !state.contactsError">
-          正在自动拉取钉钉通讯录，请稍候…
+          正在读取服务端名单，请稍候…
         </div>
         <div class="an-list" v-if="filteredContacts.length">
           <label class="an-row" v-for="(c, idx) in filteredContacts" :key="c.userId || (c.name + idx)">

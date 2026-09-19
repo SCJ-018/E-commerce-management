@@ -4202,9 +4202,15 @@ def push_now():
 #   POST /api/announce/config              保存本页钉钉应用凭证
 #   POST /api/announce/config/test         连通性测试（取 token / 可选发测试消息）
 
-# 钉钉组织架构缓存（同步一次全量较慢，10 分钟内复用）
-_ANNOUNCE_CONTACTS_CACHE = {'ts': 0.0, 'departments': [], 'users': []}
-_ANNOUNCE_CONTACTS_TTL = 600
+# 钉钉组织架构 / 联系人名单缓存（三级：进程内存 → announce_contacts_cache 落库 → 钉钉接口）
+# ★ 2026-09-19：名单改为服务端定时生成并落库，前端不再有任何「同步/加载」按钮，
+#   页面加载只读缓存，不再因为读通讯录而等待或需要人工点击。
+_ANNOUNCE_CONTACTS_CACHE = {'ts': 0.0, 'rosterTs': 0.0, 'departments': [], 'users': []}
+_ANNOUNCE_CONTACTS_TTL = 600                  # 进程内复用 10 分钟
+_ANNOUNCE_ROSTER_MAX_AGE = 12 * 3600          # 落库名单超过 12h → 后台异步补一次
+_ANNOUNCE_ROSTER_HOUR, _ANNOUNCE_ROSTER_MINUTE = 8, 30   # 每天 08:30 刷新（保证 9 点前是最新）
+_ANNOUNCE_ROSTER_REFRESHING = threading.Event()
+_ANNOUNCE_ROSTER_LOCK = threading.Lock()      # 刷新串行化，避免定时/页面并发重复拉取
 # 钉钉单条 markdown 消息安全长度（超长自动分段发送）
 _ANNOUNCE_MD_CHUNK = 1800
 # 单个附件上限（media/upload 的硬限制：图片 10MB / 文件 20MB）
@@ -4243,7 +4249,18 @@ def _announce_ensure_table():
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """, fetch=False)
-        print('[通告发放] 数据表就绪（announce_config / announce_logs，独立于钉钉推送）')
+        # 钉钉组织架构/联系人名单落库（单行 id=1，服务端定时刷新，前端读这份）
+        db_execute("""
+            CREATE TABLE IF NOT EXISTS announce_contacts_cache (
+                id TINYINT PRIMARY KEY,
+                payload LONGTEXT,
+                synced_at DATETIME,
+                user_count INT DEFAULT 0,
+                dept_count INT DEFAULT 0,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """, fetch=False)
+        print('[通告发放] 数据表就绪（announce_config / announce_logs / announce_contacts_cache）')
     except Exception as e:
         print('[通告发放] 建表失败: %s' % e)
 
@@ -4301,16 +4318,153 @@ def _announce_apply_robot_code(cfg, robot_code):
         print('[通告发放] robotCode 已自动记录为 %s' % robot_code)
 
 
+def _announce_roster_load():
+    """读取落库名单 → (departments, users, synced_ts)；没有/解析失败返回 None"""
+    try:
+        rows = db_execute('SELECT payload, synced_at FROM announce_contacts_cache WHERE id = 1') or []
+    except Exception as e:
+        print('[通告发放] 读取落库名单失败: %s' % e)
+        return None
+    if not rows:
+        return None
+    row = rows[0]
+    try:
+        payload = json.loads(row.get('payload') or '{}')
+    except Exception:
+        return None
+    users = payload.get('users') or []
+    if not users:
+        return None
+    synced_ts = 0.0
+    sa = row.get('synced_at')
+    if sa is not None:
+        try:
+            synced_ts = time.mktime(sa.timetuple())
+        except Exception:
+            synced_ts = 0.0
+    return (payload.get('departments') or []), users, synced_ts
+
+
+def _announce_roster_save(departments, users):
+    """把名单写库（单行 upsert），供前端与发送解析共用"""
+    payload = json.dumps({'departments': departments, 'users': users}, ensure_ascii=False)
+    db_execute(
+        'INSERT INTO announce_contacts_cache (id, payload, synced_at, user_count, dept_count) '
+        'VALUES (1, %s, NOW(), %s, %s) '
+        'ON DUPLICATE KEY UPDATE payload = VALUES(payload), synced_at = NOW(), '
+        'user_count = VALUES(user_count), dept_count = VALUES(dept_count)',
+        [payload, len(users), len(departments)], fetch=False)
+
+
+def _announce_roster_status():
+    """名单状态（不触发任何钉钉请求）：{ready, userCount, deptCount, syncedAt, ageSeconds}"""
+    cache = _ANNOUNCE_CONTACTS_CACHE
+    if not cache['users']:
+        stored = _announce_roster_load()
+        if stored:
+            departments, users, synced_ts = stored
+            cache.update(ts=time.time(), rosterTs=synced_ts, departments=departments, users=users)
+    if not cache['users']:
+        return {'ready': False, 'userCount': 0, 'deptCount': 0, 'syncedAt': '', 'ageSeconds': None}
+    ts = cache.get('rosterTs') or cache.get('ts') or 0
+    return {
+        'ready': True,
+        'userCount': len(cache['users']),
+        'deptCount': len(cache.get('departments') or []),
+        'syncedAt': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts)) if ts else '',
+        'ageSeconds': int(time.time() - ts) if ts else None,
+    }
+
+
+def _announce_contacts_refresh():
+    """真正访问钉钉拉全量名单 → 写内存 + 落库；失败抛 DingTalkError"""
+    with _ANNOUNCE_ROSTER_LOCK:
+        client = _announce_client()
+        departments, users = client.fetch_all_contacts()
+        if not users:
+            raise DingTalkError('钉钉组织架构返回 0 位成员（请检查应用可见范围与通讯录读权限）')
+        now = time.time()
+        _ANNOUNCE_CONTACTS_CACHE.update(ts=now, rosterTs=now,
+                                        departments=departments, users=users)
+        try:
+            _announce_roster_save(departments, users)
+        except Exception as e:
+            print('[通告发放] 名单落库失败（本次仅驻留内存）: %s' % e)
+        return departments, users
+
+
+def _announce_roster_refresh_async():
+    """后台异步刷新名单（去重，失败只打日志，不影响当前请求）"""
+    if _ANNOUNCE_ROSTER_REFRESHING.is_set():
+        return
+
+    def _work():
+        _ANNOUNCE_ROSTER_REFRESHING.set()
+        try:
+            departments, users = _announce_contacts_refresh()
+            print('[通告发放][名单] 后台刷新完成：部门 %d / 成员 %d' % (len(departments), len(users)))
+        except Exception as e:
+            print('[通告发放][名单] 后台刷新失败: %s' % e)
+        finally:
+            _ANNOUNCE_ROSTER_REFRESHING.clear()
+
+    threading.Thread(target=_work, daemon=True, name='announce-roster-refresh').start()
+
+
 def _announce_contacts(force=False):
-    """读取钉钉组织架构（带缓存）；失败抛 DingTalkError（含可展示原因）"""
+    """读取钉钉组织架构/联系人名单：内存 → 落库 → 实时拉取（force=True 强制拉取）
+
+    ★ 前端只走前两级，所以页面加载是毫秒级、且不依赖钉钉接口当时是否可用。
+    """
     now = time.time()
     if (not force and _ANNOUNCE_CONTACTS_CACHE['users']
             and now - _ANNOUNCE_CONTACTS_CACHE['ts'] < _ANNOUNCE_CONTACTS_TTL):
         return _ANNOUNCE_CONTACTS_CACHE
-    client = _announce_client()
-    departments, users = client.fetch_all_contacts()
-    _ANNOUNCE_CONTACTS_CACHE.update(ts=now, departments=departments, users=users)
+
+    if not force:
+        stored = _announce_roster_load()
+        if stored:
+            departments, users, synced_ts = stored
+            _ANNOUNCE_CONTACTS_CACHE.update(ts=now, rosterTs=synced_ts,
+                                            departments=departments, users=users)
+            if now - synced_ts > _ANNOUNCE_ROSTER_MAX_AGE:
+                print('[通告发放][名单] 落库名单已超过 %dh，触发后台刷新'
+                      % int(_ANNOUNCE_ROSTER_MAX_AGE / 3600))
+                _announce_roster_refresh_async()
+            return _ANNOUNCE_CONTACTS_CACHE
+
+    _announce_contacts_refresh()
     return _ANNOUNCE_CONTACTS_CACHE
+
+
+def _announce_roster_loop():
+    """后台线程：每天 08:30 自动刷新钉钉名单并落库（保证 9 点前是最新列表）
+
+    条件式触发（不是睡到点）：只要「已过今天的 08:30」且「今天还没刷新成功」，就刷新一次。
+    这样服务在 08:30 之后重启也会自动补跑，名单不会因为重启而整天空缺。
+    """
+    time.sleep(25)  # 等数据库/服务初始化
+    while True:
+        try:
+            now = datetime.now()
+            due = now.replace(hour=_ANNOUNCE_ROSTER_HOUR,
+                              minute=_ANNOUNCE_ROSTER_MINUTE, second=0, microsecond=0)
+            st = _announce_roster_status()
+            synced_date = ''
+            if st.get('syncedAt'):
+                synced_date = st['syncedAt'][:10]
+            if now >= due and synced_date != now.strftime('%Y-%m-%d'):
+                print('[通告发放][名单] 触发每日刷新（目标：%02d:%02d 前就绪）'
+                      % (_ANNOUNCE_ROSTER_HOUR + 1, 0))
+                try:
+                    departments, users = _announce_contacts_refresh()
+                    print('[通告发放][名单] 每日刷新完成：部门 %d / 成员 %d'
+                          % (len(departments), len(users)))
+                except Exception as e:
+                    print('[通告发放][名单] 每日刷新失败（1 分钟后再试）: %s' % e)
+        except Exception as e:
+            print('[通告发放][名单] 定时循环异常: %s' % e)
+        time.sleep(60)
 
 
 def _announce_match_by_name(name):
@@ -4366,6 +4520,7 @@ def announce_options():
             })
         cfg = _announce_config()
         return success({'accounts': accounts, 'departments': departments,
+                        'roster': _announce_roster_status(),
                         'configReady': bool((cfg.get('app_key') or '').strip()
                                             and (cfg.get('app_secret') or '').strip())})
     except Exception as e:
@@ -4382,13 +4537,15 @@ def announce_dingtalk_contacts():
     """
     try:
         cache = _announce_contacts(force=False)
-        synced_at = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(cache.get('ts') or time.time()))
+        st = _announce_roster_status()
         return success({
             'departments': cache['departments'],
             'users': [{'userid': u['userid'], 'name': u.get('name') or '',
                        'title': u.get('title') or '', 'deptIds': u.get('deptIds') or []}
                       for u in cache['users']],
-            'syncedAt': synced_at,
+            'syncedAt': st.get('syncedAt') or '',
+            'userCount': len(cache['users']),
+            'deptCount': len(cache.get('departments') or []),
         })
     except DingTalkError as e:
         return fail('不能实现该功能：无法读取钉钉组织架构 —— %s' % e)
@@ -9094,9 +9251,9 @@ _push_ensure_tables()
 # 通告发放独立配置表（独立于钉钉推送的 dingtalk_push_config）
 _announce_ensure_table()
 
-# daemon 线程：启动时预热「通告发放」的钉钉组织架构缓存 + 凭证落库自愈。
-# 前端已无手动同步按钮，页面加载直接读这份缓存（10 分钟 TTL）；
-# DB 里凭证缺失/被清空时用代码内置默认值补齐（幂等）。
+# daemon 线程：启动时校验/补齐「通告发放」配置 + 名单（页面直接读这份，无需人工同步）。
+# 名单三级兜底：内存 → announce_contacts_cache 落库 → 实时拉钉钉；
+# 每日 08:30 由 _announce_roster_loop 自动刷新，保证 9 点前是最新列表。
 def _announce_prewarm():
     try:
         cfg = _announce_config()
@@ -9108,13 +9265,20 @@ def _announce_prewarm():
     except Exception as e:
         print('[通告发放] 配置自愈失败: %s' % e)
     try:
-        _announce_contacts()
-        print('[通告发放] 组织架构预热完成（部门/成员缓存就绪）')
+        st = _announce_roster_status()
+        if st.get('ready'):
+            print('[通告发放] 名单已就绪（落库缓存）：部门 %d / 成员 %d，更新于 %s'
+                  % (st['deptCount'], st['userCount'], st['syncedAt']))
+        else:
+            _announce_contacts_refresh()
+            print('[通告发放] 名单首次生成完成（落库 + 内存）')
     except Exception as e:
-        print('[通告发放] 组织架构预热失败（页面加载时会重试）: %s' % e)
+        print('[通告发放] 名单初始化失败（定时任务会自动重试）: %s' % e)
 
 
 threading.Thread(target=_announce_prewarm, daemon=True, name='announce-prewarm').start()
+# 每日名单刷新线程（08:30 前就绪，含重启补跑）
+threading.Thread(target=_announce_roster_loop, daemon=True, name='announce-roster-loop').start()
 # 种草专有表：推送人名单 / 爆文库 / 优化建议（同样必须在导入阶段建好）
 _seeding_ensure_tables()
 
