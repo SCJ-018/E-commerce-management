@@ -509,6 +509,12 @@ const ApiService = (() => {
         return null;
       }
     },
+
+    // ---- 工具箱 - 通告发放 ----
+    // 钉钉名单由服务端每日 08:30 自动刷新并落库；页面只读取该缓存，
+    // 不提供前端手动同步入口，避免浏览页面时重复请求钉钉通讯录。
+    async getAnnounceOptions() { return request('/announce/options'); },
+    async getAnnounceContacts() { return requestFull('/announce/dingtalk/contacts'); },
   };
 })();
 

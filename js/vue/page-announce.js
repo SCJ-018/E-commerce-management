@@ -221,7 +221,7 @@
     _state.optionsLoading = true;
     _state.optionsError = '';
     try {
-      var data = await ApiService.request('/announce/options');
+      var data = await ApiService.getAnnounceOptions();
       if (data) {
         _state.accounts = data.accounts || [];
         _state.departments = data.departments || [];
@@ -244,7 +244,7 @@
     if (_state.contactsLoading) return;
     _state.contactsLoading = true;
     _state.contactsError = '';
-    var r = await ApiService.requestFull('/announce/dingtalk/contacts');
+    var r = await ApiService.getAnnounceContacts();
     _state.contactsLoading = false;
     if (!r.ok) {
       _state.contactsError = r.msg || '名单读取失败';
