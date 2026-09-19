@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from queue import Queue
 from threading import Lock, RLock
+import threading  # ★ 必须在顶层导入：模块级（约 4200 行）的 Event/Lock 会用到，晚导入即 NameError
 
 import requests
 from flask import Flask, request, jsonify, send_from_directory
