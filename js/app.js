@@ -357,6 +357,23 @@ const ApiService = (() => {
         body: JSON.stringify({ cookie: cookie || '' }),
       });
     },
+    // ---- 选品助手 V2：每日分层选品看板 ----
+    async getSelectionDashboardDates() {
+      return request('/product-selection/dashboard/dates');
+    },
+    async getSelectionDashboard(date) {
+      let path = '/product-selection/dashboard';
+      if (date) path += '?date=' + encodeURIComponent(date);
+      return request(path);
+    },
+    async getSelectionDashboardStatus() {
+      return request('/product-selection/dashboard/status');
+    },
+    async runSelectionDashboard(date) {
+      return request('/product-selection/dashboard/run', {
+        method: 'POST', body: JSON.stringify({ date: date || '' })
+      });
+    },
     // ---- 每日数据分析 ----
     async generateDailyReport(date) {
       var body = date ? JSON.stringify({ date: date }) : undefined;

@@ -39,6 +39,8 @@ if hasattr(sys.stdout, 'reconfigure'):
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USER_DATA_DIR = os.path.join(BASE_DIR, 'douyin_profile')
 COOKIE_FILE = os.path.join(BASE_DIR, 'douyin_cookie.txt')
+# 热点宝抓取器读取此文件。扫码工具同步写入，避免“已登录但 07:00 抓取仍缺 Cookie”。
+HOT_COOKIE_FILE = os.path.join(BASE_DIR, 'douyin_hot_cookie.txt')
 HOME_URL = 'https://www.douyin.com/'
 LOGIN_COOKIE = 'sessionid'
 WAIT_TIMEOUT = 6 * 60
@@ -51,6 +53,7 @@ LAUNCH_ARGS = ['--disable-blink-features=AutomationControlled', '--no-first-run'
 INIT_JS = "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
 
 REMOTE_COOKIE = '/opt/ecom/tools/douyin_cookie.txt'
+REMOTE_HOT_COOKIE = '/opt/ecom/tools/douyin_hot_cookie.txt'
 
 # 登录入口：JS 精确定位「登录」叶子节点 → 取真实坐标 → 鼠标点击
 # ★ 教训：`button:has-text("登录")` / locator.click 会匹配到祖先或被遮挡节点，
@@ -88,6 +91,8 @@ def _save_cookie(context):
     s = _cookie_str(context)
     with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
         f.write(s)
+    with open(HOT_COOKIE_FILE, 'w', encoding='utf-8') as f:
+        f.write(s)
     return s
 
 
@@ -113,7 +118,7 @@ def _click_login(page):
     return True, ('已自动点出登录框（候选 %d 个，坐标 %.0f,%.0f）' % (len(cands), cx, cy))
 
 
-def _upload(local_path):
+def _upload(local_path, remote_path=REMOTE_COOKIE):
     """把 Cookie 传到服务器。
 
     连接参数直接复用 .deploy/ssx.py，避免 SSH 密码在两处各写一份。
@@ -139,11 +144,11 @@ def _upload(local_path):
         c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         c.connect(host, 22, user, pwd, timeout=20, banner_timeout=20, auth_timeout=20)
         sftp = c.open_sftp()
-        sftp.put(local_path, REMOTE_COOKIE)
-        size = sftp.stat(REMOTE_COOKIE).st_size
+        sftp.put(local_path, remote_path)
+        size = sftp.stat(remote_path).st_size
         sftp.close()
         c.close()
-        return True, '已上传 %s（%d 字节）' % (REMOTE_COOKIE, size)
+        return True, '已上传 %s（%d 字节）' % (remote_path, size)
     except Exception as e:
         return False, '上传失败：%s' % str(e)[:180]
 
@@ -222,8 +227,15 @@ def main():
                   % (len(s), len(ctx.cookies())))
 
         print('[4/4] 上传到服务器 ...')
+        if '--local-only' in sys.argv:
+            print('      ✅ 已仅保存本地登录态（未上传服务器）')
+            ctx.close()
+            return 0
         up_ok, msg = _upload(COOKIE_FILE)
         print('      %s%s' % ('✅ ' if up_ok else '❌ ', msg))
+        hot_ok, hot_msg = _upload(HOT_COOKIE_FILE, REMOTE_HOT_COOKIE)
+        print('      %s%s' % ('✅ ' if hot_ok else '❌ ', hot_msg))
+        up_ok = up_ok and hot_ok
         sid = _pick_cookie(ctx, LOGIN_COOKIE)
         print('      sessionid 前缀：%s...' % sid[:12])
         ctx.close()

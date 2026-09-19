@@ -6,6 +6,7 @@
 import os
 import json
 import re
+import math
 import traceback
 import time
 import subprocess
@@ -8051,11 +8052,11 @@ def product_selection_1688_market_status():
 
 # ======================== 选品助手智能体 ========================
 # 流程：
-#   每日 8 点自动抓取抖音热点宝（搜索总榜 + 热度飙升榜，近一天，去重，不落库）
-#   → 品类筛选写入「抖音热搜品类表」→ 前端抖音热搜榜自动展示。
-#   用户点击「当日热搜选品分析」→ 输入价格区间 → 智能体对比天猫榜单价格与市场客单价
-#   → 返回约 50 个具体商品卡片 → 用户勾选 10 个 → 智能体过爱搜 + 天猫销量前100
-#   → 输出 3 可用品 + 9 裂变品 + 300 字当日建议 → 存档可回看。
+#   每日 07:00 抓取并清洗抖音热点宝 → 写入「抖音热搜品类表」。
+#   → V2 按四个价格带从热搜和天猫榜单生成 70 个候选品。
+#   → 低速采集爱搜数据，按需求/利润/竞争/售后/内容五维评分。
+#   → 输出 7 个原品、每品 3 个关联裂变品，并抓取淘宝销量前 100 后按日期存档。
+# 旧版「用户勾选 10 品 → 3+9」接口仍保留，便于历史记录与既有调用兼容。
 
 _DOUYIN_HOT_COOKIE_FILE = os.path.join(_SEEDING_DIR, 'douyin_hot_cookie.txt')
 _DOUYIN_HOT_FILE = os.path.join(_SEEDING_DIR, '_douyin_hot.json')
@@ -8550,7 +8551,7 @@ def _douyin_hot_ai_filter(filter_result):
 
 
 def _run_scrape_and_filter():
-    """抓取热点宝 → 品类筛选，写进度文件。手动触发与每日 8 点定时共用。"""
+    """抓取热点宝 → 品类筛选 → 启动当日分层选品。手动触发与每日 7 点定时共用。"""
     try:
         _write_douyin_hot_progress('scraping', '正在抓取抖音热点宝热搜...')
         ok = _run_py_script(_DOUYIN_HOT_SCRAPER, timeout=900)
@@ -8565,6 +8566,9 @@ def _run_scrape_and_filter():
                                    {'total': result.get('total'), 'matched': result.get('matched'),
                                     'ai_kept': ai.get('kept'), 'ai_removed': ai.get('removed'),
                                     'date': result.get('date')})
+        # V2 同时支持「热搜关联」和「仅用天猫榜单补位」：即使当天没有命中热搜词，
+        # 也要运行，才能按四个价格带生成完整候选池。
+        _start_selection_v2(result.get('date'))
     except Exception as e:
         traceback.print_exc()
         _write_douyin_hot_progress('error', '抓取筛选异常: ' + str(e))
@@ -8812,7 +8816,8 @@ def _aisou_enrich(products):
     """对给定商品名跑爱搜采集，结果写入「爱搜数据表」"""
     _ensure_aisou_columns()
     _write_json(_AISOU_INPUT_FILE, {'keywords': products})
-    if not _run_py_script(_AISOU_SCRAPER, timeout=1800):
+    # 70 个候选品按低速顺序采集，给出 65 分钟窗口，满足 45~60 分钟目标并保留故障余量。
+    if not _run_py_script(_AISOU_SCRAPER, timeout=3900):
         return 0
     out = _read_json(_AISOU_OUTPUT_FILE)
     if not out:
@@ -9322,6 +9327,398 @@ def ps_rising():
         return fail(str(e))
 
 
+# ======================== 选品助手 V2：每日分层选品看板 ========================
+#
+# V2 不复用旧版「用户勾选 10 个 → 3+9」的交互结果，而是每天自动产出一份完整的
+# 70 品分层候选、评分、7 个原品、21 个裂变品和销量验证结果。结果仍写入选品记录表，
+# 但以 version 标识，旧记录和旧接口可继续正常读取。
+
+_SELECTION_V2_BANDS = [
+    {'key': 'volume', 'name': '走量款', 'min': 29, 'max': 89, 'quota': 10, 'final_quota': 1,
+     'decision': '货比三家，看评价和主图', 'audience': '大多数中小卖家的主力盘，广告能扛得住',
+     'accent': 'mint'},
+    {'key': 'profit', 'name': '利润款', 'min': 90, 'max': 199, 'quota': 30, 'final_quota': 3,
+     'decision': '需要被说服，详情页定生死', 'audience': '有品牌叙事或差异化卖点的人',
+     'accent': 'violet'},
+    {'key': 'trust', 'name': '信任款', 'min': 200, 'max': 499, 'quota': 20, 'final_quota': 2,
+     'decision': '看资质、客服、售后承诺', 'audience': '有工厂背书、认证齐全、能做售后兜底',
+     'accent': 'peach'},
+    {'key': 'image', 'name': '形象款', 'min': 500, 'max': 1199, 'quota': 10, 'final_quota': 1,
+     'decision': '长决策周期，复购低但客单高', 'audience': '品牌方、专业类目、中高端市场',
+     'accent': 'rose'},
+]
+_SELECTION_V2_JOB_FILE = os.path.join(_SEEDING_DIR, '_selection_v2_job.json')
+_selection_v2_job_thread = None
+
+
+def _selection_v2_key(name):
+    """用于跨价格带去重的宽松商品键，避免同一品仅凭规格词重复入选。"""
+    s = re.sub(r'[\s\-_/（）()【】\[\]·]', '', str(name or '').lower())
+    s = re.sub(r'(pro|max|plus|升级版|大容量|小号|中号|大号|\d+(?:ml|l|g|kg|寸|件|只|个))$', '', s)
+    return s[:80]
+
+
+def _selection_v2_parse_object(raw):
+    if not raw:
+        return None
+    s = re.sub(r'```(?:json)?', '', str(raw)).strip()
+    i, j = s.find('{'), s.rfind('}')
+    if i == -1 or j <= i:
+        return None
+    try:
+        obj = json.loads(s[i:j + 1])
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+def _selection_v2_price_label(lo, hi):
+    return '¥%s-%s' % (int(lo) if float(lo).is_integer() else lo,
+                         int(hi) if float(hi).is_integer() else hi)
+
+
+def _selection_v2_tmall_pool(band):
+    rows = list(db_execute(
+        "SELECT 类别名, 产品名, 价格 FROM `天猫榜单表` WHERE 价格 >= %s AND 价格 <= %s "
+        "ORDER BY 日期 DESC, 价格 ASC LIMIT 800", [band['min'], band['max']]))
+    out, seen = [], set()
+    for r in rows:
+        name = str(r.get('产品名') or '').strip()
+        key = _selection_v2_key(name)
+        if not name or not key or key in seen:
+            continue
+        seen.add(key)
+        try:
+            price = float(r.get('价格'))
+        except (TypeError, ValueError):
+            price = None
+        out.append({'name': name, 'category': str(r.get('类别名') or ''), 'price': price})
+    return out
+
+
+def _selection_v2_candidates():
+    """按四个经营层从热搜 + 天猫榜单生成 70 个具体商品；模型失败时安全降级到榜单去重结果。"""
+    hot = _ps_latest_douyin_categories()[:150]
+    bands_ctx = []
+    for band in _SELECTION_V2_BANDS:
+        bands_ctx.append({
+            'key': band['key'], 'name': band['name'], 'price_range': _selection_v2_price_label(band['min'], band['max']),
+            'quota': band['quota'], 'decision': band['decision'], 'audience': band['audience'],
+            'tmall_products': _selection_v2_tmall_pool(band)[:180],
+        })
+    prompt = (
+        '你是严谨的电商选品研究员。根据当天抖音电商热搜和各价格带内的天猫榜单，生成四组具体可购买单品。'
+        '每组必须严格满足 quota；没有足够热搜对应品时，从该组天猫榜单补足。商品不可为大类名，不可为品牌词，'
+        '不可只把同一商品换颜色、规格、Pro/Plus 后重复。不同组之间也必须语义去重。只能引用输入数据推断，'
+        '不要虚构销量、成本或品牌份额。输出 JSON 对象：'
+        '{"bands":[{"key":"volume","items":[{"name":"具体商品","category":"品类","price_range":"¥29-59","reason":"十字内机会说明"}]}]}。'
+    )
+    raw = call_deepseek_api(prompt, json.dumps({'hot_words': hot, 'bands': bands_ctx}, ensure_ascii=False),
+                            temperature=0.25, max_tokens=12000, api_key=DEEPSEEK_SELECTION_API_KEY)
+    parsed = _selection_v2_parse_object(raw) or {}
+    by_key = {x.get('key'): x.get('items') for x in (parsed.get('bands') or []) if isinstance(x, dict)}
+    global_seen, result = set(), []
+    for band in _SELECTION_V2_BANDS:
+        items = []
+        for item in by_key.get(band['key']) or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('name') or '').strip()
+            key = _selection_v2_key(name)
+            if not name or not key or key in global_seen:
+                continue
+            items.append({'name': name, 'category': str(item.get('category') or ''),
+                          'price_range': str(item.get('price_range') or _selection_v2_price_label(band['min'], band['max'])),
+                          'reason': str(item.get('reason') or '')[:40]})
+            global_seen.add(key)
+            if len(items) >= band['quota']:
+                break
+        # 模型输出不足时仅用本价格带榜单补位，确保每天可得到可追溯的候选池。
+        for row in _selection_v2_tmall_pool(band):
+            if len(items) >= band['quota']:
+                break
+            key = _selection_v2_key(row['name'])
+            if key in global_seen:
+                continue
+            price = row.get('price')
+            items.append({'name': row['name'], 'category': row.get('category') or '',
+                          'price_range': ('¥%.0f' % price) if price is not None else _selection_v2_price_label(band['min'], band['max']),
+                          'reason': '该价格带榜单补位'})
+            global_seen.add(key)
+        result.append(dict(band, candidates=items))
+    return result
+
+
+def _selection_v2_aisou_snapshot(names, date_str):
+    """读取当天爱搜采集，给每个候选整理四类词的月覆盖/七日搜索摘要。"""
+    if not names:
+        return {}
+    placeholders = ','.join(['%s'] * len(names))
+    rows = list(db_execute(
+        "SELECT 来源词, 词类型, 词名称, 月覆盖人次, 七日搜索人次 FROM `爱搜数据表` "
+        "WHERE `日期` = %s AND `来源词` IN (" + placeholders + ")", [date_str] + names))
+    result = {n: {'types': {}, 'word_count': 0, 'month_total': 0.0, 'seven_total': 0.0} for n in names}
+    for r in rows:
+        source = str(r.get('来源词') or '')
+        if source not in result:
+            continue
+        typ = str(r.get('词类型') or '其他')
+        month, seven = _as_parse_num(r.get('月覆盖人次')), _as_parse_num(r.get('七日搜索人次'))
+        cell = result[source]['types'].setdefault(typ, {'words': 0, 'month': 0.0, 'seven': 0.0})
+        cell['words'] += 1; cell['month'] += month; cell['seven'] += seven
+        result[source]['word_count'] += 1; result[source]['month_total'] += month; result[source]['seven_total'] += seven
+    return result
+
+
+def _selection_v2_default_score(candidate, aisou):
+    seven = (aisou or {}).get('seven_total') or 0
+    words = (aisou or {}).get('word_count') or 0
+    demand = 0.5 if not words else min(3.0, round(0.8 + min(1.6, math.log10(max(seven, 10)) / 4) + min(0.6, words / 20), 1))
+    return {'aisou_score': demand, 'profit_score': 1.5, 'competition_score': 1.0,
+            'after_sales_score': 0.5, 'content_score': 0.5,
+            'total_score': round(demand + 3.5, 1), 'comment': '待进一步验证',
+            'data_confidence': '低', 'risk_note': '评分模型未返回，需人工复核',
+            'profit_note': '无供应链实采，仅作待验证预估'}
+
+
+def _selection_v2_score(bands, aisou_map):
+    """把 70 品结构化数据交给模型，用固定五维权重评分；缺失结果降级而非编造。"""
+    entries = []
+    for band in bands:
+        for c in band['candidates']:
+            entries.append({'name': c['name'], 'band': band['key'], 'price_range': c['price_range'],
+                            'category': c['category'], 'aisou': aisou_map.get(c['name'], {})})
+    sys_p = (
+        '你是电商选品评分引擎。只根据输入数据评分，不能编造货源价、销量、大品牌份额或外部研究结论。'
+        '总分严格为 10：爱搜需求 0-3、利润空间 0-3、市场饱和度/竞争压力 0-2、售后风险 0-1、内容创作空间 0-1。'
+        '爱搜分优先看七日搜索、月覆盖、四类词完整度与购买意图；利润数据没有实采时，profit_note 必须说明“无供应链实采”。'
+        '竞争分越高表示越值得进入；售后分越高表示风险越低。comment 必须十个字以内。'
+        '返回 JSON 对象：{"scores":[{"name":"","aisou_score":0,"profit_score":0,"competition_score":0,'
+        '"after_sales_score":0,"content_score":0,"total_score":0,"comment":"","data_confidence":"高/中/低",'
+        '"risk_note":"","profit_note":""}]}；分项与 total_score 必须相加一致。'
+    )
+    raw = call_deepseek_api(sys_p, json.dumps({'candidates': entries}, ensure_ascii=False),
+                            temperature=0.15, max_tokens=11500, api_key=DEEPSEEK_SELECTION_API_KEY)
+    parsed = _selection_v2_parse_object(raw) or {}
+    scores = {str(x.get('name') or ''): x for x in (parsed.get('scores') or []) if isinstance(x, dict)}
+    for band in bands:
+        for c in band['candidates']:
+            score = scores.get(c['name']) or _selection_v2_default_score(c, aisou_map.get(c['name']))
+            clean = _selection_v2_default_score(c, aisou_map.get(c['name']))
+            for field, cap in (('aisou_score', 3), ('profit_score', 3), ('competition_score', 2),
+                               ('after_sales_score', 1), ('content_score', 1)):
+                try:
+                    clean[field] = max(0, min(cap, round(float(score.get(field, clean[field])), 1)))
+                except (TypeError, ValueError):
+                    pass
+            clean['total_score'] = round(sum(clean[k] for k in ('aisou_score', 'profit_score', 'competition_score', 'after_sales_score', 'content_score')), 1)
+            clean['comment'] = str(score.get('comment') or clean['comment'])[:10]
+            clean['data_confidence'] = str(score.get('data_confidence') or clean['data_confidence'])
+            clean['risk_note'] = str(score.get('risk_note') or clean['risk_note'])[:100]
+            clean['profit_note'] = str(score.get('profit_note') or clean['profit_note'])[:120]
+            c['aisou'] = aisou_map.get(c['name'], {})
+            c['score'] = clean
+    return bands
+
+
+def _selection_v2_finalists(bands):
+    selected = []
+    for band in bands:
+        ranked = sorted(band['candidates'], key=lambda x: (x.get('score', {}).get('total_score', 0), x.get('aisou', {}).get('seven_total', 0)), reverse=True)
+        band['finalists'] = [dict(x) for x in ranked[:band['final_quota']]]
+        for x in band['finalists']:
+            x['band_key'], x['band_name'] = band['key'], band['name']
+            selected.append(x)
+    return selected
+
+
+def _selection_v2_variants(finalists):
+    """每个原品只生成关联的不同单品，禁止规格型伪裂变。"""
+    sys_p = (
+        '为每个原品生成恰好 3 个裂变品。裂变品必须是同类目中相关但不同的具体单品，'
+        '不能是原品加型号、颜色、容量、尺寸、Pro/Plus，不能重复、不能是品牌词；要有创新性和相邻场景关联。'
+        '返回 JSON：{"items":[{"name":"原品","variants":[{"name":"具体裂变品","category":"","reason":"十字内关联理由"}]}]}。'
+    )
+    raw = call_deepseek_api(sys_p, json.dumps({'finalists': [{'name': x['name'], 'category': x['category'], 'band': x['band_name']} for x in finalists]}, ensure_ascii=False),
+                            temperature=0.35, max_tokens=4500, api_key=DEEPSEEK_SELECTION_API_KEY)
+    parsed = _selection_v2_parse_object(raw) or {}
+    got = {str(x.get('name') or ''): x.get('variants') for x in (parsed.get('items') or []) if isinstance(x, dict)}
+    all_keys = {_selection_v2_key(x['name']) for x in finalists}
+    for item in finalists:
+        variants = []
+        for v in got.get(item['name']) or []:
+            if not isinstance(v, dict):
+                continue
+            name, key = str(v.get('name') or '').strip(), _selection_v2_key(v.get('name'))
+            if not name or not key or key in all_keys:
+                continue
+            variants.append({'name': name, 'category': str(v.get('category') or item['category']), 'reason': str(v.get('reason') or '')[:20]})
+            all_keys.add(key)
+            if len(variants) == 3:
+                break
+        if len(variants) != 3:
+            # 不用“原品 + 型号”的伪裂变来凑数；缺少合格裂变品让任务失败，下一轮可重试。
+            raise RuntimeError('%s 未生成 3 个合格的关联裂变品' % item['name'])
+        item['variants'] = variants
+    return finalists
+
+
+def _selection_v2_number(text):
+    m = re.search(r'([\d.]+)\s*([万wW亿]?)', str(text or ''))
+    if not m:
+        return 0.0
+    n = float(m.group(1)); unit = m.group(2)
+    return n * (1e8 if unit == '亿' else 1e4 if unit in ('万', 'w', 'W') else 1)
+
+
+def _selection_v2_sales_bands(products):
+    vals = []
+    for p in products or []:
+        nums = re.findall(r'\d+(?:\.\d+)?', str(p.get('price') or ''))
+        if nums:
+            vals.append((float(nums[0]), _selection_v2_number(p.get('sales'))))
+    if not vals:
+        return []
+    vals.sort(key=lambda x: x[0]); split = vals[len(vals) // 2][0]
+    groups = [x for x in vals if x[0] <= split], [x for x in vals if x[0] > split]
+    out = []
+    for group in groups:
+        if not group:
+            continue
+        out.append({'range': _selection_v2_price_label(min(x[0] for x in group), max(x[0] for x in group)),
+                    'sales': round(sum(x[1] for x in group)), 'sample_count': len(group)})
+    return out[:2]
+
+
+def _selection_v2_recommendations(finalists):
+    sys_p = (
+        '基于每个原品的固定评分、风险、爱搜摘要和淘宝销量价格带，写一条不超过 200 字的选品建议。'
+        '不要编造事实；说明切入价格带、机会、风险、内容或主图方向。只为原品写建议。'
+        '返回 JSON：{"items":[{"name":"原品","advice":""}]}。'
+    )
+    raw = call_deepseek_api(sys_p, json.dumps({'finalists': finalists}, ensure_ascii=False),
+                            temperature=0.25, max_tokens=3500, api_key=DEEPSEEK_SELECTION_API_KEY)
+    parsed = _selection_v2_parse_object(raw) or {}
+    advice = {str(x.get('name') or ''): str(x.get('advice') or '')[:200]
+              for x in (parsed.get('items') or []) if isinstance(x, dict)}
+    for item in finalists:
+        item['advice'] = advice.get(item['name']) or '建议先以小规模素材测试验证转化，再根据主销价格带和售后反馈决定是否放量。'
+
+
+def _selection_v2_progress(status, message, done=0, total=0):
+    _write_json(_SELECTION_V2_JOB_FILE, {'status': status, 'message': message, 'done': done, 'total': total,
+                                         'updatedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S')})
+
+
+def _run_selection_v2(date_str=None):
+    """V2 每日后台任务。采集和销量脚本均为低速串行脚本，以任务状态文件便于恢复和观察。"""
+    date_str = date_str or time.strftime('%Y-%m-%d')
+    try:
+        _selection_v2_progress('candidates', '正在生成四个价格带的 70 个候选品', 0, 70)
+        bands = _selection_v2_candidates()
+        names = [c['name'] for b in bands for c in b['candidates']]
+        if len(names) < 70:
+            raise RuntimeError('天猫榜单不足，未能补足 70 个去重候选品')
+        _selection_v2_progress('aisou', '正在低速采集 70 个商品的爱搜需求数据', 0, len(names))
+        _aisou_enrich(names)  # 采集脚本本身为顺序低速访问，避免对爱搜高并发。
+        aisou_map = _selection_v2_aisou_snapshot(names, date_str)
+        _selection_v2_progress('scoring', '正在按五维固定规则评分', len(names), len(names))
+        bands = _selection_v2_score(bands, aisou_map)
+        finalists = _selection_v2_variants(_selection_v2_finalists(bands))
+        verify_names = [x['name'] for x in finalists] + [v['name'] for x in finalists for v in x.get('variants', [])]
+        _selection_v2_progress('sales', '正在验证原品和裂变品的淘宝销量前 100', 0, len(verify_names))
+        sales_map = _tmall_enrich(verify_names)
+        for item in finalists:
+            item['sales_bands'] = _selection_v2_sales_bands(sales_map.get(item['name']))
+            for v in item.get('variants', []):
+                v['sales_bands'] = _selection_v2_sales_bands(sales_map.get(v['name']))
+        _selection_v2_progress('advice', '正在生成原品选品建议', len(verify_names), len(verify_names))
+        _selection_v2_recommendations(finalists)
+        result = {'version': 'selection-v2', 'date': date_str, 'createdAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                  'bands': bands, 'finalists': finalists,
+                  'summary': {'candidateCount': len(names), 'finalistCount': len(finalists),
+                              'variantCount': sum(len(x.get('variants', [])) for x in finalists)}}
+        _ensure_selection_record_table()
+        db_execute("INSERT INTO `选品记录表` (`日期`, `价格区间`, `结果`) VALUES (%s, %s, %s)",
+                   [date_str, '四档自动选品', json.dumps(result, ensure_ascii=False)], fetch=False)
+        _selection_v2_progress('done', '当日分层选品已完成', 1, 1)
+    except Exception as e:
+        traceback.print_exc()
+        _selection_v2_progress('error', '当日分层选品失败：' + str(e))
+
+
+def _start_selection_v2(date_str=None):
+    global _selection_v2_job_thread
+    if _selection_v2_job_thread and _selection_v2_job_thread.is_alive():
+        return False
+    _selection_v2_job_thread = threading.Thread(target=_run_selection_v2, args=(date_str,), daemon=True,
+                                                 name='selection-v2-daily')
+    _selection_v2_job_thread.start()
+    return True
+
+
+def _selection_v2_record_for_date(date_str):
+    _ensure_selection_record_table()
+    rows = list(db_execute("SELECT `结果` FROM `选品记录表` WHERE `日期` = %s ORDER BY `创建时间` DESC, `id` DESC", [date_str]))
+    for row in rows:
+        try:
+            data = json.loads(row.get('结果') or '{}')
+        except Exception:
+            continue
+        if isinstance(data, dict) and data.get('version') == 'selection-v2':
+            return data
+    return None
+
+
+def _selection_v2_has_today():
+    try:
+        return bool(_selection_v2_record_for_date(time.strftime('%Y-%m-%d')))
+    except Exception as e:
+        print('[选品][V2补跑] 当日结果检查失败: %s' % e)
+        return True
+
+
+@app.route('/api/product-selection/dashboard/dates', methods=['GET'])
+def ps_v2_dashboard_dates():
+    try:
+        _ensure_selection_record_table()
+        rows = list(db_execute("SELECT DISTINCT `日期` FROM `选品记录表` ORDER BY `日期` DESC LIMIT 180"))
+        dates = [str(r.get('日期')) for r in rows if _selection_v2_record_for_date(str(r.get('日期')))]
+        return success({'dates': dates})
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/product-selection/dashboard', methods=['GET'])
+def ps_v2_dashboard():
+    try:
+        date_str = (request.args.get('date') or time.strftime('%Y-%m-%d')).strip()
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
+            return fail('日期格式应为 YYYY-MM-DD')
+        return success(_selection_v2_record_for_date(date_str))
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/product-selection/dashboard/status', methods=['GET'])
+def ps_v2_dashboard_status():
+    return success(_read_json(_SELECTION_V2_JOB_FILE, {'status': 'idle', 'message': ''}))
+
+
+@app.route('/api/product-selection/dashboard/run', methods=['POST'])
+def ps_v2_dashboard_run():
+    try:
+        payload = request.get_json(silent=True) or {}
+        date_str = (payload.get('date') or time.strftime('%Y-%m-%d')).strip()
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
+            return fail('日期格式应为 YYYY-MM-DD')
+        if not _start_selection_v2(date_str):
+            return fail('已有当日分层选品任务在运行中')
+        return success({'started': True, 'date': date_str}, '已开始生成当日分层选品')
+    except Exception as e:
+        return fail(str(e))
+
+
 # ======================== 历史选品记录 ========================
 
 @app.route('/api/product-selection/history/dates', methods=['GET'])
@@ -9452,7 +9849,7 @@ def ps_history():
         return fail(str(e))
 
 
-# ======================== 每日 8 点自动抓取 + 筛选 ========================
+# ======================== 每日 7 点自动抓取 + 筛选 ========================
 
 def _douyin_hot_has_today():
     """「抖音热搜品类表」当天是否已有筛选结果（用于判断启动时要不要补跑）"""
@@ -9467,28 +9864,32 @@ def _douyin_hot_has_today():
 
 
 def _douyin_hot_auto_loop():
-    """后台线程：每天 8 点自动抓取抖音热点宝并筛选；启动时当天缺数据则立即补跑"""
+    """后台线程：每天 7 点自动抓取抖音热点宝并筛选；启动时当天缺数据则立即补跑"""
     # ---- 启动补跑 ----
     # 覆盖两种会让当天数据永久丢失的情况：
-    #   ① 服务恰在 08:00 重启 → 主循环 next_run <= now 会顺延到次日，当天被跳过且无补跑；
+    #   ① 服务恰在 07:00 重启 → 主循环 next_run <= now 会顺延到次日，当天被跳过且无补跑；
     #   ② 覆盖式整库同步（sync_db.py）把当天已落库的数据冲掉。
-    # 只在 08:00 之后判断：若服务在 8 点前启动，交给下面的主循环正常触发，避免重复抓取。
+    # 只在 07:00 之后判断：若服务在 7 点前启动，交给下面的主循环正常触发，避免重复抓取。
     try:
         time.sleep(15)  # 等 gunicorn worker 与数据库连接池就绪
         now = datetime.now()
-        if now.hour >= 8 and not _douyin_hot_has_today():
+        if now.hour >= 7 and not _douyin_hot_has_today():
             print('[选品][补跑] 当天无热搜数据，立即补跑一次抓取+筛选')
             _run_scrape_and_filter()
+        elif now.hour >= 7 and not _selection_v2_has_today():
+            # 热搜已在，但服务可能在旧版任务完成后重启；补跑 V2 不必重新抓热搜。
+            print('[选品][V2补跑] 当天热搜已存在，补跑分层选品任务')
+            _start_selection_v2(time.strftime('%Y-%m-%d'))
         else:
-            print('[选品][补跑] 当天数据已存在或未到 08:00，跳过补跑')
+            print('[选品][补跑] 当天数据已存在或未到 07:00，跳过补跑')
     except Exception as e:
         print(f'[选品][补跑] 异常: {e}')
 
-    # ---- 每日 08:00 定时 ----
+    # ---- 每日 07:00 定时 ----
     while True:
         try:
             now = datetime.now()
-            next_run = now.replace(hour=8, minute=0, second=0, microsecond=0)
+            next_run = now.replace(hour=7, minute=0, second=0, microsecond=0)
             if next_run <= now:
                 next_run += timedelta(days=1)
             time.sleep((next_run - now).total_seconds())
