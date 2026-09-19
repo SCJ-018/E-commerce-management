@@ -42,6 +42,14 @@ except Exception as _dt_err:  # 缺文件/缺依赖时不影响主服务启动�
     class DingTalkError(Exception):
         pass
 
+# 日报「长图」渲染（钉钉图片消息用；重依赖 Playwright 放在独立模块里，便于单独验证）
+# ⚠ 模块内不做任何副作用动作，导入失败只降级为「日报退回不发长图」，不影响主服务
+try:
+    from report_image import render_report_image as _render_report_image
+except Exception as _ri_err:
+    _render_report_image = None
+    print('[报告长图] 模块加载失败: %s' % _ri_err)
+
 app = Flask(__name__)
 CORS(app)
 
@@ -3789,7 +3797,7 @@ def _push_summary_md(target_date, metrics):
     if warns:
         lines += ['', '**预警**'] + ['- %s' % w for w in warns[:4]]
 
-    lines += ['', '> 完整报告见附件 PDF']
+    lines += ['', '> 完整报告见下方长图']
     return '\n'.join(lines)
 
 
@@ -3805,7 +3813,10 @@ def _push_log_write(report_date, push_type, status, total, ok_count, detail):
 
 
 def _push_daily_report(target_date, result, push_type='auto'):
-    """把报告渲染成 PDF 并推送给所有启用成员，返回 (status, detail)
+    """把报告渲染成整页长图并推送给所有启用成员，返回 (status, detail)
+
+    为什么是图片不是 PDF：钉钉单聊的「文件消息」里 PDF 只能下载后另找应用打开，
+    手机上等于打不开；图片消息点一下就在钉钉内全屏看、可缩放，不依赖外部程序。
 
     status: success（全部送达）/ partial（部分送达）/ fail（未送达）
     """
@@ -3815,20 +3826,24 @@ def _push_daily_report(target_date, result, push_type='auto'):
         _push_log_write(target_date, push_type, 'fail', 0, 0, msg)
         return 'fail', msg
 
-    # 1) 渲染 PDF + 上传拿 media_id（同一份文件发给所有人，只上传一次）
+    # 1) 渲染长图 + 上传拿 media_id（同一张图发给所有人，只上传一次）
     try:
+        if _render_report_image is None:
+            raise RuntimeError('report_image 模块未加载（缺 backend/report_image.py 或 Playwright）')
         client = _push_client()
-        standalone = _build_standalone_report(str(target_date), result['report'])
-        pdf_bytes = _html_to_pdf(standalone)
-        filename = '每日数据分析报告_%s.pdf' % target_date
-        media_id = client.upload_file(filename, pdf_bytes)
+        img_bytes, ext = _render_report_image(str(target_date), result['report'],
+                                              _DA_STANDALONE_CSS)
+        filename = '每日数据分析报告_%s.%s' % (target_date, ext)
+        media_id = client.upload_image(
+            filename, img_bytes, 'image/jpeg' if ext == 'jpg' else 'image/png')
+        print('[钉钉推送] %s 报告长图 %.2f MB（%s）' % (target_date, len(img_bytes) / 1048576.0, ext))
     except Exception as e:
-        msg = '生成或上传 PDF 失败：%s' % e
+        msg = '生成或上传报告长图失败：%s' % e
         print('[钉钉推送] ' + msg)
         _push_log_write(target_date, push_type, 'fail', len(users), 0, msg)
         return 'fail', msg
 
-    # 2) 逐人推送：先发指标摘要，再发 PDF 附件
+    # 2) 逐人推送：先发指标摘要，再发报告长图
     summary = _push_summary_md(target_date, _load_report_metrics(target_date))
     title = '每日经营数据分析 · %s' % target_date
     ok_count = 0
@@ -3844,7 +3859,7 @@ def _push_daily_report(target_date, result, push_type='auto'):
             bad = (r1 or {}).get('invalidStaffIdList') or []
             if bad:
                 raise DingTalkError('该成员不在应用可见范围内')
-            r2 = client.send_file([uid], media_id, filename, 'pdf')
+            r2 = client.send_image([uid], media_id)
             bad = (r2 or {}).get('invalidStaffIdList') or []
             if bad:
                 raise DingTalkError('该成员不在应用可见范围内')

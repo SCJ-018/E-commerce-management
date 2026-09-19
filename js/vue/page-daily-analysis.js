@@ -749,7 +749,7 @@
             <button type="button" class="dt-btn dt-btn-primary" :disabled="da.push.pushing" @click="pushNow">
               <i class="fa-solid fa-bolt"></i> {{ da.push.pushing ? '推送中…' : '立即推送昨日报告' }}
             </button>
-            <span class="dt-tip">会重新生成昨日报告，发送「指标摘要 + PDF 附件」</span>
+            <span class="dt-tip">会重新生成昨日报告，发送「指标摘要 + 报告长图」</span>
           </div>
         </div>
       </section>

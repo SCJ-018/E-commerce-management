@@ -30,6 +30,8 @@ FILES = {
     'css/hr.css': REMOTE_ROOT + '/css/hr.css',
     'backend/app.py': REMOTE_ROOT + '/backend/app.py',
     'backend/dingtalk.py': REMOTE_ROOT + '/backend/dingtalk.py',
+    # 日报长图渲染（钉钉图片消息用）：模块缺失时日报推送会直接失败，必须随部署上线
+    'backend/report_image.py': REMOTE_ROOT + '/backend/report_image.py',
     'backend/hr_api.py': REMOTE_ROOT + '/backend/hr_api.py',
     'backend/seeding_agent_prompt.txt': REMOTE_ROOT + '/backend/seeding_agent_prompt.txt',
     # 种草抓取链路：backend/app.py 用 subprocess 唤起这些脚本，改动必须随部署上线。

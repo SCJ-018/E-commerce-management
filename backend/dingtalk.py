@@ -199,9 +199,25 @@ class DingTalkClient:
         return self._oto_send(user_ids, 'sampleText', json.dumps({'content': content}, ensure_ascii=False))
 
     def send_image(self, user_ids, media_id):
-        """发送图片消息（sampleImage，photoMediaId 为 upload_image 返回的 media_id）"""
-        param = {'photoMediaId': media_id}
-        return self._oto_send(user_ids, 'sampleImage', json.dumps(param, ensure_ascii=False))
+        """发送图片消息（media_id 为 upload_image 返回的值）
+
+        ⚠ 实测（2026-09，本应用）确认的键名，别再凭印象改：
+          · msgKey 必须是 **sampleImageMsg**；写 `sampleImage` 会被钉钉直接拒：
+            HTTP 400「不支持类型 sampleImage」
+          · 参数名 `photoURL` 与 `photoMediaId` 都能收（photoURL 允许直接填 media_id）
+        保留双候选是为了兼容模板差异；两个都失败才把错误抛给调用方。
+        ⚠ 试错不会重复投递 —— 报错的那次并没有发出去，成功即 return。
+        """
+        last_err = None
+        for msg_key, param_key in (('sampleImageMsg', 'photoURL'),
+                                   ('sampleImageMsg', 'photoMediaId')):
+            try:
+                param = {param_key: media_id}
+                return self._oto_send(user_ids, msg_key, json.dumps(param, ensure_ascii=False))
+            except DingTalkError as e:
+                last_err = e
+                print('[钉钉] 图片模板 %s/%s 未通过：%s' % (msg_key, param_key, e))
+        raise last_err or DingTalkError('发送图片消息失败')
 
     # ---------------- 通讯录 ----------------
 
