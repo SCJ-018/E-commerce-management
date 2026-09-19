@@ -15,6 +15,7 @@
     // ---- 内容 ----
     title: '',
     text: '',
+    beautifying: false,
     images: [],      // {id, file(markRaw), name, size, dataUrl}
     docs: [],        // {id, file(markRaw), name, size}
     dragOver: false,
@@ -358,6 +359,23 @@
   });
 
   // ---- 发送 ----
+  async function beautifyText() {
+    var text = (_state.text || '').trim();
+    if (!text || _state.beautifying) return;
+    _state.beautifying = true;
+    try {
+      var r = await ApiService.beautifyAnnouncement(text);
+      if (!r.ok || !r.data || !r.data.text) {
+        App.showToast((r && r.msg) || 'AI 美化失败，请稍后重试', 'error');
+        return;
+      }
+      _state.text = r.data.text;
+      App.showToast('已完成 AI 美化，请确认后发送', 'success');
+    } finally {
+      _state.beautifying = false;
+    }
+  }
+
   async function send() {
     if (_state.sending) return;
     if (!_state.title.trim() && !_state.text.trim() && !_state.images.length && !_state.docs.length) {
@@ -444,6 +462,7 @@
         filteredAccounts: filteredAccounts,
         filteredContacts: filteredContacts,
         pickDeptWhole: pickDeptWhole,
+        beautifyText: beautifyText,
         send: send,
         srcLabel: function (s) {
           return { account: '网站账号', dept: '网站部门', dingtalk: '钉钉', contact: '钉钉联系人' }[s] || s;
@@ -472,8 +491,15 @@
           </div>
           <div class="an-field">
             <label>文字内容（在此粘贴图片可直接添加为附件）</label>
-            <textarea class="an-textarea" v-model="state.text"
-              placeholder="输入通告正文…&#10;提示：截图后直接 Ctrl+V 即可把图片粘贴进来，与文字一并发送"></textarea>
+            <div style="position:relative">
+              <textarea class="an-textarea" v-model="state.text" style="padding-bottom:42px"
+                placeholder="输入通告正文…&#10;提示：截图后直接 Ctrl+V 即可把图片粘贴进来，与文字一并发送"></textarea>
+              <button type="button" @click="beautifyText" :disabled="!state.text.trim() || state.beautifying"
+                      title="一键 AI 美化通告内容" aria-label="一键 AI 美化通告内容"
+                      style="position:absolute;right:10px;bottom:10px;width:30px;height:30px;border:0;border-radius:8px;background:#eef2ff;color:#4f46e5;cursor:pointer;font-size:14px;box-shadow:0 1px 3px rgba(79,70,229,.18)">
+                <i class="fa-solid" :class="state.beautifying ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'"></i>
+              </button>
+            </div>
           </div>
           <div class="an-field">
             <label>图片与附件</label>

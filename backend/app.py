@@ -24,6 +24,10 @@ import pymysql
 
 from config import DB_CONFIG, DB_POOL_SIZE, DB_PING_BEFORE_QUERY, DEEPSEEK_API_KEY, DEEPSEEK_API_URL, DEEPSEEK_MODEL, DEEPSEEK_SELECTION_API_KEY
 
+# 通告正文美化可使用独立 Key，避免与日报 / 选品等任务共用配额；
+# 未单独配置时兼容回退到全局 DeepSeek Key。
+_ANNOUNCE_AI_API_KEY = os.environ.get('ANNOUNCE_AI_API_KEY', '').strip()
+
 # 品类分类规则（供「品类营销数据」返回各品类的命中关键词）
 try:
     import sys as _sys, os as _os
@@ -4567,6 +4571,42 @@ def announce_dingtalk_contacts():
         return fail('不能实现该功能：无法读取钉钉组织架构 —— %s' % e)
     except Exception as e:
         return fail('不能实现该功能：无法读取钉钉组织架构 —— %s' % e)
+
+
+@app.route('/api/announce/beautify', methods=['POST'])
+def announce_beautify():
+    """美化通告正文：保留原始事实与格式，只优化措辞和结构。"""
+    try:
+        data = request.get_json(silent=True) or {}
+        text = str(data.get('text') or '').strip()
+        if not text:
+            return fail('请先填写需要美化的通告正文')
+        if len(text) > 6000:
+            return fail('通告正文过长（最多 6000 字），请拆分后再美化')
+
+        api_key = _ANNOUNCE_AI_API_KEY or DEEPSEEK_API_KEY
+        if not api_key:
+            return fail('AI 美化服务尚未配置，请联系管理员设置 ANNOUNCE_AI_API_KEY')
+
+        system_prompt = (
+            '你是企业内部通告编辑。你的工作是把用户提供的中文通告润色得清晰、正式、友好、'
+            '便于员工快速阅读。必须严格遵守：\n'
+            '1. 只优化措辞、语序、分段和标题层级，不得新增、删除、猜测或修改任何事实、日期、'
+            '金额、地点、联系人、制度要求或行动指令。\n'
+            '2. 保留原文已有的数字、专有名词、链接、联系方式与明确格式；信息不完整时不要补写。\n'
+            '3. 可使用简洁标题、小标题、项目符号与强调，但不要使用表格、代码块、寒暄、解释、'
+            '署名或“以下是美化后的内容”等前缀。\n'
+            '4. 仅输出可直接发送的最终通告正文。'
+        )
+        polished = call_deepseek_api(system_prompt, text, temperature=0.35, max_tokens=2200,
+                                     api_key=api_key)
+        polished = (polished or '').strip()
+        if not polished:
+            return fail('AI 美化暂时不可用，请稍后重试')
+        return success({'text': polished}, '通告内容已美化')
+    except Exception as e:
+        print('[通告发放][AI美化] 异常: %s' % e)
+        return fail('AI 美化失败，请稍后重试')
 
 
 @app.route('/api/announce/send', methods=['POST'])

@@ -515,6 +515,9 @@ const ApiService = (() => {
     // 不提供前端手动同步入口，避免浏览页面时重复请求钉钉通讯录。
     async getAnnounceOptions() { return request('/announce/options'); },
     async getAnnounceContacts() { return requestFull('/announce/dingtalk/contacts'); },
+    async beautifyAnnouncement(text) {
+      return requestFull('/announce/beautify', { method: 'POST', body: JSON.stringify({ text: text || '' }) });
+    },
   };
 })();
 
@@ -989,6 +992,7 @@ const App = (() => {
       document.querySelectorAll('.nav-group').forEach(function(group) {
         var hasActive = group.querySelector('.nav-item[data-page="' + page + '"]');
         group.classList.toggle('open', !!hasActive);
+        if (hasActive) delete group.dataset.collapseArmed;
       });
       document.querySelectorAll('.nav-submenu').forEach(function(sub) {
         var hasActive = sub.querySelector('.nav-item[data-page="' + page + '"]');
@@ -1006,6 +1010,7 @@ const App = (() => {
     document.querySelectorAll('.nav-group').forEach(group => {
       const hasActive = group.querySelector('.nav-item[data-page="' + page + '"]');
       group.classList.toggle('open', !!hasActive);
+      if (hasActive) delete group.dataset.collapseArmed;
     });
     // Open parent submenu for active item
     document.querySelectorAll('.nav-submenu').forEach(sub => {
@@ -3303,7 +3308,15 @@ const App = (() => {
     document.querySelectorAll('.nav-group-title').forEach(el => {
       el.addEventListener('click', function(e) {
         e.preventDefault();
-        this.closest('.nav-group').classList.toggle('open');
+        var group = this.closest('.nav-group');
+        var containsActivePage = !!group.querySelector('.nav-item.active');
+        // 当前页就在此分组时，首次点标题仅保持展开；再次点击才折叠。
+        if (group.classList.contains('open') && containsActivePage && group.dataset.collapseArmed !== 'true') {
+          group.dataset.collapseArmed = 'true';
+          return;
+        }
+        group.classList.toggle('open');
+        delete group.dataset.collapseArmed;
       });
     });
 
