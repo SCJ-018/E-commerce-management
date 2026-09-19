@@ -53,7 +53,19 @@
 </div>`
   };
 
-  function mount() { if (_app) return; var old = document.getElementById('page-product-selection'), root = document.getElementById('page-product-selection-vue'); if (!old || !root) return; old.style.display = 'none'; root.classList.remove('hidden'); _app = Vue.createApp(Page); _app.mount(root); }
+  // Vue 的模板编译不会稳定地把模板内的 <style> 当作页面样式处理。
+  // 在挂载前提取并放入 head，确保线上和本地都能得到同一套界面样式。
+  function installStyles() {
+    if (document.getElementById('selection-v2-styles')) return;
+    var match = Page.template.match(/<style>([\s\S]*?)<\/style>/);
+    if (!match) return;
+    var style = document.createElement('style');
+    style.id = 'selection-v2-styles';
+    style.textContent = match[1];
+    document.head.appendChild(style);
+  }
+
+  function mount() { if (_app) return; var old = document.getElementById('page-product-selection'), root = document.getElementById('page-product-selection-vue'); if (!old || !root) return; installStyles(); old.style.display = 'none'; root.classList.remove('hidden'); _app = Vue.createApp(Page); _app.mount(root); }
   function unmount() { if (!_app) return; _epoch++; _app.unmount(); _app = null; var old = document.getElementById('page-product-selection'), root = document.getElementById('page-product-selection-vue'); if (root) { root.classList.add('hidden'); root.innerHTML = ''; } if (old) old.style.display = ''; }
   function install() { var old = document.getElementById('page-product-selection'); if (!old) return; if (!old.classList.contains('hidden')) mount(); new MutationObserver(function () { old.classList.contains('hidden') ? unmount() : mount(); }).observe(old, { attributes: true, attributeFilter: ['class'] }); }
   document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', install) : install();
