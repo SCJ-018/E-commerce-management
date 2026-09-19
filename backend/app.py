@@ -8159,13 +8159,16 @@ def _aisou_enrich(products):
 
 def _tmall_enrich(products):
     """对最终原品与裂变品抓取淘宝销量前 100，返回 {name: products}。"""
-    _write_json(_TMALL_BATCH_INPUT, {'keywords': products})
-    if not _run_py_script(_TMALL_BATCH_SCRAPER, timeout=2400):
-        return {}
+    request_id = str(time.time_ns())
+    _write_json(_TMALL_BATCH_INPUT, {'request_id': request_id, 'keywords': products})
+    completed = _run_py_script(_TMALL_BATCH_SCRAPER, timeout=2400)
     out = _read_json(_TMALL_BATCH_OUTPUT)
-    if not out:
-        return {}
-    return {r.get('keyword'): r.get('products') or [] for r in out.get('results') or []}
+    if not out or str(out.get('request_id') or '') != request_id:
+        raise RuntimeError('淘宝销量抓取未返回本次任务结果')
+    sales_map = {r.get('keyword'): r.get('products') or [] for r in out.get('results') or []}
+    if not completed or not any(sales_map.values()):
+        raise RuntimeError(str(out.get('message') or '淘宝销量抓取未取得有效样本'))
+    return sales_map
 
 # ======================== 选品助手 V2：每日分层选品看板 ========================
 #
@@ -8429,6 +8432,52 @@ def _selection_v2_sales_bands(products):
     return out[:2]
 
 
+def _selection_v2_reconcile_sales_output(date_str=None, refresh_advice=True):
+    """把已完成的淘宝抓取结果回填到指定日期的 V2 记录，供受信任的本地采集补数。"""
+    out = _read_json(_TMALL_BATCH_OUTPUT) or {}
+    sales_map = {str(r.get('keyword') or ''): r.get('products') or []
+                 for r in out.get('results') or [] if isinstance(r, dict)}
+    failures = {str(r.get('keyword') or ''): str(r.get('message') or '')
+                for r in out.get('failures') or [] if isinstance(r, dict)}
+    if not sales_map:
+        raise RuntimeError('淘宝销量输出为空，无法回填')
+    date_str = date_str or time.strftime('%Y-%m-%d')
+    rows = list(db_execute(
+        "SELECT `id`, `结果` FROM `选品记录表` WHERE `日期` = %s ORDER BY `创建时间` DESC, `id` DESC",
+        [date_str]))
+    record_id, result = None, None
+    for row in rows:
+        try:
+            candidate = json.loads(row.get('结果') or '{}')
+        except Exception:
+            continue
+        if isinstance(candidate, dict) and candidate.get('version') == 'selection-v2':
+            record_id, result = row.get('id'), candidate
+            break
+    if not record_id or not result:
+        raise RuntimeError('%s 没有可回填的 V2 选品记录' % date_str)
+
+    filled = missing = 0
+    for item in result.get('finalists') or []:
+        for target in [item] + list(item.get('variants') or []):
+            name = str(target.get('name') or '')
+            bands = _selection_v2_sales_bands(sales_map.get(name))
+            target['sales_bands'] = bands
+            if bands:
+                target.pop('sales_error', None)
+                filled += 1
+            else:
+                target['sales_error'] = failures.get(name) or '未抓到有效在售样本'
+                missing += 1
+    result['salesSummary'] = {'filled': filled, 'missing': missing,
+                              'sourceStatus': str(out.get('status') or '')}
+    if refresh_advice:
+        _selection_v2_recommendations(result.get('finalists') or [])
+    db_execute("UPDATE `选品记录表` SET `结果` = %s WHERE `id` = %s",
+               [json.dumps(result, ensure_ascii=False), record_id], fetch=False)
+    return {'date': date_str, 'filled': filled, 'missing': missing, 'recordId': record_id}
+
+
 def _selection_v2_recommendations(finalists):
     sys_p = (
         '基于每个原品的固定评分、风险、爱搜摘要和淘宝销量价格带，写一条不超过 200 字的选品建议。'
@@ -8467,16 +8516,27 @@ def _run_selection_v2(date_str=None):
         verify_names = [x['name'] for x in finalists] + [v['name'] for x in finalists for v in x.get('variants', [])]
         _selection_v2_progress('sales', '正在验证原品和裂变品的淘宝销量前 100', 0, len(verify_names))
         sales_map = _tmall_enrich(verify_names)
+        sales_filled = 0
         for item in finalists:
             item['sales_bands'] = _selection_v2_sales_bands(sales_map.get(item['name']))
+            if item['sales_bands']:
+                sales_filled += 1
+            else:
+                item['sales_error'] = '未抓到有效在售样本'
             for v in item.get('variants', []):
                 v['sales_bands'] = _selection_v2_sales_bands(sales_map.get(v['name']))
+                if v['sales_bands']:
+                    sales_filled += 1
+                else:
+                    v['sales_error'] = '未抓到有效在售样本'
         _selection_v2_progress('advice', '正在生成原品选品建议', len(verify_names), len(verify_names))
         _selection_v2_recommendations(finalists)
         result = {'version': 'selection-v2', 'date': date_str, 'createdAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                   'bands': bands, 'finalists': finalists,
                   'summary': {'candidateCount': len(names), 'finalistCount': len(finalists),
-                              'variantCount': sum(len(x.get('variants', [])) for x in finalists)}}
+                              'variantCount': sum(len(x.get('variants', [])) for x in finalists)},
+                  'salesSummary': {'filled': sales_filled, 'missing': len(verify_names) - sales_filled,
+                                   'sourceStatus': 'done'}}
         _ensure_selection_record_table()
         db_execute("INSERT INTO `选品记录表` (`日期`, `价格区间`, `结果`) VALUES (%s, %s, %s)",
                    [date_str, '四档自动选品', json.dumps(result, ensure_ascii=False)], fetch=False)
