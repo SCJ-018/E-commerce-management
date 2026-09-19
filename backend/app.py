@@ -4211,11 +4211,13 @@ _ANNOUNCE_MD_CHUNK = 1800
 _ANNOUNCE_IMG_MAX = 10 * 1024 * 1024
 _ANNOUNCE_FILE_MAX = 20 * 1024 * 1024
 # 通告发放独立配置（与「钉钉推送」的 dingtalk_push_config 完全隔离）
+# ★★ 2026-09-19 起：凭证由系统统一下发（下表默认值 + 首次启动落库），
+#   前端「发送设置」配置页已整体下线，DB 里已有值以 DB 为准（覆盖默认值）。
 _ANNOUNCE_CFG_DEFAULTS = {
-    'app_key': '',
-    'app_secret': '',
-    'robot_code': '',
-    'agent_id': '',
+    'app_key': 'dingjxvfpxfrgbgxrbyq',
+    'app_secret': '8DYTyv8Ge70ehgARHoIzr0E_VZvliKORd0nhc1W-y1W6JWncbYNaiCWt94Ox_JTt',
+    'robot_code': '',           # 留空 = 自动取 app_key；发送成功后按实际生效值回写
+    'agent_id': '4872122118',
 }
 
 
@@ -4281,9 +4283,9 @@ def _announce_client(cfg=None):
         raise DingTalkError('钉钉模块未加载（backend/dingtalk.py 缺失或依赖异常）')
     cfg = cfg or _announce_config()
     if not (cfg.get('app_key') or '').strip():
-        raise DingTalkError('未配置 Client ID，请先在「通告发放 → 发送设置」里填写')
+        raise DingTalkError('钉钉通道未配置（缺少 Client ID），请联系管理员在服务端补齐')
     if not (cfg.get('app_secret') or '').strip():
-        raise DingTalkError('未配置 Client Secret，请先在「通告发放 → 发送设置」里填写')
+        raise DingTalkError('钉钉通道未配置（缺少 Client Secret），请联系管理员在服务端补齐')
     return DingTalkClient(cfg.get('app_key'), cfg.get('app_secret'),
                           cfg.get('robot_code'), cfg.get('agent_id'))
 
@@ -4374,16 +4376,19 @@ def announce_options():
 def announce_dingtalk_contacts():
     """同步钉钉组织架构到前端（部门树 + 成员列表）
 
+    ★ 2026-09-19 起前端不再有手动同步按钮，本接口在页面加载时被自动调用；
+      优先复用 10 分钟进程级缓存（预热线程启动时已拉好一次），只在过期时才真正访问钉钉。
     失败时明确返回「不能实现该功能」+ 原因（凭证缺失 / 无通讯录权限等）。
     """
     try:
-        cache = _announce_contacts(force=True)
+        cache = _announce_contacts(force=False)
+        synced_at = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(cache.get('ts') or time.time()))
         return success({
             'departments': cache['departments'],
             'users': [{'userid': u['userid'], 'name': u.get('name') or '',
                        'title': u.get('title') or '', 'deptIds': u.get('deptIds') or []}
                       for u in cache['users']],
-            'syncedAt': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'syncedAt': synced_at,
         })
     except DingTalkError as e:
         return fail('不能实现该功能：无法读取钉钉组织架构 —— %s' % e)
@@ -9088,6 +9093,28 @@ _seeding_auto_thread.start()
 _push_ensure_tables()
 # 通告发放独立配置表（独立于钉钉推送的 dingtalk_push_config）
 _announce_ensure_table()
+
+# daemon 线程：启动时预热「通告发放」的钉钉组织架构缓存 + 凭证落库自愈。
+# 前端已无手动同步按钮，页面加载直接读这份缓存（10 分钟 TTL）；
+# DB 里凭证缺失/被清空时用代码内置默认值补齐（幂等）。
+def _announce_prewarm():
+    try:
+        cfg = _announce_config()
+        missing = {k: v for k, v in _ANNOUNCE_CFG_DEFAULTS.items()
+                   if v and not (cfg.get(k) or '').strip()}
+        if missing:
+            _announce_config_save(missing)
+            print('[通告发放] 已从内置默认值补齐配置项: %s' % ','.join(missing))
+    except Exception as e:
+        print('[通告发放] 配置自愈失败: %s' % e)
+    try:
+        _announce_contacts()
+        print('[通告发放] 组织架构预热完成（部门/成员缓存就绪）')
+    except Exception as e:
+        print('[通告发放] 组织架构预热失败（页面加载时会重试）: %s' % e)
+
+
+threading.Thread(target=_announce_prewarm, daemon=True, name='announce-prewarm').start()
 # 种草专有表：推送人名单 / 爆文库 / 优化建议（同样必须在导入阶段建好）
 _seeding_ensure_tables()
 

@@ -1,9 +1,10 @@
 // ==================== 工具箱 - 通告发放（Vue 版） ====================
 // 功能：
 //   ① 内容输入：文本（支持直接粘贴图片）、图片、办公文件（拖拽 / 点击选择）
-//   ② 接收人：网站账号列表 / 网站整个部门 / 钉钉组织架构 / 钉钉联系人（姓名匹配 / 同步列表）
+//   ② 接收人：网站账号列表 / 网站整个部门 / 钉钉组织架构 / 钉钉联系人（姓名匹配）
 //   ③ 发送：走后端 /api/announce/send → 钉钉机器人单聊（文本 markdown / 图片 sampleImage / 文件 sampleFile）
-// 钉钉组织架构 / 联系人同步失败时，后端返回「不能实现该功能：原因」，本页原样透出。
+// ★ 2026-09-19：钉钉凭证改由服务端统一下发（announce_config 内置默认值），前端配置页已下线；
+//   钉钉组织架构/联系人在进页面时自动同步（后端带 10 分钟缓存 + 启动预热），无需手动点同步。
 (function () {
   if (typeof Vue === 'undefined' || typeof ApiService === 'undefined' || typeof App === 'undefined') return;
 
@@ -16,14 +17,6 @@
     images: [],      // {id, file(markRaw), name, size, dataUrl}
     docs: [],        // {id, file(markRaw), name, size}
     dragOver: false,
-    // ---- 钉钉发送通道（本页独立配置，与「每日数据分析 → 钉钉推送」互不影响） ----
-    configLoaded: false,
-    configReady: false,
-    showConfig: false,
-    configSaving: false,
-    configTesting: false,
-    configMsg: null,          // {ok, text}
-    config: { appKey: '', appSecret: '', hasAppSecret: false, robotCode: '', agentId: '' },
     // ---- 接收人 ----
     picked: [],      // {key, source, name, userId, mobile, dept}
     activeTab: 'accounts',
@@ -220,60 +213,6 @@
   }
 
   // ---- 数据加载 ----
-  async function loadConfig() {
-    var r = await ApiService.requestFull('/announce/config');
-    if (r.ok && r.data) {
-      _state.config = {
-        appKey: r.data.appKey || '',
-        appSecret: r.data.appSecret || '',
-        hasAppSecret: !!r.data.hasAppSecret,
-        robotCode: r.data.robotCode || '',
-        agentId: r.data.agentId || '',
-      };
-      _state.configReady = !!(r.data.appKey && r.data.hasAppSecret);
-    }
-    _state.configLoaded = true;
-  }
-
-  async function saveConfig() {
-    if (_state.configSaving) return;
-    _state.configSaving = true;
-    _state.configMsg = null;
-    var r = await ApiService.requestFull('/announce/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        appKey: _state.config.appKey,
-        appSecret: _state.config.appSecret,
-        robotCode: _state.config.robotCode,
-        agentId: _state.config.agentId,
-      }),
-    });
-    _state.configSaving = false;
-    if (r.ok) {
-      _state.configMsg = { ok: true, text: r.msg || '已保存' };
-      await loadConfig();
-    } else {
-      _state.configMsg = { ok: false, text: r.msg || '保存失败' };
-    }
-  }
-
-  async function testConfig() {
-    if (_state.configTesting) return;
-    _state.configTesting = true;
-    _state.configMsg = null;
-    var r = await ApiService.requestFull('/announce/config/test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    });
-    _state.configTesting = false;
-    _state.configMsg = r.ok
-      ? { ok: true, text: r.msg || '凭证有效' }
-      : { ok: false, text: (r.msg || '测试失败').replace(/^未配置 Client (ID|Secret)，?/, '尚未保存凭证：') };
-    if (r.ok) _state.configReady = true;
-  }
-
   async function loadOptions() {
     if (_state.optionsLoaded || _state.optionsLoading) return;
     _state.optionsLoading = true;
@@ -289,6 +228,7 @@
     }
   }
 
+  // 进页面自动同步钉钉组织架构 / 联系人（后端 10 分钟缓存，启动时已预热，通常秒回）
   async function syncContacts() {
     if (_state.contactsLoading) return;
     _state.contactsLoading = true;
@@ -296,7 +236,7 @@
     var r = await ApiService.requestFull('/announce/dingtalk/contacts');
     _state.contactsLoading = false;
     if (!r.ok) {
-      _state.contactsError = r.msg || '同步失败';
+      _state.contactsError = r.msg || '自动同步失败';
       _state.contacts = null;
       return;
     }
@@ -392,11 +332,6 @@
   // ---- 发送 ----
   async function send() {
     if (_state.sending) return;
-    if (!_state.configReady) {
-      _state.result = { ok: false, msg: '尚未配置钉钉发送通道，请先在上方「发送设置」里填写并保存 Client ID / Client Secret' };
-      _state.showConfig = true;
-      return;
-    }
     if (!_state.title.trim() && !_state.text.trim() && !_state.images.length && !_state.docs.length) {
       _state.result = { ok: false, msg: '通告内容为空：请填写文字、粘贴图片或添加附件' };
       return;
@@ -457,7 +392,7 @@
   var AnnouncePage = {
     name: 'AnnouncePage',
     setup: function () {
-      Vue.onMounted(function () { loadOptions(); loadConfig(); });
+      Vue.onMounted(function () { loadOptions(); syncContacts(); });
 
       return {
         state: _state,
@@ -476,9 +411,6 @@
         isPicked: isPicked,
         syncContacts: syncContacts,
         loadOptions: loadOptions,
-        loadConfig: loadConfig,
-        saveConfig: saveConfig,
-        testConfig: testConfig,
         treeRows: treeRows,
         filteredAccounts: filteredAccounts,
         filteredContacts: filteredContacts,
@@ -495,54 +427,7 @@
     },
     template: `
 <div class="an-wrap" @paste="onPaste">
-  <!-- 发送通道：钉钉机器人（本页独立配置） -->
-  <div class="an-card">
-    <div class="an-card-head">
-      <span class="an-card-title"><i class="fa-solid fa-plug-circle-bolt" style="color:#6366f1"></i> 发送设置 · 钉钉机器人</span>
-      <span class="an-card-hint">
-        <template v-if="state.configReady"><i class="fa-solid fa-circle-check" style="color:#16a34a"></i> 凭证已配置</template>
-        <template v-else><i class="fa-solid fa-circle-exclamation" style="color:#ea580c"></i> 未配置，发送前请先填写</template>
-        · 本配置独立使用，与「每日数据分析 → 钉钉推送」互不影响
-      </span>
-      <button class="an-send-btn" style="height:32px;padding:0 14px;font-size:12.5px" @click="state.showConfig = !state.showConfig">
-        <i class="fa-solid fa-gear"></i> {{ state.showConfig ? '收起' : '展开设置' }}
-      </button>
-    </div>
-    <div class="an-card-body" v-if="state.showConfig" style="padding-top:14px">
-      <div class="an-cfg-grid">
-        <div class="an-field">
-          <label>Client ID（原 AppKey）<span style="color:#dc2626"> *必填</span></label>
-          <input class="an-input" v-model="state.config.appKey" placeholder="钉钉开放平台 → 应用 → 凭证与基础信息 → Client ID" autocomplete="off">
-        </div>
-        <div class="an-field">
-          <label>Client Secret（原 AppSecret）<span style="color:#dc2626"> *必填</span></label>
-          <input class="an-input" type="password" v-model="state.config.appSecret" :placeholder="state.config.hasAppSecret ? '已保存（********），留空则不修改' : '钉钉开放平台 → 应用 → 凭证与基础信息 → Client Secret'" autocomplete="new-password">
-        </div>
-        <div class="an-field">
-          <label>RobotCode（可选，留空自动取 Client ID）</label>
-          <input class="an-input" v-model="state.config.robotCode" placeholder="一般与 Client ID 相同，可留空" autocomplete="off">
-        </div>
-        <div class="an-field">
-          <label>Agent ID（可选，robotCode 不生效时填）</label>
-          <input class="an-input" v-model="state.config.agentId" placeholder="钉钉应用基础信息里的 App ID（UUID 格式）" autocomplete="off">
-        </div>
-      </div>
-      <div class="an-notice info" style="margin:0 0 12px">
-        提示：成员需在钉钉应用的「可见范围」内，否则发送会提示不在可见范围。
-      </div>
-      <div v-if="state.configMsg" class="an-notice" :class="state.configMsg.ok ? 'ok' : 'err'">{{ state.configMsg.text }}</div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button class="an-send-btn" :disabled="state.configSaving" @click="saveConfig()">
-          <i class="fa-solid" :class="state.configSaving ? 'fa-spinner fa-spin' : 'fa-floppy-disk'"></i> 保存配置
-        </button>
-        <button class="an-send-btn" style="background:linear-gradient(180deg,#10b981,#059669);box-shadow:0 4px 14px rgba(16,185,129,.35)" :disabled="state.configTesting" @click="testConfig()">
-          <i class="fa-solid" :class="state.configTesting ? 'fa-spinner fa-spin' : 'fa-tower-broadcast'"></i> 测试连接
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 主体双栏 -->
+  <!-- 主体双栏（钉钉凭证由服务端统一下发，前端不再有配置页） -->
   <div class="an-main-grid">
     <!-- 左栏：通告内容 -->
     <div>
@@ -669,18 +554,15 @@
         </div>
       </template>
 
-      <!-- Tab 3：钉钉组织架构 -->
+      <!-- Tab 3：钉钉组织架构（进页面已自动同步） -->
       <template v-if="state.activeTab === 'org'">
-        <div class="an-card-body" style="display:flex;gap:10px;align-items:center">
-          <button class="an-send-btn" style="height:34px;padding:0 14px;font-size:12.5px" :disabled="state.contactsLoading" @click="syncContacts()">
-            <i class="fa-solid" :class="state.contactsLoading ? 'fa-spinner fa-spin' : 'fa-rotate'"></i>
-            {{ state.contactsLoading ? '同步中…' : (state.contacts ? '重新同步组织架构' : '同步钉钉组织架构') }}
-          </button>
-          <span class="an-card-hint" v-if="state.contacts">同步于 {{ state.contacts.syncedAt }}</span>
+        <div class="an-card-body" style="padding-top:10px">
+          <span class="an-card-hint" v-if="state.contactsLoading"><i class="fa-solid fa-spinner fa-spin"></i> 正在自动同步钉钉组织架构…</span>
+          <span class="an-card-hint" v-else-if="state.contacts"><i class="fa-solid fa-circle-check" style="color:#16a34a"></i> 组织架构已自动同步于 {{ state.contacts.syncedAt }}</span>
         </div>
         <div class="an-notice err" v-if="state.contactsError">
           <b>不能实现该功能</b>：{{ state.contactsError }}<br>
-          请先在上方「发送设置」里配置并保存钉钉应用凭证后重试。
+          请联系管理员检查服务端钉钉凭证与通讯录权限。
         </div>
         <div class="an-list" v-if="state.contacts">
           <div class="an-empty" v-if="!treeRows.length"><i class="fa-solid fa-building-circle-exclamation"></i>组织架构为空</div>
@@ -702,27 +584,25 @@
           </template>
         </div>
         <div class="an-empty" v-else-if="!state.contactsLoading && !state.contactsError">
-          <i class="fa-solid fa-cloud-arrow-down"></i>点击上方按钮同步钉钉组织架构
+          <i class="fa-solid fa-cloud-arrow-down"></i>正在自动同步钉钉组织架构…
         </div>
       </template>
 
-      <!-- Tab 4：钉钉联系人（姓名匹配 / 列表同步） -->
+      <!-- Tab 4：钉钉联系人（进页面已自动同步，按姓名搜索） -->
       <template v-if="state.activeTab === 'contact'">
         <div class="an-search">
           <i class="fa-solid fa-magnifying-glass"></i>
-          <input v-model="state.contactKw" placeholder="输入姓名匹配联系人（需先同步联系人列表）">
+          <input v-model="state.contactKw" placeholder="输入姓名搜索钉钉联系人">
         </div>
         <div class="an-card-body" style="padding-top:4px">
-          <button class="an-send-btn" style="height:32px;padding:0 14px;font-size:12.5px" :disabled="state.contactsLoading" @click="syncContacts()">
-            <i class="fa-solid" :class="state.contactsLoading ? 'fa-spinner fa-spin' : 'fa-rotate'"></i>
-            {{ state.contacts ? '重新同步联系人列表' : '同步钉钉联系人列表到前端' }}
-          </button>
+          <span class="an-card-hint" v-if="state.contactsLoading"><i class="fa-solid fa-spinner fa-spin"></i> 正在自动同步联系人列表…</span>
+          <span class="an-card-hint" v-else-if="state.contacts"><i class="fa-solid fa-circle-check" style="color:#16a34a"></i> 联系人列表已自动同步（{{ (state.contacts.users || []).length }} 人）</span>
         </div>
         <div class="an-notice err" v-if="state.contactsError">
           <b>不能实现该功能</b>：{{ state.contactsError }}
         </div>
         <div class="an-notice info" v-if="!state.contacts && !state.contactsError">
-          点击「同步」拉取完整钉钉通讯录到前端后，即可按姓名搜索选择联系人。
+          正在自动拉取钉钉通讯录，请稍候…
         </div>
         <div class="an-list" v-if="filteredContacts.length">
           <label class="an-row" v-for="(c, idx) in filteredContacts" :key="c.userId || (c.name + idx)">
@@ -732,7 +612,7 @@
           </label>
         </div>
         <div class="an-empty" v-else-if="!state.contactsLoading && !state.contactsError">
-          <i class="fa-solid fa-address-card"></i>{{ state.contactKw ? '没有匹配到联系人' : '暂无联系人数据，请先同步' }}
+          <i class="fa-solid fa-address-card"></i>{{ state.contactKw ? '没有匹配到联系人' : '联系人列表为空' }}
         </div>
       </template>
 
