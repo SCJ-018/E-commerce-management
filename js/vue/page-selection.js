@@ -4,8 +4,7 @@
 
   var _app = null, _epoch = 0;
   var state = Vue.reactive({ dates: [], date: '', data: null, loading: true, error: '', running: false,
-    job: { status: 'idle', message: '' }, rankJob: { status: 'idle', message: '' },
-    rankRunning: false, rankError: '', scoreCard: null });
+    job: { status: 'idle', message: '' }, scoreCard: null });
   var n = function (v) { return Number(v || 0); };
   var fmt = function (v) { var x = n(v); return x >= 1e8 ? (x / 1e8).toFixed(1) + '亿' : x >= 1e4 ? (x / 1e4).toFixed(1) + '万' : x ? Math.round(x).toLocaleString('zh-CN') : '--'; };
   var avg = function (b) { var a = b && b.candidates || []; return a.length ? (a.reduce(function (s, x) { return s + n(x.score && x.score.total_score); }, 0) / a.length).toFixed(1) : '—'; };
@@ -15,9 +14,8 @@
 
   async function dates() { var r = await ApiService.getSelectionDashboardDates(); state.dates = r && r.dates || []; if (!state.date) state.date = state.dates[0] || ''; }
   async function job() { var r = await ApiService.getSelectionDashboardStatus(); if (r) state.job = r; }
-  async function rankJob() { var r = await ApiService.getTmallRanklistStatus(); if (r) state.rankJob = r; }
   async function load(d) { var e = ++_epoch; state.loading = true; state.error = ''; state.data = null; try { var r = await ApiService.getSelectionDashboard(d); if (e !== _epoch) return; state.data = r || null; if (r && r.date) state.date = r.date; } catch (_) { if (e === _epoch) state.error = '当日选品结果加载失败，请稍后重试。'; } finally { if (e === _epoch) state.loading = false; } }
-  async function refresh() { await dates(); await job(); await rankJob(); await load(state.date); }
+  async function refresh() { try { await dates(); await job(); await load(state.date); } catch (_) { state.error = '选品结果初始化失败，请刷新后重试。'; state.loading = false; } }
   async function changeDate(e) { await load(e.target.value); }
   function showScore(c) { state.scoreCard = c; }
   function closeScore() { state.scoreCard = null; }
@@ -37,23 +35,8 @@
     } catch (_) { state.error = '任务请求异常，请稍后重试。'; } finally { state.running = false; }
   }
 
-  async function runTmall() {
-    if (state.rankRunning) return;
-    state.rankRunning = true; state.rankError = '';
-    try {
-      var r = await ApiService.runTmallRanklist();
-      if (!r) { state.rankError = '任务未能启动，请查看服务日志。'; return; }
-      for (var i = 0; i < 1200; i++) {
-        await new Promise(function (resolve) { setTimeout(resolve, 3000); }); await rankJob();
-        if (state.rankJob.status === 'done') return;
-        if (state.rankJob.status === 'error') { state.rankError = state.rankJob.message || '天猫榜单采集失败'; return; }
-      }
-      state.rankError = '采集耗时较长，任务可能仍在后台继续执行。';
-    } catch (_) { state.rankError = '任务请求异常，请稍后重试。'; } finally { state.rankRunning = false; }
-  }
-
   var Page = {
-    setup: function () { dates().then(job).then(rankJob).then(function () { return load(state.date); }); return { state: state, fmt: fmt, avg: avg, demand: demand, scoreClass: scoreClass, taobaoUrl: taobaoUrl, refresh: refresh, changeDate: changeDate, run: run, runTmall: runTmall, showScore: showScore, closeScore: closeScore, scrollToBand: scrollToBand }; },
+    setup: function () { refresh(); return { state: state, fmt: fmt, avg: avg, demand: demand, scoreClass: scoreClass, taobaoUrl: taobaoUrl, refresh: refresh, changeDate: changeDate, run: run, showScore: showScore, closeScore: closeScore, scrollToBand: scrollToBand }; },
     template: `
 <div class="selv2-page">
 <style>
@@ -81,19 +64,6 @@
 </div>`
   };
 
-  // 采集入口嵌在日期/刷新工具区，避免新增一级导航干扰日常选品操作。
-  Page.template = Page.template.replace(
-    '</aside></div>\n  <div v-if="state.error"',
-    `<div class="selv2-rank-capture">
-      <div><b>天猫榜单周采集</b><span>周一 00:00 · 排除进口/食品/医药</span></div>
-      <button type="button" @click="runTmall" :disabled="state.rankRunning"><i class="fa-solid fa-cloud-arrow-down"></i> {{ state.rankRunning ? '采集中…' : '手动采集' }}</button>
-      <small :class="state.rankJob.status">{{ state.rankJob.crawlerMessage || state.rankJob.message || '等待自动任务' }}</small>
-      <em v-if="state.rankJob.weeks && state.rankJob.weeks.length">保留 {{ state.rankJob.weeks.length }}/{{ state.rankJob.keepWeeks || 4 }} 周 · 最新 {{ state.rankJob.weeks[0].rows }} 条</em>
-      <small v-if="state.rankError" class="error">{{ state.rankError }}</small>
-    </div></aside></div>
-  <div v-if="state.error"`
-  );
-
   // Vue 的模板编译不会稳定地把模板内的 <style> 当作页面样式处理。
   // 在挂载前提取并放入 head，确保线上和本地都能得到同一套界面样式。
   function installStyles() {
@@ -102,8 +72,7 @@
     if (!match) return;
     var style = document.createElement('style');
     style.id = 'selection-v2-styles';
-    style.textContent = match[1] + '\n'
-      + '.selv2-rank-capture{margin-top:15px;padding-top:13px;border-top:1px solid #ede9f2;color:#637087}.selv2-rank-capture>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.selv2-rank-capture b{display:block;font-size:12px;color:#596174}.selv2-rank-capture span{display:block;margin-top:3px;font-size:10px;line-height:1.35;color:#8b91a0}.selv2-rank-capture button{width:auto!important;margin:0!important;padding:7px 9px!important;white-space:nowrap;background:#f4efff!important;color:#7653b2!important;font-size:11px}.selv2-rank-capture button:disabled{opacity:.58;cursor:wait}.selv2-rank-capture small,.selv2-rank-capture em{display:block;margin-top:8px;font-size:10px;line-height:1.45;color:#788397;font-style:normal}.selv2-rank-capture small.running{color:#6f5c9d}.selv2-rank-capture small.done{color:#258a78}.selv2-rank-capture small.error{color:#bd5555}';
+    style.textContent = match[1];
     document.head.appendChild(style);
   }
 
