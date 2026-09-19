@@ -8920,8 +8920,12 @@ def _p1688_pct(sorted_vals, p):
     return round(sorted_vals[lo_i] * (1 - frac) + sorted_vals[hi_i] * frac, 2)
 
 
-def _p1688_enrich(names, timeout_each=600):
-    """对给定商品名逐个跑 1688_scraper.py，实采供应链批发价（前10页货源，默认销量排序）。
+def _p1688_enrich(names, timeout_each=240):
+    """对给定商品名逐个跑 1688_scraper.py，实采供应链批发价（前 3 页货源，销量排序）。
+
+    ★ 瘦身口径（2026-09-19 用户指定：只瘦利润实采，爱搜/天猫链路不动）：
+    1688_MAX_PAGES=3 —— 销量排序下前 3 页约 180 条货源，算 P25/P50/P75 足够；
+    单品超时 240s（原 10 页 600s）。「1688市场」面板仍默认抓 10 页，不受影响。
 
     抗引流价三道处理：
     1) 标题相关性过滤（关键词与标题重叠过低的「清仓/样品」引流链接剔除）；
@@ -8937,13 +8941,15 @@ def _p1688_enrich(names, timeout_each=600):
         return {n: {'ok': False, 'cost_p25': None, 'cost_median': None, 'cost_p75': None,
                     'cost_min': None, 'samples': [], 'count': 0, 'removed_bait': 0,
                     'note': '1688 抓取脚本不存在'} for n in names}
+    env = dict(os.environ)
+    env['1688_MAX_PAGES'] = '3'
     for kw in names:
         base = {'ok': False, 'cost_p25': None, 'cost_median': None, 'cost_p75': None,
                 'cost_min': None, 'samples': [], 'count': 0, 'removed_bait': 0, 'note': ''}
         try:
             import sys as _sys1688
             proc = subprocess.run([_sys1688.executable, _1688_SCRAPER, kw],
-                                  check=False, timeout=timeout_each)
+                                  check=False, timeout=timeout_each, env=env)
             if proc.returncode != 0:
                 base['note'] = '1688 抓取脚本非零退出(code=%s)' % proc.returncode
             else:

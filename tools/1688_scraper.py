@@ -30,7 +30,10 @@ OUT_JSON = os.path.join(BASE_DIR, "_1688_top10.json")
 PROGRESS_FILE = os.path.join(BASE_DIR, "_1688_progress.json")
 COOKIE_FILE = os.path.join(BASE_DIR, "1688_cookie.txt")
 
-MAX_PAGES = 10  # 固定抓前 10 页
+# 抓取页数：默认 10 页（「1688市场」面板口径）；选品智能体的利润实采走
+# 1688_MAX_PAGES=3（销量排序下前 3 页约 180 条货源，统计 P25/P50/P75 已足够，
+# 单品抓取耗时降到 1/3）。
+MAX_PAGES = max(1, int(os.environ.get('1688_MAX_PAGES') or 10))
 # 排序：默认按成交量降序（sortType=booked），大幅减少「引流价」链接混入前排；
 # 引流价多挂在低销量/新店链接上，销量排序后前排基本是真实成交价。
 # 设 1688_SORT=default 可回退综合排序。
