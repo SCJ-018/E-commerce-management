@@ -8665,6 +8665,22 @@ def _ps_agent_parse_cards(raw):
     return []
 
 
+def _ps_parse_price_range(text):
+    """从 '¥39-89' / '39~89' / '¥39' 文本解析出 (下界, 上界)，失败返回 (None, None)"""
+    if not text:
+        return (None, None)
+    s = re.sub(r'[^\d.\-~]', '', str(text).replace('¥', '').replace('￥', ''))
+    nums = re.findall(r'\d+(?:\.\d+)?', s)
+    if not nums:
+        return (None, None)
+    try:
+        lo = float(nums[0])
+        hi = float(nums[1]) if len(nums) >= 2 else lo
+        return (min(lo, hi), max(lo, hi))
+    except Exception:
+        return (None, None)
+
+
 @app.route('/api/product-selection/selection', methods=['POST'])
 def ps_selection_round1():
     """第一轮：当日热搜选品分析，按价格区间返回约 50 个具体商品卡片"""
@@ -8683,12 +8699,24 @@ def ps_selection_round1():
             '天猫榜单商品(已按价格区间过滤)': tmall_items[:300],
             '价格区间': price_label,
         }
+        if min_p is not None and max_p is not None and max_p > min_p:
+            span_note = (
+                f'用户的客单价区间是 {min_p}~{max_p} 元，区间宽度 {(max_p - min_p):.0f} 元。'
+                f'该区间是「这一批商品共同的价格落点」，不是让单个商品的市场价覆盖这么宽：\n'
+                f'- 全部 {50} 个商品的售价都必须落在 {min_p}~{max_p} 元之内，一个都不许越界；\n'
+                f'- 单个商品自身的 price_range 必须是窄价格带，宽度控制在区间宽度的 1/3 以内'
+                f'（≤ {(max_p - min_p) / 3:.0f} 元），例如「¥89-129」，'
+                f'绝不能把 {min_p}~{max_p} 整段当成一个商品的价格范围；\n'
+                f'- 用低档/中档/高档多个商品合起来铺满用户区间，而不是用一个商品包住全区间。\n'
+            )
+        else:
+            span_note = '用户未给全价格边界，请让每个商品 price_range 保持窄价格带（单商品带宽尽量 ≤100 元）。\n'
         sys_p = (
             '你是电商选品智能体，服务同时经营抖音和天猫的商家。请基于给定数据，选出约 50 个有潜力的具体商品。\n'
             '硬性要求：\n'
             '1. 必须是具体单品，例如「拼豆智能板」「车载香薰」「宠物冻干」，绝不要返回「衣服」「汽车用品」这类大品类名；\n'
             '2. 若某个抖音热搜品类过大（如「家居」），请自行裂变出具体小品（如「收纳盒」「懒人沙发」「香薰」）；\n'
-            '3. 每个商品价格区间要贴合用户给出的价格区间和市场客单价（大众能接受的价格段）；\n'
+            '3. ' + span_note +
             '4. 只基于给定数据推断，不编造具体销量数字。\n'
             '输出一个 JSON 数组（不要任何解释文字），每项字段：\n'
             '{"name":"商品名","category":"品类","price_range":"如 ¥39-89","reason":"一句话选品理由"}\n'
@@ -8698,6 +8726,22 @@ def ps_selection_round1():
         raw = call_deepseek_api(sys_p, user_msg, temperature=0.5, max_tokens=6000,
                                 api_key=DEEPSEEK_SELECTION_API_KEY)
         cards = _ps_parse_json_array(raw)
+        # 代码层兜底：剔除售价明显越界 / 单卡价格带宽度过大的商品卡片
+        if min_p is not None and max_p is not None and max_p > min_p:
+            width_cap = (max_p - min_p) / 3 * 2   # 允许到提示约束的 2 倍，给模型留容错
+            kept = []
+            for c in cards:
+                lo, hi = _ps_parse_price_range(c.get('price_range'))
+                if lo is None:
+                    kept.append(c)
+                    continue
+                if hi < min_p or lo > max_p:
+                    continue    # 完全落在用户区间外
+                if hi - lo > max(width_cap, 50):
+                    continue    # 单卡价格带过宽（把用户区间整段包住）
+                kept.append(c)
+            if len(kept) >= 20:
+                cards = kept
         for i, c in enumerate(cards):
             c['id'] = i
         return success({'cards': cards, 'priceRange': {'min': min_p, 'max': max_p},
@@ -8741,8 +8785,9 @@ def _aisou_enrich(products):
     return inserted
 
 
-def _select_3_plus_9(products):
-    """把爱搜数据交给 DeepSeek，按「3 可用品 + 9 裂变品」逻辑筛选"""
+def _select_3_plus_9(products, min_p=None, max_p=None):
+    """把爱搜数据交给 DeepSeek，按「3 可用品 + 9 裂变品」逻辑筛选。
+    裂变品为结构化对象 {name, category, price_range}（具体可购单品，不再是裸下拉词）。"""
     rows = list(db_execute(
         "SELECT 来源词, 词类型, 词名称, 月覆盖人次, 七日搜索人次 FROM `爱搜数据表` "
         "ORDER BY `日期` DESC LIMIT 2000"))
@@ -8751,9 +8796,15 @@ def _select_3_plus_9(products):
         groups.setdefault(r['词类型'], []).append({
             'name': r['词名称'], 'month': r['月覆盖人次'], 'seven': r['七日搜索人次'],
             'source': r['来源词']})
+    if min_p is not None and max_p is not None and max_p > min_p:
+        price_note = (
+            f'用户的客单价区间是 {min_p}~{max_p} 元：可用品和每个裂变品的建议售价都必须落在这个区间内，'
+            f'且各自的价格带是窄带（宽度 ≤ 区间宽度的 1/3，即 ≤ {(max_p - min_p) / 3:.0f} 元）。\n')
+    else:
+        price_note = '用户未给全价格边界，价格带保持窄带（单商品 ≤100 元）。\n'
     sys_p = (
         '你是电商选品智能体。基于给定的爱搜搜索词数据（按 搜索词/相关词/下拉词/电商词 分组，'
-        '每个词含 name 词名、month 月覆盖人次、seven 七日搜索人次），完成两件事：\n'
+        '每个词含 name 词名、month 月覆盖人次、seven 七日搜索人次），完成三件事：\n'
         '第一步：数据清洗与标准化\n'
         '- 去掉热度全为 0 的词、重复词、明显非商品词\n'
         '- 对四类热度分别做 min-max 归一化（缩放 0~1）\n'
@@ -8763,21 +8814,49 @@ def _select_3_plus_9(products):
         '- 优先「热度高但竞争中等」，避开红海词\n'
         '第三步：每个可用品裂变出 3 个「裂变品」\n'
         '- 只看该可用品的下拉词/相关词：裂变分 = 下拉词热度×0.5 + 相关词热度×0.5\n'
-        '- 裂变品不能与可用品重复、去掉品牌词、语义去重、必须仍指向可购买商品\n'
-        '输出 JSON 数组（不要解释文字）：\n'
-        '[{"可用品":"名称","品类":"xx","裂变品":["a","b","c"]}]  （3 个元素）'
+        '- ★ 裂变品必须是「具体可购买的单品」，绝对不能把下拉词/搜索词原样当裂变品：\n'
+        '  · 若词本身已足够具体（如「车载香薰」）可直接用；\n'
+        '  · 若词是宽泛/修饰性搜索词（如「在抖音」「同款」「便宜」），必须结合可用品改写成具体单品名；\n'
+        '  · 禁止品牌词、禁止与可用品重复、语义去重、必须仍指向可购买商品。\n'
+        '- ' + price_note +
+        '输出 JSON 数组（不要解释文字），每个元素：\n'
+        '{"可用品":"名称","品类":"xx",'
+        '"裂变品":[{"name":"裂变单品名","category":"品类","price_range":"¥a-b"},'
+        '{"name":"...","category":"xx","price_range":"¥a-b"},{"name":"...","category":"xx","price_range":"¥a-b"}]}'
+        '  （共 3 个元素，每个可用品 3 个裂变品）'
     )
     user_msg = '爱搜词数据（JSON）：\n' + json.dumps(groups, ensure_ascii=False) + \
-        '\n\n待选商品：' + '、'.join(products) + '\n请输出 3 个可用品及其各 3 个裂变品的 JSON 数组。'
-    raw = call_deepseek_api(sys_p, user_msg, temperature=0.4, max_tokens=3000,
+        '\n\n待选商品：' + '、'.join(products) + \
+        '\n请输出 3 个可用品及其各 3 个裂变品（结构化对象）的 JSON 数组。'
+    raw = call_deepseek_api(sys_p, user_msg, temperature=0.4, max_tokens=3500,
                             api_key=DEEPSEEK_SELECTION_API_KEY)
     parsed = _ps_parse_json_array(raw)
+
+    def _norm_variant(v):
+        """兼容新旧两种裂变品形态：字符串 → {name}；dict → 取字段"""
+        if isinstance(v, str):
+            v = v.strip()
+            return {'name': v, 'category': '', 'price_range': ''} if v else None
+        if isinstance(v, dict):
+            name = (v.get('name') or v.get('裂变品') or v.get('词名') or '').strip()
+            if not name:
+                return None
+            return {'name': name, 'category': (v.get('category') or v.get('品类') or '').strip(),
+                    'price_range': (v.get('price_range') or v.get('价格区间') or '').strip()}
+        return None
+
     result = []
     for p in parsed:
         name = p.get('可用品') or p.get('name') or ''
-        variants = p.get('裂变品') or p.get('variants') or []
-        if name:
-            result.append({'name': name, 'category': p.get('品类') or '', 'variants': variants[:3]})
+        if not name:
+            continue
+        variants = []
+        for v in (p.get('裂变品') or p.get('variants') or []):
+            nv = _norm_variant(v)
+            if nv:
+                variants.append(nv)
+        result.append({'name': name, 'category': p.get('品类') or p.get('category') or '',
+                       'variants': variants[:3]})
     return result
 
 
@@ -8792,37 +8871,206 @@ def _tmall_enrich(products):
     return {r.get('keyword'): r.get('products') or [] for r in out.get('results') or []}
 
 
-def _final_analyze(selection, tmall_map, price_label):
-    """把天猫 top100 数据交给 DeepSeek，产出 3 大卡 + 9 小卡 + 300 字建议"""
+_1688_SCRAPER = os.path.join(_SEEDING_DIR, '1688_scraper.py')
+_1688_OUT_FILE = os.path.join(_SEEDING_DIR, '_1688_top10.json')
+
+
+def _p1688_parse_cost(price_text):
+    """'¥12.5' -> 12.5；'¥1.2-3.4' -> 1.2（取区间下界作为批发成本），失败 None"""
+    if not price_text:
+        return None
+    nums = re.findall(r'\d+(?:\.\d+)?', str(price_text).replace('¥', '').replace('￥', ''))
+    if not nums:
+        return None
+    try:
+        return float(nums[0])
+    except Exception:
+        return None
+
+
+def _p1688_enrich(names, timeout_each=600):
+    """对给定商品名逐个跑 1688_scraper.py，实采供应链批发价（前10页货源）。
+
+    返回 {name: {'ok','cost_median','cost_min','samples','count','note'}}。
+    1688 风控/超时/无数据 → ok=False，利润退化为估算口径，**不中断选品流程**。
+    注意：1688_scraper 失败时也以 0 退出（进度文件里才是 error），所以要靠产出 JSON 判断成败。
+    """
+    result = {}
+    if not os.path.exists(_1688_SCRAPER):
+        return {n: {'ok': False, 'cost_median': None, 'cost_min': None, 'samples': [],
+                    'count': 0, 'note': '1688 抓取脚本不存在'} for n in names}
+    for kw in names:
+        base = {'ok': False, 'cost_median': None, 'cost_min': None, 'samples': [],
+                'count': 0, 'note': ''}
+        try:
+            import sys as _sys1688
+            proc = subprocess.run([_sys1688.executable, _1688_SCRAPER, kw],
+                                  check=False, timeout=timeout_each)
+            if proc.returncode != 0:
+                base['note'] = '1688 抓取脚本非零退出(code=%s)' % proc.returncode
+            else:
+                out = _read_json(_1688_OUT_FILE) or {}
+                prices = []
+                for p in out.get('products') or []:
+                    v = _p1688_parse_cost(p.get('price'))
+                    if v is not None and v > 0:
+                        prices.append(round(v, 2))
+                if prices and (out.get('keyword') or '') == kw:
+                    prices.sort()
+                    n = len(prices)
+                    med = prices[n // 2] if n % 2 else round((prices[n // 2 - 1] + prices[n // 2]) / 2, 2)
+                    base.update(ok=True, cost_median=med, cost_min=prices[0],
+                                samples=prices[:10], count=n,
+                                note='1688 前10页实采 %d 条货源价' % n)
+                else:
+                    base['note'] = '1688 未采到有效货源价（可能滑块风控/Cookie 失效/关键词无结果）'
+        except subprocess.TimeoutExpired:
+            base['note'] = '1688 抓取超时(%ds)' % timeout_each
+        except Exception as e:
+            base['note'] = '1688 抓取异常: ' + str(e)
+        result[kw] = base
+        print('[选品][1688] %s -> ok=%s cost_median=%s count=%s note=%s'
+              % (kw, base['ok'], base['cost_median'], base['count'], base['note']))
+    return result
+
+
+def _final_analyze(selection, tmall_map, price_label, p1688_map=None, min_p=None, max_p=None):
+    """把天猫 top100 + 1688 供应链实采数据交给 DeepSeek，产出 3 大卡 + 9 小卡 + 300 字建议。
+
+    价格段：用户给了完整区间时，在代码里把 [min,max] 三等分成固定段（杜绝 AI 自造 0-50 之类跑偏段）；
+    利润：1688 实采成功时按公式「售价中位×80% − 1688成本中位 − 5元快递」算好单件毛利/毛利率，
+    AI 只负责引用这些数字写分析，不得改动；1688 未采到则明确标注为估算。
+    """
+    # ---- 变体统一为结构化对象并补天猫数据 ----
     for s in selection:
         s['tmall_products'] = tmall_map.get(s['name'], [])
-        s['variants'] = [{'name': v, 'tmall_products': tmall_map.get(v, [])}
-                         for v in s.get('variants', [])]
+        norm_variants = []
+        for v in s.get('variants', []):
+            if isinstance(v, str):
+                v = {'name': v, 'category': '', 'price_range': ''}
+            if not v.get('name'):
+                continue
+            v = dict(v)
+            v['tmall_products'] = tmall_map.get(v['name'], [])
+            norm_variants.append(v)
+        s['variants'] = norm_variants[:3]
+
+    # ---- 固定三价格段（用户区间三等分） ----
+    seg_bounds = None
+    if min_p is not None and max_p is not None and max_p > min_p:
+        seg_bounds = [round(min_p + (max_p - min_p) * k / 3, 2) for k in range(4)]
+
+    # ---- 逐可用品做确定性测算（售价中位 / 分段计数 / 1688 成本 / 利润公式） ----
+    def _prices_of(products):
+        out = []
+        for p in products or []:
+            try:
+                v = float(p.get('price'))
+                if v > 0:
+                    out.append(v)
+            except (TypeError, ValueError):
+                continue
+        return sorted(out)
+
+    def _median(nums):
+        n = len(nums)
+        if not n:
+            return None
+        return nums[n // 2] if n % 2 else round((nums[n // 2 - 1] + nums[n // 2]) / 2, 2)
+
+    profit_ctx = {}
+    for s in selection:
+        sell = _prices_of(s.get('tmall_products'))
+        sell_med = _median(sell)
+        cost_info = (p1688_map or {}).get(s['name']) or {}
+        cost_med = cost_info.get('cost_median')
+        entry = {'sell_median': sell_med, 'sell_count': len(sell),
+                 'cost_median': cost_med, 'cost_1688_ok': bool(cost_info.get('ok'))}
+        if seg_bounds:
+            counts = [0, 0, 0]
+            for v in sell:
+                idx = 2 if v >= seg_bounds[3] else (1 if v >= seg_bounds[2] else 0)
+                counts[idx] += 1
+            entry['segment_counts'] = counts
+        if sell_med and cost_med:
+            gross = round(sell_med * 0.80 - cost_med - 5, 2)     # 扣点5%+推广15% → ×0.8，再减5元快递
+            entry['gross_profit'] = gross
+            entry['gross_margin'] = round(gross / sell_med * 100, 1)
+            entry['formula'] = '售价中位×80%(扣除平台扣点5%+推广费率15%) − 1688成本中位 − 5元快递'
+        profit_ctx[s['name']] = entry
+
     sys_p = (
-        '你是电商选品智能体。基于给定的天猫销量前100数据（每个商品含 rank/title/price/sales/shop），'
-        '对每个可用品及其裂变品做分析：\n'
-        '- 把每个商品的天猫前100按价格归到 3 个价格段，统计每段销量，做利润与成本分析；\n'
+        '你是电商选品智能体。基于给定的天猫销量前100数据（每个商品含 rank/title/price/sales/shop）'
+        '与 1688 供应链实采数据，对每个可用品及其裂变品做分析：\n'
+    )
+    if seg_bounds:
+        seg_desc = '、'.join('%s~%s' % (seg_bounds[i], seg_bounds[i + 1]) for i in range(3))
+        sys_p += (
+            '- 价格段已由系统按用户客单价区间三等分固定为：' + seg_desc + '（元）。'
+            '三个 price_segments 必须严格用这三段，绝不允许自造其他区间；'
+            '把每个可用品的天猫前100按价格归段，给出段内商品数（系统已算好 segment_counts 可直接用）与该段销量描述；\n'
+        )
+    else:
+        sys_p += (
+            '- 把每个商品的天猫前100按价格归到 3 个价格段（价格段必须落在用户区间内），统计每段销量；\n'
+        )
+    sys_p += (
+        '- 利润分析：系统已按公式「售价中位×80%(扣平台扣点5%+推广15%) − 1688成本中位 − 5元快递」算好'
+        '单件毛利(gross_profit)与毛利率(gross_margin)。1688 成本实采成功(cost_1688_ok=true)的品，'
+        'profit 文本必须直接引用这些数字，不得改动或另编；cost_1688_ok=false 的品，'
+        '必须在文本开头注明「⚠ 1688 成本未采到，以下为按市场价估算」，再给估算；\n'
         '- 每个可用品和每个裂变品各写一句简短小结（一句话，点明机会点/价格带/竞争）；\n'
+        '- 裂变品输出为对象：{"name":"裂变品名","category":"品类","price_range":"¥a-b","summary":"一句话小结"}，'
+        'price_range 必须是落在用户区间内的窄价格带；\n'
         '- 最后综合所有商品给一段 300 字左右的当日选品分析建议。\n'
         '输出 JSON 对象（不要解释文字）：\n'
         '{"products":[{"name":"可用品","category":"xx","summary":"一句话小结",'
-        '"price_segments":[{"range":"如 0-50","sales":"如 12.3万"}],'
-        '"profit":"利润成本分析","variants":[{"name":"裂变品","summary":"一句话小结"}]}],'
+        '"price_segments":[{"range":"如 75-416.67","sales":"段内 12 个商品，销量约 x"}],'
+        '"profit":"利润成本分析","variants":[{"name":"裂变品","category":"xx","price_range":"¥a-b","summary":"一句话小结"}]}],'
         '"advice":"300字当日选品建议"}'
     )
-    user_msg = ('天猫销量前100数据（JSON）：\n' + json.dumps(selection, ensure_ascii=False) +
-                '\n价格区间：' + price_label + '\n请输出上述 JSON 对象。')
-    raw = call_deepseek_api(sys_p, user_msg, temperature=0.4, max_tokens=5000,
+    ctx = {
+        '用户价格区间': price_label,
+        '价格段边界(元)': seg_bounds,
+        '选品数据': selection,
+        '利润测算(系统已算好,直接引用)': profit_ctx,
+        '1688供应链实采': {k: {'ok': v.get('ok'), 'cost_median': v.get('cost_median'),
+                              'cost_min': v.get('cost_min'), 'count': v.get('count'),
+                              'note': v.get('note')}
+                          for k, v in (p1688_map or {}).items()},
+    }
+    user_msg = json.dumps(ctx, ensure_ascii=False) + '\n请输出上述 JSON 对象。'
+    raw = call_deepseek_api(sys_p, user_msg, temperature=0.4, max_tokens=6500,
                             api_key=DEEPSEEK_SELECTION_API_KEY)
     s = (raw or '').strip()
     s = re.sub(r'```(?:json)?', '', s).strip()
     i, j = s.find('{'), s.rfind('}')
+    parsed = None
     if i != -1 and j > i:
         try:
-            return json.loads(s[i:j + 1])
+            parsed = json.loads(s[i:j + 1])
         except Exception:
-            return None
-    return None
+            parsed = None
+    if not isinstance(parsed, dict):
+        return None
+    # ---- 回填：把 1688 成本实采数据与裂变品结构并入最终结果（前端直接可渲染） ----
+    sel_variant_map = {s['name']: {v['name']: v for v in s.get('variants', [])} for s in selection}
+    for prod in parsed.get('products') or []:
+        prod['cost_1688'] = p1688_map.get(prod.get('name'), {}) if p1688_map else {}
+        norm_vs = []
+        for v in (prod.get('variants') or [])[:3]:
+            if isinstance(v, str):
+                v = {'name': v}
+            if not isinstance(v, dict) or not v.get('name'):
+                continue
+            ref = sel_variant_map.get(prod.get('name'), {}).get(v['name']) or {}
+            nv = {'name': v['name'],
+                  'summary': v.get('summary') or '',
+                  'category': v.get('category') or ref.get('category') or '',
+                  'price_range': v.get('price_range') or ref.get('price_range') or ''}
+            norm_vs.append(nv)
+        prod['variants'] = norm_vs
+    return parsed
 
 
 def _run_selection_analyze(products, min_p, max_p):
@@ -8837,19 +9085,25 @@ def _run_selection_analyze(products, min_p, max_p):
         _aisou_enrich(products)
 
         _progress('select', '正在筛选 3 可用品 + 9 裂变品...')
-        selection = _select_3_plus_9(products)
+        selection = _select_3_plus_9(products, min_p, max_p)
         if not selection:
             _progress('error', '智能体未能筛选出可用品')
             return
 
         all_names = [s['name'] for s in selection]
         for s in selection:
-            all_names += [v for v in s.get('variants', [])]
+            all_names += [v['name'] if isinstance(v, dict) else str(v)
+                          for v in s.get('variants', [])]
+
+        _progress('s1688', '正在 1688 实采 3 个可用品的供应链货源价...')
+        p1688_map = _p1688_enrich([s['name'] for s in selection])
+
         _progress('tmall', '正在天猫抓取销量前100（{} 个商品）...'.format(len(all_names)))
         tmall_map = _tmall_enrich(all_names)
 
         _progress('analyze', '正在生成最终选品分析...')
-        final = _final_analyze(selection, tmall_map, price_label)
+        final = _final_analyze(selection, tmall_map, price_label,
+                               p1688_map=p1688_map, min_p=min_p, max_p=max_p)
         if not final:
             _progress('error', '最终分析生成失败')
             return
