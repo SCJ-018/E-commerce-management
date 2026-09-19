@@ -65,8 +65,8 @@
     document.head.appendChild(style);
   }
 
-  function mount() { if (_app) return; var old = document.getElementById('page-product-selection'), root = document.getElementById('page-product-selection-vue'); if (!old || !root) return; installStyles(); old.style.display = 'none'; root.classList.remove('hidden'); _app = Vue.createApp(Page); _app.mount(root); }
-  function unmount() { if (!_app) return; _epoch++; _app.unmount(); _app = null; var old = document.getElementById('page-product-selection'), root = document.getElementById('page-product-selection-vue'); if (root) { root.classList.add('hidden'); root.innerHTML = ''; } if (old) old.style.display = ''; }
+  function mount() { if (_app) return; var page = document.getElementById('page-product-selection'), root = document.getElementById('page-product-selection-vue'); if (!page || !root) return; installStyles(); _app = Vue.createApp(Page); _app.mount(root); }
+  function unmount() { if (!_app) return; _epoch++; _app.unmount(); _app = null; var root = document.getElementById('page-product-selection-vue'); if (root) root.innerHTML = ''; }
   function install() { var old = document.getElementById('page-product-selection'); if (!old) return; if (!old.classList.contains('hidden')) mount(); new MutationObserver(function () { old.classList.contains('hidden') ? unmount() : mount(); }).observe(old, { attributes: true, attributeFilter: ['class'] }); }
   document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', install) : install();
 })();
