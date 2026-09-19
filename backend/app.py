@@ -7713,7 +7713,6 @@ def _ensure_douyin_category_columns():
         '热搜值': "VARCHAR(255) NOT NULL",
         '日期': "DATE NOT NULL",
         '品类': "VARCHAR(255) NULL",
-        '规范品名': "VARCHAR(255) NULL",
         '是否电商': "TINYINT(1) NOT NULL DEFAULT 0",
         '热度数值': "DECIMAL(20,2) NULL",
     }
@@ -7995,72 +7994,48 @@ _DOUYIN_HOT_AI_MAX_WORDS = 1000  # 送 DeepSeek 的词数上限（按热度截�
 
 
 def _douyin_hot_ai_filter(filter_result):
-    """DeepSeek 二次过滤并把保留热搜规范成无品牌的产品/品类名 A。"""
+    """DeepSeek 二次过滤：只剔除非电商词，不再改写产品名称。"""
     terms = (filter_result or {}).get('terms') or []
     date_str = (filter_result or {}).get('date') or time.strftime('%Y-%m-%d')
     if not terms:
         return {'kept': 0, 'removed': 0, 'skipped': True}
     if not DEEPSEEK_SELECTION_API_KEY:
-        print('[选品][AI筛选] 未配置 DEEPSEEK_SELECTION_API_KEY，无法规范产品名')
-        return {'kept': len(terms), 'removed': 0, 'normalized': 0, 'skipped': True}
+        print('[选品][AI筛选] 未配置 DEEPSEEK_SELECTION_API_KEY，跳过二次过滤（保留词典结果）')
+        return {'kept': len(terms), 'removed': 0, 'skipped': True}
 
-    # 按热度降序，分批返回每个词的判断，避免一次输出过长导致后半段规范名丢失。
+    # 只返回少数需要剔除的词，避免模型在这一阶段改写后续候选商品名。
     terms_sorted = sorted(terms, key=lambda m: m.get('heat_num') or 0, reverse=True)
     if len(terms_sorted) > _DOUYIN_HOT_AI_MAX_WORDS:
         terms_sorted = terms_sorted[:_DOUYIN_HOT_AI_MAX_WORDS]
+    word_list = [{'word': m['term'], 'category': m.get('categories') or ''} for m in terms_sorted]
     sys_p = (
-        '你是电商选品数据清洗助手。对每个抖音热搜词同时完成二次电商过滤与产品名规范化。'
-        'keep=false：影视综艺、明星八卦、游戏、社会新闻、品牌事件、行情、抽象梗等非购物意图。'
-        'keep=true：有明确商品购买意图；product_name 必须是可去电商平台搜索的通用产品/品类名 A，'
-        '删除品牌、人名、营销形容词、热搜话题句、型号、颜色、容量和规格，只保留商品本体，例如“某品牌果酸身体磨砂膏”写“身体磨砂膏”。'
-        '不能把 product_name 写成品牌，也不能照抄含品牌的原词；拿不准是否电商时宁可保留，但仍要给出最合理的通用品名。'
-        '逐条返回且 word 必须原样，JSON：{"items":[{"word":"原词","keep":true,"product_name":"规范品名"}]}，不要其他文字。'
+        '你是电商选品数据清洗助手。给你一批已通过词典初筛的抖音热搜词，只挑出不是电商购物意图的词。'
+        '影视综艺、明星八卦、游戏、社会新闻、品牌事件、行情和抽象梗应剔除；拿不准时宁可保留。'
+        '不要生成、规范化或改写任何产品名。只返回要剔除的原词，JSON 字符串数组格式：'
+        '["词1","词2"]，不要任何其他文字。'
     )
-    decisions = {}
-    failed_batches = 0
-    for offset in range(0, len(terms_sorted), 100):
-        batch = terms_sorted[offset:offset + 100]
-        word_list = [{'word': m['term'], 'category': m.get('categories') or ''} for m in batch]
-        raw = call_deepseek_api(sys_p, '热搜词列表：\n' + json.dumps(word_list, ensure_ascii=False),
-                                temperature=0.1, max_tokens=7000,
-                                api_key=DEEPSEEK_SELECTION_API_KEY)
-        parsed = _selection_v2_parse_object(raw) or {}
-        returned = parsed.get('items') or []
-        if not returned:
-            failed_batches += 1
-            continue
-        allowed = {m['term'] for m in batch}
-        for item in returned:
-            if not isinstance(item, dict):
-                continue
-            word = str(item.get('word') or '').strip()
-            product_name = str(item.get('product_name') or '').strip()
-            if word in allowed:
-                keep_raw = item.get('keep')
-                keep = keep_raw is True or str(keep_raw).strip().lower() in ('true', '1', 'yes', '是')
-                decisions[word] = {'keep': keep, 'product_name': product_name[:120]}
-
-    kept = removed = normalized = 0
-    for m in terms_sorted:
-        decision = decisions.get(m['term'])
-        if not decision:
-            # 模型批次失败时保留词典结果但不伪造规范名，后续读取会按同一规则补录。
-            kept += 1
-            continue
-        product_name = decision['product_name']
-        if not decision['keep'] or not product_name:
-            db_execute("DELETE FROM `抖音热搜品类表` WHERE `日期` = %s AND `热搜名` = %s",
-                       [date_str, m['term']], fetch=False)
-            removed += 1
-            continue
-        db_execute("UPDATE `抖音热搜品类表` SET `规范品名` = %s WHERE `日期` = %s AND `热搜名` = %s",
-                   [product_name, date_str, m['term']], fetch=False)
-        kept += 1
-        normalized += 1
-    print('[选品][AI筛选] 词典 %d 词 -> 保留 %d，规范 %d，剔除 %d，失败批次 %d' %
-          (len(terms_sorted), kept, normalized, removed, failed_batches))
-    return {'kept': kept, 'removed': removed, 'normalized': normalized,
-            'skipped': failed_batches == math.ceil(len(terms_sorted) / 100)}
+    raw = call_deepseek_api(sys_p, '热搜词列表：\n' + json.dumps(word_list, ensure_ascii=False),
+                            temperature=0.1, max_tokens=4000,
+                            api_key=DEEPSEEK_SELECTION_API_KEY)
+    if not raw:
+        return {'kept': len(terms_sorted), 'removed': 0, 'skipped': True}
+    removed_words = set()
+    text = re.sub(r'```(?:json)?', '', str(raw)).strip()
+    i, j = text.find('['), text.rfind(']')
+    if i != -1 and j > i:
+        try:
+            removed_words = {str(x).strip() for x in json.loads(text[i:j + 1]) if str(x).strip()}
+        except Exception:
+            removed_words = set()
+    allowed = {m['term'] for m in terms_sorted}
+    removed_words &= allowed
+    for word in removed_words:
+        db_execute("DELETE FROM `抖音热搜品类表` WHERE `日期` = %s AND `热搜名` = %s",
+                   [date_str, word], fetch=False)
+    kept = len(terms_sorted) - len(removed_words)
+    print('[选品][AI筛选] 词典 %d 词 -> 保留 %d，剔除 %d' %
+          (len(terms_sorted), kept, len(removed_words)))
+    return {'kept': kept, 'removed': len(removed_words), 'skipped': False}
 
 
 def _run_scrape_and_filter():
@@ -8091,40 +8066,19 @@ _selection_scrape_thread = None
 
 
 def _ps_latest_douyin_categories():
-    """读取最新一天二次清洗后的抖音热搜，只返回已规范成产品名 A 的记录。"""
-    _ensure_douyin_category_columns()
-    latest_rows = list(db_execute(
-        "SELECT `日期` FROM `抖音热搜品类表` ORDER BY `日期` DESC LIMIT 1"))
-    latest_date = str(latest_rows[0].get('日期')) if latest_rows else ''
-    if latest_date:
-        pending = list(db_execute(
-            "SELECT 热搜名, 热搜值, 品类, 热度数值 FROM `抖音热搜品类表` "
-            "WHERE `日期` = %s AND (`规范品名` IS NULL OR `规范品名` = '')",
-            [latest_date]))
-        if pending:
-            # 兼容上线前已落库的旧日数据：仍走同一个“第二次 DeepSeek 清洗”入口补规范名。
-            _douyin_hot_ai_filter({
-                'date': latest_date,
-                'terms': [{'term': str(r.get('热搜名') or ''),
-                           'heat_raw': str(r.get('热搜值') or ''),
-                           'categories': str(r.get('品类') or ''),
-                           'heat_num': float(r.get('热度数值') or 0)} for r in pending],
-            })
+    """读取最新一天二次筛选后的原始抖音热搜词，不在这里改写产品名。"""
     rows = list(db_execute(
-        "SELECT 热搜名, 热搜值, 品类, 规范品名, 日期 FROM `抖音热搜品类表` "
+        "SELECT 热搜名, 热搜值, 品类, 日期 FROM `抖音热搜品类表` "
         "WHERE `日期` = (SELECT MAX(`日期`) FROM `抖音热搜品类表`) "
         "ORDER BY `热度数值` DESC LIMIT 500"))
     seen = set()
     items = []
     for r in rows:
         term = (r['热搜名'] or '').strip()
-        product_name = str(r.get('规范品名') or '').strip()
-        key = _selection_v2_key(product_name)
-        if not term or not product_name or not key or key in seen:
+        if not term or term in seen:
             continue
-        seen.add(key)
+        seen.add(term)
         items.append({'term': term, 'heat': r['热搜值'], 'category': r['品类'],
-                      'product_name': product_name,
                       'date': str(r['日期']) if r['日期'] else ''})
     return items
 
@@ -8237,28 +8191,8 @@ def _selection_v2_market_price_label(price):
     return '市场均价 ¥%s' % (int(price) if float(price).is_integer() else ('%.2f' % price))
 
 
-def _selection_v2_tmall_market(product_name):
-    """用规范品名 A 查天猫榜单并计算市场客单价。
-
-    优先命中排行榜名；只要排行榜名命中，就读取这些排行榜下的全部产品。
-    排行榜名未命中时再命中产品名。返回名始终是 A，不使用排行榜名或品牌标题。
-    同一产品跨日期/榜单重复出现时只取最新价格，避免重复快照拉偏均价。
-    """
-    name = str(product_name or '').strip()
-    if not name:
-        return None
-    like = '%' + name + '%'
-    rows = list(db_execute(
-        "SELECT 类别名, 排行榜名, 产品名, 价格, 日期 FROM `天猫榜单表` "
-        "WHERE `排行榜名` LIKE %s AND `价格` > 0 ORDER BY `日期` DESC", [like]))
-    match_source = '排行榜名'
-    if not rows:
-        rows = list(db_execute(
-            "SELECT 类别名, 排行榜名, 产品名, 价格, 日期 FROM `天猫榜单表` "
-            "WHERE `产品名` LIKE %s AND `价格` > 0 ORDER BY `日期` DESC", [like]))
-        match_source = '产品名'
-    if not rows:
-        return None
+def _selection_v2_market_from_rows(rows, display_name, match_source, fallback_category=''):
+    """同类商品去重后计算市场均价；display_name 原样返回，不参与改名。"""
     prices, categories = {}, {}
     for row in rows:
         raw_name = str(row.get('产品名') or '').strip()
@@ -8278,104 +8212,133 @@ def _selection_v2_tmall_market(product_name):
     if not prices:
         return None
     avg_price = round(sum(prices.values()) / len(prices), 2)
-    category = max(categories, key=categories.get) if categories else ''
-    return {'name': name, 'category': category, 'market_avg_price': avg_price,
+    category = max(categories, key=categories.get) if categories else fallback_category
+    return {'name': display_name, 'category': category, 'market_avg_price': avg_price,
             'sample_count': len(prices), 'match_source': match_source}
 
 
-def _selection_v2_tmall_fallback_names(limit=320):
-    """当热搜在某价格段不足时，让 DeepSeek 从天猫原始榜名/标题中提炼通用品名 A。"""
+def _selection_v2_tmall_market(search_term, display_name=None):
+    """用内部同类词搜索价格样本，但最终产品名保持候选生成阶段的原名称。"""
+    query = str(search_term or '').strip()
+    display_name = str(display_name or search_term or '').strip()
+    if not query or not display_name:
+        return None
+    like = '%' + query + '%'
+    rows = list(db_execute(
+        "SELECT 类别名, 排行榜名, 产品名, 价格, 日期 FROM `天猫榜单表` "
+        "WHERE `排行榜名` LIKE %s AND `价格` > 0 ORDER BY `日期` DESC", [like]))
+    match_source = '排行榜名'
+    if not rows:
+        rows = list(db_execute(
+            "SELECT 类别名, 排行榜名, 产品名, 价格, 日期 FROM `天猫榜单表` "
+            "WHERE `产品名` LIKE %s AND `价格` > 0 ORDER BY `日期` DESC", [like]))
+        match_source = '产品名'
+    return _selection_v2_market_from_rows(rows, display_name, match_source) if rows else None
+
+
+def _selection_v2_tmall_pool(band):
+    """恢复原候选名来源：把该单品价格段里的天猫原始商品交给模型选名。"""
     rows = list(db_execute(
         "SELECT 类别名, 排行榜名, 产品名, 价格 FROM `天猫榜单表` "
-        "WHERE `价格` > 0 ORDER BY `日期` DESC LIMIT 12000"))
-    groups = {}
-    for row in rows:
-        rank_name = str(row.get('排行榜名') or '').strip()
-        if not rank_name:
-            continue
-        group = groups.setdefault(rank_name, {'rank_name': rank_name,
-                                               'category': str(row.get('类别名') or ''),
-                                               'products': []})
-        raw_name = str(row.get('产品名') or '').strip()
-        if raw_name and raw_name not in group['products'] and len(group['products']) < 4:
-            group['products'].append(raw_name)
-    seeds = list(groups.values())[:limit]
-    if not seeds:
-        return []
-    prompt = (
-        '你在为电商选品补充候选。输入的天猫排行榜名和商品标题都可能带品牌、价格、营销词、型号和规格，不能直接作为产品名。'
-        '请依据每条的排行榜名和样例商品，提炼一个可搜索的通用产品/品类名 A；去掉品牌、店铺、价格段、热销榜字样、型号、颜色、容量和规格。'
-        'A 要具体到商品本体，不能写“家居用品”等过宽大类。source 必须原样返回且逐条对应。'
-        '只返回 JSON：{"items":[{"source":"原排行榜名","product_name":"规范品名A"}]}。'
-    )
-    normalized = []
-    for offset in range(0, len(seeds), 80):
-        batch = seeds[offset:offset + 80]
-        raw = call_deepseek_api(prompt, json.dumps({'items': batch}, ensure_ascii=False),
-                                temperature=0.1, max_tokens=6000,
-                                api_key=DEEPSEEK_SELECTION_API_KEY)
-        parsed = _selection_v2_parse_object(raw) or {}
-        allowed = {x['rank_name'] for x in batch}
-        for item in parsed.get('items') or []:
-            if not isinstance(item, dict) or str(item.get('source') or '') not in allowed:
-                continue
-            name = str(item.get('product_name') or '').strip()
-            if name:
-                normalized.append(name[:120])
+        "WHERE `价格` >= %s AND `价格` <= %s ORDER BY `日期` DESC, `价格` ASC LIMIT 800",
+        [band['min'], band['max']]))
     out, seen = [], set()
-    for name in normalized:
+    for row in rows:
+        name = str(row.get('产品名') or '').strip()
         key = _selection_v2_key(name)
-        if key and key not in seen:
-            seen.add(key)
-            out.append(name)
+        if not name or not key or key in seen:
+            continue
+        seen.add(key)
+        out.append({'name': name, 'category': str(row.get('类别名') or ''),
+                    'rank_name': str(row.get('排行榜名') or ''),
+                    'price': float(row.get('价格') or 0)})
     return out
 
 
 def _selection_v2_candidates():
-    """以规范品名 A 搜天猫同类商品均价，再按均价分成四层并补足 70 品。"""
+    """恢复原产品名生成逻辑；只用同类市场均价重新决定所属价格段。"""
     hot = _ps_latest_douyin_categories()[:150]
-    market_cache = {}
+    pools = {band['key']: _selection_v2_tmall_pool(band) for band in _SELECTION_V2_BANDS}
+    bands_ctx = []
+    for band in _SELECTION_V2_BANDS:
+        bands_ctx.append({'key': band['key'], 'name': band['name'],
+                          'price_range': _selection_v2_price_label(band['min'], band['max']),
+                          'quota': band['quota'], 'decision': band['decision'], 'audience': band['audience'],
+                          'tmall_products': pools[band['key']][:180]})
+    prompt = (
+        '你是严谨的电商选品研究员。沿用原有候选商品命名方式：根据抖音热搜和天猫商品生成具体可购买单品名称，'
+        'name 是最终展示并送爱搜的产品名，不要把 name 改成价格查询词；不可为品牌词或过宽大类，不能用颜色、规格、Pro/Plus 制造重复。'
+        '每组按 quota 返回。另给每个商品一个 market_query，仅供后台搜索同类商品并计算平均客单价，必须是简短通用品类词；'
+        'market_query 不会替换 name。只引用输入，不编造销量或成本。返回 JSON：'
+        '{"bands":[{"key":"volume","items":[{"name":"原逻辑具体商品名","category":"品类",'
+        '"market_query":"同类价格查询词","reason":"十字内机会说明"}]}]}。'
+    )
+    raw = call_deepseek_api(prompt, json.dumps({'hot_words': hot, 'bands': bands_ctx}, ensure_ascii=False),
+                            temperature=0.25, max_tokens=12000, api_key=DEEPSEEK_SELECTION_API_KEY)
+    parsed = _selection_v2_parse_object(raw) or {}
+    by_key = {x.get('key'): x.get('items') for x in (parsed.get('bands') or []) if isinstance(x, dict)}
+    buckets = {band['key']: [] for band in _SELECTION_V2_BANDS}
+    proposed_seen = set()
+    for source_band in _SELECTION_V2_BANDS:
+        for item in by_key.get(source_band['key']) or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('name') or '').strip()
+            key = _selection_v2_key(name)
+            market_query = str(item.get('market_query') or '').strip()
+            if not name or not key or key in proposed_seen or not market_query:
+                continue
+            found = _selection_v2_tmall_market(market_query, display_name=name)
+            if not found:
+                continue
+            actual_band = next((b for b in _SELECTION_V2_BANDS
+                                if b['min'] <= found['market_avg_price'] <= b['max']), None)
+            if not actual_band:
+                continue
+            found.update({'source': 'douyin_tmall', 'market_query': market_query,
+                          'reason': str(item.get('reason') or '')[:80],
+                          'category': str(item.get('category') or found.get('category') or '')})
+            buckets[actual_band['key']].append(found)
+            proposed_seen.add(key)
 
-    def market(name):
-        key = _selection_v2_key(name)
-        if key not in market_cache:
-            market_cache[key] = _selection_v2_tmall_market(name)
-        return market_cache[key]
-
-    hot_markets = []
-    for item in hot:
-        found = market(item.get('product_name'))
-        if found:
-            found = dict(found, source='douyin', hot_term=item.get('term') or '')
-            hot_markets.append(found)
-
-    fallback_markets = []
-    for name in _selection_v2_tmall_fallback_names():
-        found = market(name)
-        if found:
-            fallback_markets.append(dict(found, source='tmall', hot_term=''))
+    # 模型候选因市场均价被重分层后若有缺口，沿用旧逻辑的天猫原始产品名补足；
+    # 仅价格取该产品所属排行榜全部商品的平均值，不改写补位产品名。
+    rank_rows_cache = {}
+    fallback_rows = [row for band in _SELECTION_V2_BANDS for row in pools[band['key']]]
+    for row in fallback_rows:
+        rank_name = row.get('rank_name') or ''
+        if rank_name not in rank_rows_cache:
+            rank_rows_cache[rank_name] = list(db_execute(
+                "SELECT 类别名, 排行榜名, 产品名, 价格, 日期 FROM `天猫榜单表` "
+                "WHERE `排行榜名` = %s AND `价格` > 0 ORDER BY `日期` DESC", [rank_name]))
+        found = _selection_v2_market_from_rows(
+            rank_rows_cache[rank_name], row['name'], '排行榜名', row.get('category') or '')
+        if not found:
+            continue
+        actual_band = next((b for b in _SELECTION_V2_BANDS
+                            if b['min'] <= found['market_avg_price'] <= b['max']), None)
+        if not actual_band or len(buckets[actual_band['key']]) >= actual_band['quota']:
+            continue
+        key = _selection_v2_key(found['name'])
+        if key in proposed_seen:
+            continue
+        found.update({'source': 'tmall', 'reason': '天猫榜单均价补位'})
+        buckets[actual_band['key']].append(found)
+        proposed_seen.add(key)
 
     global_seen, result = set(), []
     for band in _SELECTION_V2_BANDS:
         items = []
-        candidates = hot_markets + sorted(fallback_markets,
-                                          key=lambda x: (x.get('sample_count', 0), -x.get('market_avg_price', 0)),
-                                          reverse=True)
-        for found in candidates:
+        for found in buckets[band['key']]:
             price = found['market_avg_price']
-            if not (band['min'] <= price <= band['max']):
-                continue
             key = _selection_v2_key(found['name'])
             if not key or key in global_seen:
                 continue
-            source = found.get('source')
-            reason = ('抖音热搜“%s”规范化命中天猫%s' %
-                      (found.get('hot_term'), found.get('match_source'))) if source == 'douyin' else '天猫榜单补位'
             items.append({'name': found['name'], 'category': found.get('category') or '',
                           'price_range': _selection_v2_market_price_label(price),
                           'market_avg_price': price, 'sample_count': found.get('sample_count') or 0,
-                          'match_source': found.get('match_source'), 'source': source,
-                          'reason': reason[:80]})
+                          'match_source': found.get('match_source'), 'source': found.get('source'),
+                          'reason': str(found.get('reason') or '')[:80]})
             global_seen.add(key)
             if len(items) >= band['quota']:
                 break
