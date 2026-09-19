@@ -31,6 +31,10 @@ PROGRESS_FILE = os.path.join(BASE_DIR, "_1688_progress.json")
 COOKIE_FILE = os.path.join(BASE_DIR, "1688_cookie.txt")
 
 MAX_PAGES = 10  # 固定抓前 10 页
+# 排序：默认按成交量降序（sortType=booked），大幅减少「引流价」链接混入前排；
+# 引流价多挂在低销量/新店链接上，销量排序后前排基本是真实成交价。
+# 设 1688_SORT=default 可回退综合排序。
+SORT_TYPE = 'default' if os.environ.get('1688_SORT') == 'default' else 'booked'
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
       "AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/126.0.0.0 Safari/537.36")
@@ -152,9 +156,11 @@ def main():
     cookie_str = load_cookie()
     # 默认无头；设 1688_HEADED=1 可弹窗手动滑过 1688 滑块验证码
     headless = not bool(os.environ.get('1688_HEADED'))
-    log(f"[启动] 关键词={keyword} 目标页数={MAX_PAGES} 模式={'无头' if headless else '有头(可手动过验证码)'}")
+    log(f"[启动] 关键词={keyword} 目标页数={MAX_PAGES} 排序={SORT_TYPE} 模式={'无头' if headless else '有头(可手动过验证码)'}")
 
     search_url = "https://s.1688.com/selloffer/offer_search.htm?keywords=" + quote(keyword.encode('gbk'))
+    if SORT_TYPE != 'default':
+        search_url += "&sortType=" + SORT_TYPE + "&descendOrder=true"
 
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(

@@ -8876,32 +8876,70 @@ _1688_OUT_FILE = os.path.join(_SEEDING_DIR, '_1688_top10.json')
 
 
 def _p1688_parse_cost(price_text):
-    """'¥12.5' -> 12.5；'¥1.2-3.4' -> 1.2（取区间下界作为批发成本），失败 None"""
+    """'¥12.5' -> (12.5, 12.5)；'¥1.2-3.4' -> (1.2, 3.4)；失败 (None, None)"""
     if not price_text:
-        return None
+        return (None, None)
     nums = re.findall(r'\d+(?:\.\d+)?', str(price_text).replace('¥', '').replace('￥', ''))
     if not nums:
-        return None
+        return (None, None)
     try:
-        return float(nums[0])
+        vals = [float(v) for v in nums[:2]]
+        lo, hi = min(vals), max(vals)
+        return (lo, hi) if lo > 0 else (None, None)
     except Exception:
-        return None
+        return (None, None)
+
+
+def _p1688_title_ok(kw, title):
+    """标题与关键词粗相关性：中文看字符重叠率(≥1/3)，英文/数字看 token 命中。
+    用于过滤「9.9元清仓」「样品链接」这类与关键词无关的引流货。"""
+    if not title:
+        return False
+    t = str(title).lower()
+    kw_s = str(kw).strip().lower()
+    if not kw_s:
+        return True
+    if kw_s in t:
+        return True
+    ks = [c for c in kw_s if '\u4e00' <= c <= '\u9fff']
+    if ks:
+        hit = sum(1 for c in ks if c in t)
+        return hit / len(ks) >= 0.34
+    tokens = [tk for tk in re.split(r'[^a-z0-9]+', kw_s) if len(tk) >= 3]
+    return any(tk in t for tk in tokens) if tokens else False
+
+
+def _p1688_pct(sorted_vals, p):
+    """线性插值百分位（sorted_vals 非空）"""
+    n = len(sorted_vals)
+    if n == 1:
+        return sorted_vals[0]
+    idx = p / 100 * (n - 1)
+    lo_i, hi_i = int(idx), min(int(idx) + 1, n - 1)
+    frac = idx - lo_i
+    return round(sorted_vals[lo_i] * (1 - frac) + sorted_vals[hi_i] * frac, 2)
 
 
 def _p1688_enrich(names, timeout_each=600):
-    """对给定商品名逐个跑 1688_scraper.py，实采供应链批发价（前10页货源）。
+    """对给定商品名逐个跑 1688_scraper.py，实采供应链批发价（前10页货源，默认销量排序）。
 
-    返回 {name: {'ok','cost_median','cost_min','samples','count','note'}}。
+    抗引流价三道处理：
+    1) 标题相关性过滤（关键词与标题重叠过低的「清仓/样品」引流链接剔除）；
+    2) 剔除最低 15% 的异常低价（引流价几乎都在这一段）；
+    3) 成本给 P25/P50/P75 三档区间而非单点，前端与 AI 都能感知不确定性。
+    返回 {name: {'ok','cost_p25','cost_median','cost_p75','cost_min','samples','count',
+                 'removed_bait','note'}}。
     1688 风控/超时/无数据 → ok=False，利润退化为估算口径，**不中断选品流程**。
     注意：1688_scraper 失败时也以 0 退出（进度文件里才是 error），所以要靠产出 JSON 判断成败。
     """
     result = {}
     if not os.path.exists(_1688_SCRAPER):
-        return {n: {'ok': False, 'cost_median': None, 'cost_min': None, 'samples': [],
-                    'count': 0, 'note': '1688 抓取脚本不存在'} for n in names}
+        return {n: {'ok': False, 'cost_p25': None, 'cost_median': None, 'cost_p75': None,
+                    'cost_min': None, 'samples': [], 'count': 0, 'removed_bait': 0,
+                    'note': '1688 抓取脚本不存在'} for n in names}
     for kw in names:
-        base = {'ok': False, 'cost_median': None, 'cost_min': None, 'samples': [],
-                'count': 0, 'note': ''}
+        base = {'ok': False, 'cost_p25': None, 'cost_median': None, 'cost_p75': None,
+                'cost_min': None, 'samples': [], 'count': 0, 'removed_bait': 0, 'note': ''}
         try:
             import sys as _sys1688
             proc = subprocess.run([_sys1688.executable, _1688_SCRAPER, kw],
@@ -8910,18 +8948,26 @@ def _p1688_enrich(names, timeout_each=600):
                 base['note'] = '1688 抓取脚本非零退出(code=%s)' % proc.returncode
             else:
                 out = _read_json(_1688_OUT_FILE) or {}
-                prices = []
+                lows = []
                 for p in out.get('products') or []:
-                    v = _p1688_parse_cost(p.get('price'))
-                    if v is not None and v > 0:
-                        prices.append(round(v, 2))
-                if prices and (out.get('keyword') or '') == kw:
-                    prices.sort()
-                    n = len(prices)
-                    med = prices[n // 2] if n % 2 else round((prices[n // 2 - 1] + prices[n // 2]) / 2, 2)
-                    base.update(ok=True, cost_median=med, cost_min=prices[0],
-                                samples=prices[:10], count=n,
-                                note='1688 前10页实采 %d 条货源价' % n)
+                    if not _p1688_title_ok(kw, p.get('title')):
+                        continue
+                    lo, _hi = _p1688_parse_cost(p.get('price'))
+                    if lo is not None and lo > 0:
+                        lows.append(round(lo, 2))
+                if lows and (out.get('keyword') or '') == kw:
+                    lows.sort()
+                    # 剔除最低 15% 的引流价
+                    cut_idx = int(0.15 * (len(lows) - 1))
+                    kept = lows[cut_idx:]
+                    removed = len(lows) - len(kept)
+                    base.update(ok=True, cost_p25=_p1688_pct(kept, 25),
+                                cost_median=_p1688_pct(kept, 50),
+                                cost_p75=_p1688_pct(kept, 75),
+                                cost_min=kept[0], samples=kept[:10], count=len(kept),
+                                removed_bait=removed,
+                                note='1688 销量序实采 %d 条（剔除 %d 条引流/无关价）'
+                                     % (len(kept), removed))
                 else:
                     base['note'] = '1688 未采到有效货源价（可能滑块风控/Cookie 失效/关键词无结果）'
         except subprocess.TimeoutExpired:
@@ -8929,8 +8975,9 @@ def _p1688_enrich(names, timeout_each=600):
         except Exception as e:
             base['note'] = '1688 抓取异常: ' + str(e)
         result[kw] = base
-        print('[选品][1688] %s -> ok=%s cost_median=%s count=%s note=%s'
-              % (kw, base['ok'], base['cost_median'], base['count'], base['note']))
+        print('[选品][1688] %s -> ok=%s p25=%s p50=%s p75=%s n=%s bait=%s note=%s'
+              % (kw, base['ok'], base['cost_p25'], base['cost_median'], base['cost_p75'],
+                 base['count'], base['removed_bait'], base['note']))
     return result
 
 
@@ -8986,6 +9033,12 @@ def _final_analyze(selection, tmall_map, price_label, p1688_map=None, min_p=None
         cost_med = cost_info.get('cost_median')
         entry = {'sell_median': sell_med, 'sell_count': len(sell),
                  'cost_median': cost_med, 'cost_1688_ok': bool(cost_info.get('ok'))}
+        if sell_med and cost_med:
+            entry['tmall_over_1688'] = round(sell_med / cost_med, 2)
+            # 比价校验：正常批发零售比 1.5~3 倍，>5 倍几乎必然是引流价或规格不可比
+            entry['bait_suspect'] = sell_med / cost_med > 5
+            if entry['bait_suspect']:
+                entry['cost_1688_ok'] = False
         if seg_bounds:
             counts = [0, 0, 0]
             for v in sell:
@@ -8996,7 +9049,7 @@ def _final_analyze(selection, tmall_map, price_label, p1688_map=None, min_p=None
             gross = round(sell_med * 0.80 - cost_med - 5, 2)     # 扣点5%+推广15% → ×0.8，再减5元快递
             entry['gross_profit'] = gross
             entry['gross_margin'] = round(gross / sell_med * 100, 1)
-            entry['formula'] = '售价中位×80%(扣除平台扣点5%+推广费率15%) − 1688成本中位 − 5元快递'
+            entry['formula'] = '售价中位×80%(扣除平台扣点5%+推广费率15%) − 1688成本中位(P50) − 5元快递'
         profit_ctx[s['name']] = entry
 
     sys_p = (
@@ -9015,10 +9068,12 @@ def _final_analyze(selection, tmall_map, price_label, p1688_map=None, min_p=None
             '- 把每个商品的天猫前100按价格归到 3 个价格段（价格段必须落在用户区间内），统计每段销量；\n'
         )
     sys_p += (
-        '- 利润分析：系统已按公式「售价中位×80%(扣平台扣点5%+推广15%) − 1688成本中位 − 5元快递」算好'
-        '单件毛利(gross_profit)与毛利率(gross_margin)。1688 成本实采成功(cost_1688_ok=true)的品，'
+        '- 利润分析：系统已按公式「售价中位×80%(扣平台扣点5%+推广15%) − 1688成本中位(P50) − 5元快递」算好'
+        '单件毛利(gross_profit)与毛利率(gross_margin)。成本给的是 P25~P75 区间（cost_p25/cost_median/cost_p75），'
+        '写分析时给出成本带而非单点。1688 成本实采成功(cost_1688_ok=true)的品，'
         'profit 文本必须直接引用这些数字，不得改动或另编；cost_1688_ok=false 的品，'
-        '必须在文本开头注明「⚠ 1688 成本未采到，以下为按市场价估算」，再给估算；\n'
+        '必须在文本开头注明原因——bait_suspect=true 写「⚠ 1688 成本疑似引流价（天猫售价/1688成本='
+        'tmall_over_1688 倍，超出正常 1.5~3 倍），按市场常理估算」，否则写「⚠ 1688 成本未采到，按市场价估算」，再给估算区间；\n'
         '- 每个可用品和每个裂变品各写一句简短小结（一句话，点明机会点/价格带/竞争）；\n'
         '- 裂变品输出为对象：{"name":"裂变品名","category":"品类","price_range":"¥a-b","summary":"一句话小结"}，'
         'price_range 必须是落在用户区间内的窄价格带；\n'
@@ -9034,9 +9089,10 @@ def _final_analyze(selection, tmall_map, price_label, p1688_map=None, min_p=None
         '价格段边界(元)': seg_bounds,
         '选品数据': selection,
         '利润测算(系统已算好,直接引用)': profit_ctx,
-        '1688供应链实采': {k: {'ok': v.get('ok'), 'cost_median': v.get('cost_median'),
-                              'cost_min': v.get('cost_min'), 'count': v.get('count'),
-                              'note': v.get('note')}
+        '1688供应链实采': {k: {'ok': v.get('ok'), 'bait_suspect': (profit_ctx.get(k) or {}).get('bait_suspect', False),
+                              'cost_p25': v.get('cost_p25'), 'cost_median': v.get('cost_median'),
+                              'cost_p75': v.get('cost_p75'), 'count': v.get('count'),
+                              'removed_bait': v.get('removed_bait'), 'note': v.get('note')}
                           for k, v in (p1688_map or {}).items()},
     }
     user_msg = json.dumps(ctx, ensure_ascii=False) + '\n请输出上述 JSON 对象。'
@@ -9056,7 +9112,11 @@ def _final_analyze(selection, tmall_map, price_label, p1688_map=None, min_p=None
     # ---- 回填：把 1688 成本实采数据与裂变品结构并入最终结果（前端直接可渲染） ----
     sel_variant_map = {s['name']: {v['name']: v for v in s.get('variants', [])} for s in selection}
     for prod in parsed.get('products') or []:
-        prod['cost_1688'] = p1688_map.get(prod.get('name'), {}) if p1688_map else {}
+        cost = dict(p1688_map.get(prod.get('name'), {})) if p1688_map else {}
+        pc = profit_ctx.get(prod.get('name')) or {}
+        cost['bait_suspect'] = pc.get('bait_suspect', False)
+        cost['tmall_over_1688'] = pc.get('tmall_over_1688')
+        prod['cost_1688'] = cost
         norm_vs = []
         for v in (prod.get('variants') or [])[:3]:
             if isinstance(v, str):

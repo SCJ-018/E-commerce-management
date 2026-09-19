@@ -144,8 +144,9 @@
     <div v-if="p.price_segments && p.price_segments.length" class="ps-segs">
       <span v-for="(s, j) in p.price_segments" :key="j" class="ps-seg">{{ s.range }} · 销量 {{ s.sales || '--' }}</span>
     </div>
-    <div v-if="p.cost_1688 && p.cost_1688.ok" class="ps-profit" style="color:#0f766e"><i class="fa-solid fa-link" style="color:#0d9488"></i> 1688 供应链实采：成本中位 ¥{{ p.cost_1688.cost_median }}（最低 ¥{{ p.cost_1688.cost_min }}，采到 {{ p.cost_1688.count }} 条货源价）</div>
-    <div v-if="p.cost_1688 && !p.cost_1688.ok" style="font-size:12px;color:#b45309;margin-top:6px"><i class="fa-solid fa-triangle-exclamation"></i> 1688 成本未采到（{{ p.cost_1688.note || '风控/超时' }}），利润为估算口径</div>
+    <div v-if="p.cost_1688 && p.cost_1688.ok && !p.cost_1688.bait_suspect" class="ps-profit" style="color:#0f766e"><i class="fa-solid fa-link" style="color:#0d9488"></i> 1688 供应链实采（销量序）：成本 ¥{{ p.cost_1688.cost_p25 }}~{{ p.cost_1688.cost_p75 }}（中位 ¥{{ p.cost_1688.cost_median }}，采到 {{ p.cost_1688.count }} 条，剔除 {{ p.cost_1688.removed_bait }} 条引流/无关价）</div>
+    <div v-if="p.cost_1688 && p.cost_1688.bait_suspect" style="font-size:12px;color:#b45309;margin-top:6px"><i class="fa-solid fa-triangle-exclamation"></i> 1688 成本疑似引流价：天猫售价/1688成本 = {{ p.cost_1688.tmall_over_1688 }} 倍（正常 1.5~3 倍），利润按估算口径</div>
+    <div v-if="p.cost_1688 && !p.cost_1688.ok && !p.cost_1688.bait_suspect" style="font-size:12px;color:#b45309;margin-top:6px"><i class="fa-solid fa-triangle-exclamation"></i> 1688 成本未采到（{{ p.cost_1688.note || '风控/超时' }}），利润为估算口径</div>
     <div v-if="p.profit" class="ps-profit"><i class="fa-solid fa-coins" style="color:#f59e0b"></i> {{ p.profit }}</div>
     <div v-if="p.variants && p.variants.length" class="ps-variants">
       <div v-for="(v, k) in p.variants" :key="k" class="ps-variant">
