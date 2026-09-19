@@ -7627,7 +7627,7 @@ def _as_parse_num(s):
 #   每日 07:00 抓取并清洗抖音热点宝 → 写入「抖音热搜品类表」。
 #   → V2 按四个价格带从热搜和天猫榜单生成 70 个候选品。
 #   → 低速采集爱搜数据，按需求/利润/竞争/售后/内容五维评分。
-#   → 输出 7 个原品、每品 3 个关联裂变品，并抓取淘宝销量前 100 后按日期存档。
+#   → 输出 7 个原品、每品 3 个关联裂变品和选品建议，并按日期存档。
 _DOUYIN_HOT_FILE = os.path.join(_SEEDING_DIR, '_douyin_hot.json')
 _DOUYIN_HOT_PROGRESS = os.path.join(_SEEDING_DIR, '_douyin_hot_progress.json')
 _DOUYIN_HOT_SCRAPER = os.path.join(_SEEDING_DIR, 'douyin_hot_scraper.py')
@@ -7635,10 +7635,6 @@ _DOUYIN_HOT_SCRAPER = os.path.join(_SEEDING_DIR, 'douyin_hot_scraper.py')
 _AISOU_INPUT_FILE = os.path.join(_SEEDING_DIR, '_aisou_input.json')
 _AISOU_OUTPUT_FILE = os.path.join(_SEEDING_DIR, '_aisou_output.json')
 _AISOU_SCRAPER = os.path.join(_SEEDING_DIR, 'aisou_scraper.py')
-
-_TMALL_BATCH_INPUT = os.path.join(_SEEDING_DIR, '_tmall_input.json')
-_TMALL_BATCH_OUTPUT = os.path.join(_SEEDING_DIR, '_tmall_output.json')
-_TMALL_BATCH_SCRAPER = os.path.join(_SEEDING_DIR, 'tmall_batch_scraper.py')
 
 # ======================== 表结构保障 ========================
 
@@ -7717,6 +7713,7 @@ def _ensure_douyin_category_columns():
         '热搜值': "VARCHAR(255) NOT NULL",
         '日期': "DATE NOT NULL",
         '品类': "VARCHAR(255) NULL",
+        '规范品名': "VARCHAR(255) NULL",
         '是否电商': "TINYINT(1) NOT NULL DEFAULT 0",
         '热度数值': "DECIMAL(20,2) NULL",
     }
@@ -7998,65 +7995,72 @@ _DOUYIN_HOT_AI_MAX_WORDS = 1000  # 送 DeepSeek 的词数上限（按热度截�
 
 
 def _douyin_hot_ai_filter(filter_result):
-    """DeepSeek 二次过滤：对当天词典筛选落库的词，让 AI 再判定哪些不是电商词，
-    只让 AI 返回「要剔除的词」（少数派，避免输出超长被截断），其余全部保留。
-    失败时跳过、保留词典结果（保证页面始终有数据）。
-    返回 {'kept': n, 'removed': n, 'skipped': bool}"""
+    """DeepSeek 二次过滤并把保留热搜规范成无品牌的产品/品类名 A。"""
     terms = (filter_result or {}).get('terms') or []
     date_str = (filter_result or {}).get('date') or time.strftime('%Y-%m-%d')
     if not terms:
         return {'kept': 0, 'removed': 0, 'skipped': True}
     if not DEEPSEEK_SELECTION_API_KEY:
-        print('[选品][AI筛选] 未配置 DEEPSEEK_SELECTION_API_KEY，跳过二次过滤（保留词典结果）')
-        return {'kept': len(terms), 'removed': 0, 'skipped': True}
+        print('[选品][AI筛选] 未配置 DEEPSEEK_SELECTION_API_KEY，无法规范产品名')
+        return {'kept': len(terms), 'removed': 0, 'normalized': 0, 'skipped': True}
 
-    # 按热度降序，超出上限截断
+    # 按热度降序，分批返回每个词的判断，避免一次输出过长导致后半段规范名丢失。
     terms_sorted = sorted(terms, key=lambda m: m.get('heat_num') or 0, reverse=True)
     if len(terms_sorted) > _DOUYIN_HOT_AI_MAX_WORDS:
         terms_sorted = terms_sorted[:_DOUYIN_HOT_AI_MAX_WORDS]
-
-    word_list = [{'word': m['term'], 'category': m.get('categories') or ''} for m in terms_sorted]
     sys_p = (
-        '你是电商选品数据清洗助手。给你一批抖音热搜词（已经过品类词典初筛，但仍有误命中）。'
-        '请挑出其中「不是电商相关搜索词」的——即影视综艺、明星八卦、游戏、社会新闻、品牌事件、'
-        '股市黄金行情、抽象梗词等，用户搜它们不是为了看商品或购买的。电商相关词全部保留、不要列出。'
-        '拿不准的不要剔除（宁多留不误删）。\n'
-        '只返回要剔除的词，JSON 字符串数组格式：["词1", "词2"]，不要任何其他文字。'
+        '你是电商选品数据清洗助手。对每个抖音热搜词同时完成二次电商过滤与产品名规范化。'
+        'keep=false：影视综艺、明星八卦、游戏、社会新闻、品牌事件、行情、抽象梗等非购物意图。'
+        'keep=true：有明确商品购买意图；product_name 必须是可去电商平台搜索的通用产品/品类名 A，'
+        '删除品牌、人名、营销形容词、热搜话题句、型号、颜色、容量和规格，只保留商品本体，例如“某品牌果酸身体磨砂膏”写“身体磨砂膏”。'
+        '不能把 product_name 写成品牌，也不能照抄含品牌的原词；拿不准是否电商时宁可保留，但仍要给出最合理的通用品名。'
+        '逐条返回且 word 必须原样，JSON：{"items":[{"word":"原词","keep":true,"product_name":"规范品名"}]}，不要其他文字。'
     )
-    user_msg = '热搜词列表（JSON）：\n' + json.dumps(word_list, ensure_ascii=False)
-
-    raw = call_deepseek_api(sys_p, user_msg, temperature=0.1, max_tokens=4000,
-                            api_key=DEEPSEEK_SELECTION_API_KEY)
-    if not raw:
-        print('[选品][AI筛选] DeepSeek 调用失败，跳过二次过滤（保留词典结果）')
-        return {'kept': len(terms), 'removed': 0, 'skipped': True}
-
-    term_names = {m['term'] for m in terms_sorted}
-    removed_words = set()
-    s = re.sub(r'```(?:json)?', '', raw.strip()).strip()
-    i, j = s.find('['), s.rfind(']')
-    if i != -1 and j > i:
-        try:
-            for it in json.loads(s[i:j + 1]):
-                if isinstance(it, str):
-                    removed_words.add(it.strip())
-                elif isinstance(it, dict) and it.get('word'):
-                    removed_words.add(str(it['word']).strip())
-        except Exception:
-            pass
-    removed_set = removed_words & term_names
-    if not removed_set:
-        print('[选品][AI筛选] DeepSeek 未给出剔除名单（视为全部保留），词典 %d 词全留' % len(terms_sorted))
-        return {'kept': len(terms), 'removed': 0, 'skipped': True}
-
-    for m in terms_sorted:
-        if m['term'] in removed_set:
+    decisions = {}
+    failed_batches = 0
+    for offset in range(0, len(terms_sorted), 100):
+        batch = terms_sorted[offset:offset + 100]
+        word_list = [{'word': m['term'], 'category': m.get('categories') or ''} for m in batch]
+        raw = call_deepseek_api(sys_p, '热搜词列表：\n' + json.dumps(word_list, ensure_ascii=False),
+                                temperature=0.1, max_tokens=7000,
+                                api_key=DEEPSEEK_SELECTION_API_KEY)
+        parsed = _selection_v2_parse_object(raw) or {}
+        returned = parsed.get('items') or []
+        if not returned:
+            failed_batches += 1
             continue
-        db_execute("DELETE FROM `抖音热搜品类表` WHERE `日期` = %s AND `热搜名` = %s",
-                   [date_str, m['term']], fetch=False)
-    kept = len(terms_sorted) - len(removed_set)
-    print('[选品][AI筛选] 词典 %d 词 -> AI 保留 %d，剔除 %d' % (len(terms_sorted), kept, len(removed_set)))
-    return {'kept': kept, 'removed': len(removed_set)}
+        allowed = {m['term'] for m in batch}
+        for item in returned:
+            if not isinstance(item, dict):
+                continue
+            word = str(item.get('word') or '').strip()
+            product_name = str(item.get('product_name') or '').strip()
+            if word in allowed:
+                keep_raw = item.get('keep')
+                keep = keep_raw is True or str(keep_raw).strip().lower() in ('true', '1', 'yes', '是')
+                decisions[word] = {'keep': keep, 'product_name': product_name[:120]}
+
+    kept = removed = normalized = 0
+    for m in terms_sorted:
+        decision = decisions.get(m['term'])
+        if not decision:
+            # 模型批次失败时保留词典结果但不伪造规范名，后续读取会按同一规则补录。
+            kept += 1
+            continue
+        product_name = decision['product_name']
+        if not decision['keep'] or not product_name:
+            db_execute("DELETE FROM `抖音热搜品类表` WHERE `日期` = %s AND `热搜名` = %s",
+                       [date_str, m['term']], fetch=False)
+            removed += 1
+            continue
+        db_execute("UPDATE `抖音热搜品类表` SET `规范品名` = %s WHERE `日期` = %s AND `热搜名` = %s",
+                   [product_name, date_str, m['term']], fetch=False)
+        kept += 1
+        normalized += 1
+    print('[选品][AI筛选] 词典 %d 词 -> 保留 %d，规范 %d，剔除 %d，失败批次 %d' %
+          (len(terms_sorted), kept, normalized, removed, failed_batches))
+    return {'kept': kept, 'removed': removed, 'normalized': normalized,
+            'skipped': failed_batches == math.ceil(len(terms_sorted) / 100)}
 
 
 def _run_scrape_and_filter():
@@ -8087,17 +8091,40 @@ _selection_scrape_thread = None
 
 
 def _ps_latest_douyin_categories():
-    """读取「抖音热搜品类表」最新一天筛选结果，返回 [{term, category, heat}]"""
+    """读取最新一天二次清洗后的抖音热搜，只返回已规范成产品名 A 的记录。"""
+    _ensure_douyin_category_columns()
+    latest_rows = list(db_execute(
+        "SELECT `日期` FROM `抖音热搜品类表` ORDER BY `日期` DESC LIMIT 1"))
+    latest_date = str(latest_rows[0].get('日期')) if latest_rows else ''
+    if latest_date:
+        pending = list(db_execute(
+            "SELECT 热搜名, 热搜值, 品类, 热度数值 FROM `抖音热搜品类表` "
+            "WHERE `日期` = %s AND (`规范品名` IS NULL OR `规范品名` = '')",
+            [latest_date]))
+        if pending:
+            # 兼容上线前已落库的旧日数据：仍走同一个“第二次 DeepSeek 清洗”入口补规范名。
+            _douyin_hot_ai_filter({
+                'date': latest_date,
+                'terms': [{'term': str(r.get('热搜名') or ''),
+                           'heat_raw': str(r.get('热搜值') or ''),
+                           'categories': str(r.get('品类') or ''),
+                           'heat_num': float(r.get('热度数值') or 0)} for r in pending],
+            })
     rows = list(db_execute(
-        "SELECT 热搜名, 热搜值, 品类, 日期 FROM `抖音热搜品类表` ORDER BY `日期` DESC, `热度数值` DESC LIMIT 500"))
+        "SELECT 热搜名, 热搜值, 品类, 规范品名, 日期 FROM `抖音热搜品类表` "
+        "WHERE `日期` = (SELECT MAX(`日期`) FROM `抖音热搜品类表`) "
+        "ORDER BY `热度数值` DESC LIMIT 500"))
     seen = set()
     items = []
     for r in rows:
         term = (r['热搜名'] or '').strip()
-        if not term or term in seen:
+        product_name = str(r.get('规范品名') or '').strip()
+        key = _selection_v2_key(product_name)
+        if not term or not product_name or not key or key in seen:
             continue
-        seen.add(term)
+        seen.add(key)
         items.append({'term': term, 'heat': r['热搜值'], 'category': r['品类'],
+                      'product_name': product_name,
                       'date': str(r['日期']) if r['日期'] else ''})
     return items
 
@@ -8157,22 +8184,9 @@ def _aisou_enrich(products):
     return inserted
 
 
-def _tmall_enrich(products):
-    """对最终原品与裂变品抓取淘宝销量前 100，返回 {name: products}。"""
-    request_id = str(time.time_ns())
-    _write_json(_TMALL_BATCH_INPUT, {'request_id': request_id, 'keywords': products})
-    completed = _run_py_script(_TMALL_BATCH_SCRAPER, timeout=2400)
-    out = _read_json(_TMALL_BATCH_OUTPUT)
-    if not out or str(out.get('request_id') or '') != request_id:
-        raise RuntimeError('淘宝销量抓取未返回本次任务结果')
-    sales_map = {r.get('keyword'): r.get('products') or [] for r in out.get('results') or []}
-    if not completed or not any(sales_map.values()):
-        raise RuntimeError(str(out.get('message') or '淘宝销量抓取未取得有效样本'))
-    return sales_map
-
 # ======================== 选品助手 V2：每日分层选品看板 ========================
 #
-# 每天自动产出一份完整的 70 品分层候选、评分、7 个原品、21 个裂变品和销量验证结果，
+# 每天自动产出一份完整的 70 品分层候选、评分、7 个原品和 21 个裂变品，
 # 并以 version 标识写入选品记录表。
 
 _SELECTION_V2_BANDS = [
@@ -8219,74 +8233,152 @@ def _selection_v2_price_label(lo, hi):
                          int(hi) if float(hi).is_integer() else hi)
 
 
-def _selection_v2_tmall_pool(band):
+def _selection_v2_market_price_label(price):
+    return '市场均价 ¥%s' % (int(price) if float(price).is_integer() else ('%.2f' % price))
+
+
+def _selection_v2_tmall_market(product_name):
+    """用规范品名 A 查天猫榜单并计算市场客单价。
+
+    优先命中排行榜名；只要排行榜名命中，就读取这些排行榜下的全部产品。
+    排行榜名未命中时再命中产品名。返回名始终是 A，不使用排行榜名或品牌标题。
+    同一产品跨日期/榜单重复出现时只取最新价格，避免重复快照拉偏均价。
+    """
+    name = str(product_name or '').strip()
+    if not name:
+        return None
+    like = '%' + name + '%'
     rows = list(db_execute(
-        "SELECT 类别名, 产品名, 价格 FROM `天猫榜单表` WHERE 价格 >= %s AND 价格 <= %s "
-        "ORDER BY 日期 DESC, 价格 ASC LIMIT 800", [band['min'], band['max']]))
-    out, seen = [], set()
-    for r in rows:
-        name = str(r.get('产品名') or '').strip()
-        key = _selection_v2_key(name)
-        if not name or not key or key in seen:
+        "SELECT 类别名, 排行榜名, 产品名, 价格, 日期 FROM `天猫榜单表` "
+        "WHERE `排行榜名` LIKE %s AND `价格` > 0 ORDER BY `日期` DESC", [like]))
+    match_source = '排行榜名'
+    if not rows:
+        rows = list(db_execute(
+            "SELECT 类别名, 排行榜名, 产品名, 价格, 日期 FROM `天猫榜单表` "
+            "WHERE `产品名` LIKE %s AND `价格` > 0 ORDER BY `日期` DESC", [like]))
+        match_source = '产品名'
+    if not rows:
+        return None
+    prices, categories = {}, {}
+    for row in rows:
+        raw_name = str(row.get('产品名') or '').strip()
+        raw_key = _selection_v2_key(raw_name)
+        if not raw_key or raw_key in prices:
             continue
-        seen.add(key)
         try:
-            price = float(r.get('价格'))
+            price = float(row.get('价格'))
         except (TypeError, ValueError):
-            price = None
-        out.append({'name': name, 'category': str(r.get('类别名') or ''), 'price': price})
+            continue
+        if price <= 0:
+            continue
+        prices[raw_key] = price
+        category = str(row.get('类别名') or '').strip()
+        if category:
+            categories[category] = categories.get(category, 0) + 1
+    if not prices:
+        return None
+    avg_price = round(sum(prices.values()) / len(prices), 2)
+    category = max(categories, key=categories.get) if categories else ''
+    return {'name': name, 'category': category, 'market_avg_price': avg_price,
+            'sample_count': len(prices), 'match_source': match_source}
+
+
+def _selection_v2_tmall_fallback_names(limit=320):
+    """当热搜在某价格段不足时，让 DeepSeek 从天猫原始榜名/标题中提炼通用品名 A。"""
+    rows = list(db_execute(
+        "SELECT 类别名, 排行榜名, 产品名, 价格 FROM `天猫榜单表` "
+        "WHERE `价格` > 0 ORDER BY `日期` DESC LIMIT 12000"))
+    groups = {}
+    for row in rows:
+        rank_name = str(row.get('排行榜名') or '').strip()
+        if not rank_name:
+            continue
+        group = groups.setdefault(rank_name, {'rank_name': rank_name,
+                                               'category': str(row.get('类别名') or ''),
+                                               'products': []})
+        raw_name = str(row.get('产品名') or '').strip()
+        if raw_name and raw_name not in group['products'] and len(group['products']) < 4:
+            group['products'].append(raw_name)
+    seeds = list(groups.values())[:limit]
+    if not seeds:
+        return []
+    prompt = (
+        '你在为电商选品补充候选。输入的天猫排行榜名和商品标题都可能带品牌、价格、营销词、型号和规格，不能直接作为产品名。'
+        '请依据每条的排行榜名和样例商品，提炼一个可搜索的通用产品/品类名 A；去掉品牌、店铺、价格段、热销榜字样、型号、颜色、容量和规格。'
+        'A 要具体到商品本体，不能写“家居用品”等过宽大类。source 必须原样返回且逐条对应。'
+        '只返回 JSON：{"items":[{"source":"原排行榜名","product_name":"规范品名A"}]}。'
+    )
+    normalized = []
+    for offset in range(0, len(seeds), 80):
+        batch = seeds[offset:offset + 80]
+        raw = call_deepseek_api(prompt, json.dumps({'items': batch}, ensure_ascii=False),
+                                temperature=0.1, max_tokens=6000,
+                                api_key=DEEPSEEK_SELECTION_API_KEY)
+        parsed = _selection_v2_parse_object(raw) or {}
+        allowed = {x['rank_name'] for x in batch}
+        for item in parsed.get('items') or []:
+            if not isinstance(item, dict) or str(item.get('source') or '') not in allowed:
+                continue
+            name = str(item.get('product_name') or '').strip()
+            if name:
+                normalized.append(name[:120])
+    out, seen = [], set()
+    for name in normalized:
+        key = _selection_v2_key(name)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(name)
     return out
 
 
 def _selection_v2_candidates():
-    """按四个经营层从热搜 + 天猫榜单生成 70 个具体商品；模型失败时安全降级到榜单去重结果。"""
+    """以规范品名 A 搜天猫同类商品均价，再按均价分成四层并补足 70 品。"""
     hot = _ps_latest_douyin_categories()[:150]
-    bands_ctx = []
-    for band in _SELECTION_V2_BANDS:
-        bands_ctx.append({
-            'key': band['key'], 'name': band['name'], 'price_range': _selection_v2_price_label(band['min'], band['max']),
-            'quota': band['quota'], 'decision': band['decision'], 'audience': band['audience'],
-            'tmall_products': _selection_v2_tmall_pool(band)[:180],
-        })
-    prompt = (
-        '你是严谨的电商选品研究员。根据当天抖音电商热搜和各价格带内的天猫榜单，生成四组具体可购买单品。'
-        '每组必须严格满足 quota；没有足够热搜对应品时，从该组天猫榜单补足。商品不可为大类名，不可为品牌词，'
-        '不可只把同一商品换颜色、规格、Pro/Plus 后重复。不同组之间也必须语义去重。只能引用输入数据推断，'
-        '不要虚构销量、成本或品牌份额。输出 JSON 对象：'
-        '{"bands":[{"key":"volume","items":[{"name":"具体商品","category":"品类","price_range":"¥29-59","reason":"十字内机会说明"}]}]}。'
-    )
-    raw = call_deepseek_api(prompt, json.dumps({'hot_words': hot, 'bands': bands_ctx}, ensure_ascii=False),
-                            temperature=0.25, max_tokens=12000, api_key=DEEPSEEK_SELECTION_API_KEY)
-    parsed = _selection_v2_parse_object(raw) or {}
-    by_key = {x.get('key'): x.get('items') for x in (parsed.get('bands') or []) if isinstance(x, dict)}
+    market_cache = {}
+
+    def market(name):
+        key = _selection_v2_key(name)
+        if key not in market_cache:
+            market_cache[key] = _selection_v2_tmall_market(name)
+        return market_cache[key]
+
+    hot_markets = []
+    for item in hot:
+        found = market(item.get('product_name'))
+        if found:
+            found = dict(found, source='douyin', hot_term=item.get('term') or '')
+            hot_markets.append(found)
+
+    fallback_markets = []
+    for name in _selection_v2_tmall_fallback_names():
+        found = market(name)
+        if found:
+            fallback_markets.append(dict(found, source='tmall', hot_term=''))
+
     global_seen, result = set(), []
     for band in _SELECTION_V2_BANDS:
         items = []
-        for item in by_key.get(band['key']) or []:
-            if not isinstance(item, dict):
+        candidates = hot_markets + sorted(fallback_markets,
+                                          key=lambda x: (x.get('sample_count', 0), -x.get('market_avg_price', 0)),
+                                          reverse=True)
+        for found in candidates:
+            price = found['market_avg_price']
+            if not (band['min'] <= price <= band['max']):
                 continue
-            name = str(item.get('name') or '').strip()
-            key = _selection_v2_key(name)
-            if not name or not key or key in global_seen:
+            key = _selection_v2_key(found['name'])
+            if not key or key in global_seen:
                 continue
-            items.append({'name': name, 'category': str(item.get('category') or ''),
-                          'price_range': str(item.get('price_range') or _selection_v2_price_label(band['min'], band['max'])),
-                          'reason': str(item.get('reason') or '')[:40]})
+            source = found.get('source')
+            reason = ('抖音热搜“%s”规范化命中天猫%s' %
+                      (found.get('hot_term'), found.get('match_source'))) if source == 'douyin' else '天猫榜单补位'
+            items.append({'name': found['name'], 'category': found.get('category') or '',
+                          'price_range': _selection_v2_market_price_label(price),
+                          'market_avg_price': price, 'sample_count': found.get('sample_count') or 0,
+                          'match_source': found.get('match_source'), 'source': source,
+                          'reason': reason[:80]})
             global_seen.add(key)
             if len(items) >= band['quota']:
                 break
-        # 模型输出不足时仅用本价格带榜单补位，确保每天可得到可追溯的候选池。
-        for row in _selection_v2_tmall_pool(band):
-            if len(items) >= band['quota']:
-                break
-            key = _selection_v2_key(row['name'])
-            if key in global_seen:
-                continue
-            price = row.get('price')
-            items.append({'name': row['name'], 'category': row.get('category') or '',
-                          'price_range': ('¥%.0f' % price) if price is not None else _selection_v2_price_label(band['min'], band['max']),
-                          'reason': '该价格带榜单补位'})
-            global_seen.add(key)
         result.append(dict(band, candidates=items))
     return result
 
@@ -8329,6 +8421,8 @@ def _selection_v2_score(bands, aisou_map):
     for band in bands:
         for c in band['candidates']:
             entries.append({'name': c['name'], 'band': band['key'], 'price_range': c['price_range'],
+                            'market_avg_price': c.get('market_avg_price'),
+                            'market_sample_count': c.get('sample_count'),
                             'category': c['category'], 'aisou': aisou_map.get(c['name'], {})})
     sys_p = (
         '你是电商选品评分引擎。只根据输入数据评分，不能编造货源价、销量、大品牌份额或外部研究结论。'
@@ -8405,83 +8499,10 @@ def _selection_v2_variants(finalists):
     return finalists
 
 
-def _selection_v2_number(text):
-    m = re.search(r'([\d.]+)\s*([万wW亿]?)', str(text or ''))
-    if not m:
-        return 0.0
-    n = float(m.group(1)); unit = m.group(2)
-    return n * (1e8 if unit == '亿' else 1e4 if unit in ('万', 'w', 'W') else 1)
-
-
-def _selection_v2_sales_bands(products):
-    vals = []
-    for p in products or []:
-        nums = re.findall(r'\d+(?:\.\d+)?', str(p.get('price') or ''))
-        if nums:
-            vals.append((float(nums[0]), _selection_v2_number(p.get('sales'))))
-    if not vals:
-        return []
-    vals.sort(key=lambda x: x[0]); split = vals[len(vals) // 2][0]
-    groups = [x for x in vals if x[0] <= split], [x for x in vals if x[0] > split]
-    out = []
-    for group in groups:
-        if not group:
-            continue
-        out.append({'range': _selection_v2_price_label(min(x[0] for x in group), max(x[0] for x in group)),
-                    'sales': round(sum(x[1] for x in group)), 'sample_count': len(group)})
-    return out[:2]
-
-
-def _selection_v2_reconcile_sales_output(date_str=None, refresh_advice=True):
-    """把已完成的淘宝抓取结果回填到指定日期的 V2 记录，供受信任的本地采集补数。"""
-    out = _read_json(_TMALL_BATCH_OUTPUT) or {}
-    sales_map = {str(r.get('keyword') or ''): r.get('products') or []
-                 for r in out.get('results') or [] if isinstance(r, dict)}
-    failures = {str(r.get('keyword') or ''): str(r.get('message') or '')
-                for r in out.get('failures') or [] if isinstance(r, dict)}
-    if not sales_map:
-        raise RuntimeError('淘宝销量输出为空，无法回填')
-    date_str = date_str or time.strftime('%Y-%m-%d')
-    rows = list(db_execute(
-        "SELECT `id`, `结果` FROM `选品记录表` WHERE `日期` = %s ORDER BY `创建时间` DESC, `id` DESC",
-        [date_str]))
-    record_id, result = None, None
-    for row in rows:
-        try:
-            candidate = json.loads(row.get('结果') or '{}')
-        except Exception:
-            continue
-        if isinstance(candidate, dict) and candidate.get('version') == 'selection-v2':
-            record_id, result = row.get('id'), candidate
-            break
-    if not record_id or not result:
-        raise RuntimeError('%s 没有可回填的 V2 选品记录' % date_str)
-
-    filled = missing = 0
-    for item in result.get('finalists') or []:
-        for target in [item] + list(item.get('variants') or []):
-            name = str(target.get('name') or '')
-            bands = _selection_v2_sales_bands(sales_map.get(name))
-            target['sales_bands'] = bands
-            if bands:
-                target.pop('sales_error', None)
-                filled += 1
-            else:
-                target['sales_error'] = failures.get(name) or '未抓到有效在售样本'
-                missing += 1
-    result['salesSummary'] = {'filled': filled, 'missing': missing,
-                              'sourceStatus': str(out.get('status') or '')}
-    if refresh_advice:
-        _selection_v2_recommendations(result.get('finalists') or [])
-    db_execute("UPDATE `选品记录表` SET `结果` = %s WHERE `id` = %s",
-               [json.dumps(result, ensure_ascii=False), record_id], fetch=False)
-    return {'date': date_str, 'filled': filled, 'missing': missing, 'recordId': record_id}
-
-
 def _selection_v2_recommendations(finalists):
     sys_p = (
-        '基于每个原品的固定评分、风险、爱搜摘要和淘宝销量价格带，写一条不超过 200 字的选品建议。'
-        '不要编造事实；说明切入价格带、机会、风险、内容或主图方向。只为原品写建议。'
+        '基于每个原品的固定评分、风险、爱搜摘要和天猫同类商品市场均价，写一条不超过 200 字的选品建议。'
+        '不要编造事实；说明切入客单价、机会、风险、内容或主图方向。只为原品写建议。'
         '返回 JSON：{"items":[{"name":"原品","advice":""}]}。'
     )
     raw = call_deepseek_api(sys_p, json.dumps({'finalists': finalists}, ensure_ascii=False),
@@ -8499,7 +8520,7 @@ def _selection_v2_progress(status, message, done=0, total=0):
 
 
 def _run_selection_v2(date_str=None):
-    """V2 每日后台任务。采集和销量脚本均为低速串行脚本，以任务状态文件便于恢复和观察。"""
+    """V2 每日后台任务。爱搜采集为低速串行脚本，以任务状态文件便于恢复和观察。"""
     date_str = date_str or time.strftime('%Y-%m-%d')
     try:
         _selection_v2_progress('candidates', '正在生成四个价格带的 70 个候选品', 0, 70)
@@ -8513,30 +8534,12 @@ def _run_selection_v2(date_str=None):
         _selection_v2_progress('scoring', '正在按五维固定规则评分', len(names), len(names))
         bands = _selection_v2_score(bands, aisou_map)
         finalists = _selection_v2_variants(_selection_v2_finalists(bands))
-        verify_names = [x['name'] for x in finalists] + [v['name'] for x in finalists for v in x.get('variants', [])]
-        _selection_v2_progress('sales', '正在验证原品和裂变品的淘宝销量前 100', 0, len(verify_names))
-        sales_map = _tmall_enrich(verify_names)
-        sales_filled = 0
-        for item in finalists:
-            item['sales_bands'] = _selection_v2_sales_bands(sales_map.get(item['name']))
-            if item['sales_bands']:
-                sales_filled += 1
-            else:
-                item['sales_error'] = '未抓到有效在售样本'
-            for v in item.get('variants', []):
-                v['sales_bands'] = _selection_v2_sales_bands(sales_map.get(v['name']))
-                if v['sales_bands']:
-                    sales_filled += 1
-                else:
-                    v['sales_error'] = '未抓到有效在售样本'
-        _selection_v2_progress('advice', '正在生成原品选品建议', len(verify_names), len(verify_names))
+        _selection_v2_progress('advice', '正在生成原品选品建议', len(finalists), len(finalists))
         _selection_v2_recommendations(finalists)
         result = {'version': 'selection-v2', 'date': date_str, 'createdAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                   'bands': bands, 'finalists': finalists,
                   'summary': {'candidateCount': len(names), 'finalistCount': len(finalists),
-                              'variantCount': sum(len(x.get('variants', [])) for x in finalists)},
-                  'salesSummary': {'filled': sales_filled, 'missing': len(verify_names) - sales_filled,
-                                   'sourceStatus': 'done'}}
+                              'variantCount': sum(len(x.get('variants', [])) for x in finalists)}}
         _ensure_selection_record_table()
         db_execute("INSERT INTO `选品记录表` (`日期`, `价格区间`, `结果`) VALUES (%s, %s, %s)",
                    [date_str, '四档自动选品', json.dumps(result, ensure_ascii=False)], fetch=False)
