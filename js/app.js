@@ -238,6 +238,13 @@ const ApiService = (() => {
         method: 'POST', body: JSON.stringify({ date: date || '' })
       });
     },
+    // ---- 选品助手内的天猫榜单周采集 ----
+    async getTmallRanklistStatus() {
+      return request('/tmall-ranklist/status');
+    },
+    async runTmallRanklist() {
+      return request('/tmall-ranklist/run', { method: 'POST' });
+    },
     // ---- 每日数据分析 ----
     async generateDailyReport(date) {
       var body = date ? JSON.stringify({ date: date }) : undefined;

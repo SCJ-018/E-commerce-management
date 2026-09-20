@@ -40,6 +40,8 @@ FILES = {
     'tools/seeding_xhs.py': REMOTE_ROOT + '/tools/seeding_xhs.py',
     'tools/douyin_video_scraper.py': REMOTE_ROOT + '/tools/douyin_video_scraper.py',
     'tools/xhs_crawler.py': REMOTE_ROOT + '/tools/xhs_crawler.py',
+    # 天猫榜单周采集：backend/app.py 通过 subprocess 调用，必须与后端一起发布。
+    'tools/tmall_ranklist_scraper.py': REMOTE_ROOT + '/tools/tmall_ranklist_scraper.py',
 }
 
 # 目录：本地目录 -> 远程目录（递归上传，自动建远程子目录）

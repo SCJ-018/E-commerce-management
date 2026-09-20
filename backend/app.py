@@ -16,6 +16,7 @@ from decimal import Decimal
 from queue import Queue
 from threading import Lock, RLock
 import threading  # ★ 必须在顶层导入：模块级（约 4200 行）的 Event/Lock 会用到，晚导入即 NameError
+from zoneinfo import ZoneInfo
 
 import requests
 from flask import Flask, request, jsonify, send_from_directory
@@ -7945,6 +7946,221 @@ def _write_json(path, data):
         json.dump(data, f, ensure_ascii=False)
 
 
+# 天猫榜单：独立于淘宝关键词搜索。每周一 00:00（中国标准时间）采集榜单页，
+# 排除指定三类，数据库仅保留最近四个采集周。
+_TMALL_RANKLIST_SCRIPT = os.path.join(_SEEDING_DIR, 'tmall_ranklist_scraper.py')
+_TMALL_RANKLIST_OUTPUT = os.path.join(_SEEDING_DIR, '_tmall_ranklist_output.json')
+_TMALL_RANKLIST_PROGRESS = os.path.join(_SEEDING_DIR, '_tmall_ranklist_progress.json')
+_TMALL_RANKLIST_JOB = os.path.join(_SEEDING_DIR, '_tmall_ranklist_job.json')
+_TMALL_RANKLIST_TZ = ZoneInfo('Asia/Shanghai')
+_TMALL_RANKLIST_EXCLUDED = ('天猫进口', '食品生鲜', '医药健康')
+_TMALL_RANKLIST_KEEP_WEEKS = 4
+_tmall_ranklist_lock = Lock()
+_tmall_ranklist_job_thread = None
+
+
+# ======================== 天猫榜单：采集、入库、四周轮换 ========================
+
+def _tmall_ranklist_now():
+    """调度和日期落库统一使用中国标准时间，不依赖服务器的系统时区。"""
+    return datetime.now(_TMALL_RANKLIST_TZ)
+
+
+def _tmall_ranklist_write_job(status, message, **extra):
+    data = {
+        'status': status,
+        'message': message,
+        'updatedAt': _tmall_ranklist_now().strftime('%Y-%m-%d %H:%M:%S'),
+        'excludedCategories': list(_TMALL_RANKLIST_EXCLUDED),
+        'keepWeeks': _TMALL_RANKLIST_KEEP_WEEKS,
+    }
+    data.update(extra)
+    _write_json(_TMALL_RANKLIST_JOB, data)
+
+
+def _tmall_ranklist_ensure_table():
+    """确保榜单快照可按周共存；旧主键会覆盖历史日期，因此只做一次无损主键迁移。"""
+    db_execute("""
+        CREATE TABLE IF NOT EXISTS `天猫榜单表` (
+            `类别名` VARCHAR(255) NOT NULL,
+            `排行榜名` VARCHAR(255) NOT NULL,
+            `产品名` VARCHAR(255) NOT NULL,
+            `价格` FLOAT(8,2) NOT NULL,
+            `日期` DATE NOT NULL,
+            PRIMARY KEY (`类别名`, `排行榜名`, `产品名`, `日期`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """, fetch=False)
+    fields = {r.get('Field') for r in db_execute("SHOW COLUMNS FROM `天猫榜单表`")}
+    required = {'类别名', '排行榜名', '产品名', '价格', '日期'}
+    missing = required - fields
+    if missing:
+        raise RuntimeError('天猫榜单表缺少字段：%s' % '、'.join(sorted(missing)))
+    primary_rows = sorted((r for r in db_execute("SHOW INDEX FROM `天猫榜单表`")
+                           if r.get('Key_name') == 'PRIMARY'),
+                          key=lambda r: r.get('Seq_in_index') or 0)
+    primary = [r.get('Column_name') for r in primary_rows]
+    expected = ['类别名', '排行榜名', '产品名', '日期']
+    if primary != expected:
+        # 旧表主键是「排行榜名 + 产品名」，会令下一周覆盖上一周的快照；
+        # 只改索引，不删改任何既有行。
+        db_execute("ALTER TABLE `天猫榜单表` DROP PRIMARY KEY, "
+                   "ADD PRIMARY KEY (`类别名`, `排行榜名`, `产品名`, `日期`)", fetch=False)
+        print('[天猫榜单] 已将主键迁移为 类别名+排行榜名+产品名+日期（支持四周快照）')
+
+
+def _tmall_ranklist_normalize_rows(raw_rows, capture_date):
+    """校验爬虫输出；任何缺字段或异常价格都会拒绝整批写入。"""
+    if not isinstance(raw_rows, list):
+        raise RuntimeError('天猫榜单爬虫输出格式异常：rows 不是数组')
+    rows, seen = [], set()
+    for raw in raw_rows:
+        if not isinstance(raw, dict):
+            raise RuntimeError('天猫榜单爬虫输出包含非对象行')
+        category = str(raw.get('类别名') or '').strip()
+        rank_name = str(raw.get('排行榜名') or '').strip()
+        product_name = str(raw.get('产品名') or '').strip()
+        if not category or not rank_name or not product_name:
+            raise RuntimeError('天猫榜单爬虫输出缺少类别名、排行榜名或产品名')
+        if category in _TMALL_RANKLIST_EXCLUDED:
+            raise RuntimeError('爬虫输出含排除类别：%s' % category)
+        try:
+            price = float(raw.get('价格'))
+        except (TypeError, ValueError):
+            raise RuntimeError('天猫榜单产品「%s」价格无效' % product_name)
+        if price < 0:
+            raise RuntimeError('天猫榜单产品「%s」价格不能为负数' % product_name)
+        key = (category, rank_name, product_name, capture_date)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append((category, rank_name, product_name, price, capture_date))
+    if not rows:
+        raise RuntimeError('天猫榜单爬虫没有返回可入库的数据')
+    return rows
+
+
+def _tmall_ranklist_upsert(rows):
+    """单连接批量写入，避免每行独立事务造成四位数 SQL 往返。"""
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO `天猫榜单表` (`类别名`, `排行榜名`, `产品名`, `价格`, `日期`) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE `价格` = VALUES(`价格`)",
+                rows)
+        conn.commit()
+        return_db(conn)
+        return len(rows)
+    except Exception:
+        if conn:
+            discard_db(conn)
+        raise
+
+
+def _tmall_ranklist_prune_weeks():
+    """保留最近四个采集日期；第五次成功写入后才删除最早一批。"""
+    date_rows = list(db_execute("SELECT DISTINCT `日期` AS d FROM `天猫榜单表` "
+                                "ORDER BY `日期` DESC"))
+    keep_dates = [r.get('d') for r in date_rows[:_TMALL_RANKLIST_KEEP_WEEKS]]
+    if len(date_rows) <= _TMALL_RANKLIST_KEEP_WEEKS:
+        return 0, [str(d) for d in keep_dates]
+    placeholders = ', '.join(['%s'] * len(keep_dates))
+    removed = db_execute("DELETE FROM `天猫榜单表` WHERE `日期` NOT IN (%s)" % placeholders,
+                         keep_dates, fetch=False)
+    return int(removed or 0), [str(d) for d in keep_dates]
+
+
+def _tmall_ranklist_db_summary():
+    try:
+        rows = list(db_execute("SELECT `日期` AS d, COUNT(*) AS c FROM `天猫榜单表` "
+                               "GROUP BY `日期` ORDER BY `日期` DESC LIMIT %s",
+                               [_TMALL_RANKLIST_KEEP_WEEKS]))
+        return [{'date': str(r.get('d')), 'rows': int(r.get('c') or 0)} for r in rows]
+    except Exception:
+        return []
+
+
+def _tmall_ranklist_next_run(now=None):
+    now = now or _tmall_ranklist_now()
+    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    days_until_monday = (7 - now.weekday()) % 7
+    target = today_midnight + timedelta(days=days_until_monday)
+    if target <= now:
+        target += timedelta(days=7)
+    return target
+
+
+def _tmall_ranklist_run(capture_date=None, trigger='manual'):
+    """运行独立爬虫；仅当其完整成功后才开始数据库事务。"""
+    import sys as _sys
+    capture_date = capture_date or _tmall_ranklist_now().strftime('%Y-%m-%d')
+    _tmall_ranklist_write_job('running', '正在启动天猫榜单采集', date=capture_date, trigger=trigger)
+    try:
+        env = os.environ.copy()
+        env['TMALL_RANKLIST_DATE'] = capture_date
+        proc = subprocess.run([_sys.executable, _TMALL_RANKLIST_SCRIPT], check=False,
+                              timeout=3600, env=env)
+        result = _read_json(_TMALL_RANKLIST_OUTPUT, {}) or {}
+        if proc.returncode != 0 or result.get('status') != 'done':
+            raise RuntimeError(result.get('message') or '天猫榜单爬虫异常退出（code=%s）' % proc.returncode)
+        if str(result.get('date') or '') != capture_date:
+            raise RuntimeError('天猫榜单输出日期不一致，拒绝入库')
+        _tmall_ranklist_write_job('running', '抓取完成，正在校验并入库', date=capture_date,
+                                  trigger=trigger, crawledRows=int(result.get('rowCount') or 0))
+        _tmall_ranklist_ensure_table()
+        rows = _tmall_ranklist_normalize_rows(result.get('rows'), capture_date)
+        stored = _tmall_ranklist_upsert(rows)
+        removed, kept_dates = _tmall_ranklist_prune_weeks()
+        _tmall_ranklist_write_job('done', '已入库 %d 条；保留最近 %d 周%s' %
+                                  (stored, _TMALL_RANKLIST_KEEP_WEEKS,
+                                   ('，清理 %d 条旧数据' % removed) if removed else ''),
+                                  date=capture_date, trigger=trigger, crawledRows=int(result.get('rowCount') or 0),
+                                  storedRows=stored, prunedRows=removed, keptDates=kept_dates)
+        print('[天猫榜单] %s：入库 %d 条，清理 %d 条旧数据' % (capture_date, stored, removed))
+    except subprocess.TimeoutExpired:
+        message = '天猫榜单采集超过 60 分钟，已终止且未入库'
+        _tmall_ranklist_write_job('error', message, date=capture_date, trigger=trigger)
+        _dev_alert(message, signature='tmall-ranklist:timeout', source='天猫榜单')
+    except Exception as e:
+        traceback.print_exc()
+        message = '天猫榜单采集失败：' + str(e)
+        _tmall_ranklist_write_job('error', message, date=capture_date, trigger=trigger)
+        _dev_alert_exc('天猫榜单采集失败', e, signature='tmall-ranklist:%s' % capture_date,
+                       source='天猫榜单')
+
+
+def _start_tmall_ranklist(capture_date=None, trigger='manual'):
+    global _tmall_ranklist_job_thread
+    with _tmall_ranklist_lock:
+        if _tmall_ranklist_job_thread and _tmall_ranklist_job_thread.is_alive():
+            return False
+        _tmall_ranklist_job_thread = threading.Thread(
+            target=_tmall_ranklist_run, args=(capture_date, trigger), daemon=True,
+            name='tmall-ranklist-%s' % (capture_date or 'current'))
+        _tmall_ranklist_job_thread.start()
+        return True
+
+
+def _tmall_ranklist_auto_loop():
+    """中国标准时间每周一 00:00 触发一次；进程内失败不高频重试，避免触发平台风控。"""
+    attempted_dates = set()
+    time.sleep(30)
+    while True:
+        try:
+            now = _tmall_ranklist_now()
+            date_str = now.strftime('%Y-%m-%d')
+            if now.weekday() == 0 and date_str not in attempted_dates:
+                attempted_dates.add(date_str)
+                if _start_tmall_ranklist(date_str, trigger='schedule'):
+                    print('[天猫榜单][定时] 已触发周一 00:00 采集：%s' % date_str)
+        except Exception as e:
+            print('[天猫榜单][定时] 异常：%s' % e)
+            _dev_alert_exc('天猫榜单定时任务异常', e, signature='tmall-ranklist:loop', source='天猫榜单')
+        time.sleep(30)
+
+
 def _write_douyin_hot_progress(status, msg='', extra=None):
     data = {'status': status, 'message': msg}
     if extra:
@@ -8584,6 +8800,42 @@ def ps_v2_dashboard_run():
         return fail(str(e))
 
 
+# ======================== 选品助手内的天猫榜单采集入口 ========================
+
+@app.route('/api/tmall-ranklist/status', methods=['GET'])
+def tmall_ranklist_status():
+    """前端只读取任务状态和近四周数据量，不把含链接的原始爬虫输出暴露给浏览器。"""
+    try:
+        job = _read_json(_TMALL_RANKLIST_JOB, {
+            'status': 'idle', 'message': '等待每周一 00:00 自动采集',
+            'excludedCategories': list(_TMALL_RANKLIST_EXCLUDED),
+            'keepWeeks': _TMALL_RANKLIST_KEEP_WEEKS,
+        }) or {}
+        crawl = _read_json(_TMALL_RANKLIST_PROGRESS, {}) or {}
+        if job.get('status') == 'running' and crawl.get('message'):
+            job['crawlerMessage'] = crawl.get('message')
+            job['crawlerDone'] = int(crawl.get('done') or 0)
+            job['crawlerTotal'] = int(crawl.get('total') or 0)
+            job['crawlerRows'] = int(crawl.get('rowCount') or 0)
+        job['nextRun'] = _tmall_ranklist_next_run().strftime('%Y-%m-%d %H:%M:%S')
+        job['weeks'] = _tmall_ranklist_db_summary()
+        return success(job)
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/tmall-ranklist/run', methods=['POST'])
+def tmall_ranklist_run_api():
+    """手动验证入口；与定时任务共用同一把锁，避免同一登录态并发访问淘宝。"""
+    try:
+        if not _start_tmall_ranklist(trigger='manual'):
+            return fail('已有天猫榜单采集任务在运行中')
+        return success({'started': True, 'date': _tmall_ranklist_now().strftime('%Y-%m-%d')},
+                       '已开始天猫榜单采集')
+    except Exception as e:
+        return fail(str(e))
+
+
 # ======================== 每日 7 点自动抓取 + 筛选 ========================
 
 def _douyin_hot_has_today():
@@ -8755,6 +9007,12 @@ def _seeding_auto_update_loop():
 # daemon 线程，gunicorn 单 worker 下只启动一次；随进程退出自动结束
 _seeding_auto_thread = threading.Thread(target=_seeding_auto_update_loop, daemon=True, name='seeding-auto-update')
 _seeding_auto_thread.start()
+
+
+# 天猫榜单独立按周采集；服务使用单 worker，故本线程在一个进程内只会启动一次。
+_tmall_ranklist_auto_thread = threading.Thread(target=_tmall_ranklist_auto_loop, daemon=True,
+                                                name='tmall-ranklist-auto')
+_tmall_ranklist_auto_thread.start()
 
 
 # ======================== 每日分析报告 → 钉钉推送 ========================
