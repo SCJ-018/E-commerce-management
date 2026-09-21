@@ -103,7 +103,13 @@ def load_cookies() -> list[dict[str, str]]:
 def _rank_payloads(value: Any) -> Iterable[dict[str, Any]]:
     """从 MTop 的嵌套响应中找出真正的榜单页数据块。"""
     if isinstance(value, dict):
-        if isinstance(value.get('rankList'), list) and 'rankType' in value:
+        # ``rankType`` 曾经是必填字段，但近期接口在部分类别的回包中
+        # 不再返回它。rankList + 分页字段已经足够唯一地识别榜单数据块。
+        ranks = value.get('rankList')
+        if (isinstance(ranks, list) and
+                ('rankType' in value or 'hasMore' in value or
+                 'currentPage' in value or any(isinstance(x, dict) and
+                                               'itemList' in x for x in ranks))):
             yield value
         for child in value.values():
             yield from _rank_payloads(child)
@@ -115,8 +121,9 @@ def _rank_payloads(value: Any) -> Iterable[dict[str, Any]]:
 def _response_rank_payloads(responses: Iterable[Response]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for response in responses:
-        if 'route.aldlampservice' not in response.url:
-            continue
+        # 接口域名/路径会随淘宝前端发布变化（route.aldlampservice、
+        # mtop/aldlampservice 均曾出现）。以 JSON 结构识别，避免硬编码
+        # endpoint 导致首屏误报“未拿到数据”。
         try:
             payload = response.json()
         except Exception:
@@ -158,8 +165,6 @@ def _click_exact(page: Page, label: str) -> None:
 
 def _last_rank_response(responses: Iterable[Response]) -> tuple[Response, dict[str, Any]] | None:
     for response in reversed(list(responses)):
-        if 'route.aldlampservice' not in response.url:
-            continue
         try:
             payloads = list(_rank_payloads(response.json()))
         except Exception:
@@ -305,9 +310,16 @@ def _open_ranklist(page: Page, responses: list[Response]) -> tuple[Response, dic
         if attempt:
             write_progress('running', '首屏榜单暂不可用，等待后第 %d 次重试' % (attempt + 1))
             page.wait_for_timeout(60000)
-            page.reload(wait_until='domcontentloaded', timeout=60000)
+            try:
+                page.reload(wait_until='domcontentloaded', timeout=60000)
+            except Exception as exc:
+                raise CrawlError('刷新天猫榜单页面失败：%s' % exc) from exc
         else:
-            page.goto(RANKLIST_URL, wait_until='domcontentloaded', timeout=60000)
+            try:
+                page.goto(RANKLIST_URL, wait_until='domcontentloaded', timeout=60000)
+            except Exception as exc:
+                # 统一转成可重试的采集错误，保留原始原因供告警和进度页展示。
+                raise CrawlError('打开天猫榜单页面失败：%s' % exc) from exc
         page.wait_for_timeout(3500)
         if 'login.taobao.com' in page.url:
             raise CrawlError('淘宝登录态已失效，请重新保存 Cookie 后再运行')
@@ -315,7 +327,16 @@ def _open_ranklist(page: Page, responses: list[Response]) -> tuple[Response, dic
             current_rank = _last_rank_response(responses[before:])
             if current_rank is not None:
                 return current_rank
-    raise CrawlError('未拿到天猫榜单数据，可能触发访问验证或页面接口已变更')
+    # 留下少量上下文，便于区分访问验证和接口改版，而不是每次都只看到
+    # 一条无法行动的通用告警。
+    seen_urls = []
+    for response in responses[-80:]:
+        url = response.url
+        if any(token in url for token in ('mtop', 'aldlamp', 'h5api', 'taobao')):
+            seen_urls.append('%s:%s' % (response.status, urllib.parse.urlparse(url).path[-80:]))
+    detail = '；'.join(seen_urls[-5:])
+    suffix = '（相关响应：%s）' % detail if detail else ''
+    raise CrawlError('未拿到天猫榜单数据，可能触发访问验证或页面接口已变更%s' % suffix)
 
 
 def _price(value: Any) -> float:
