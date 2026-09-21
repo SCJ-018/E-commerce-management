@@ -41,8 +41,9 @@ USER_DATA_DIR = os.path.join(BASE_DIR, 'douyin_profile')
 COOKIE_FILE = os.path.join(BASE_DIR, 'douyin_cookie.txt')
 # 热点宝抓取器读取此文件。扫码工具同步写入，避免“已登录但 07:00 抓取仍缺 Cookie”。
 HOT_COOKIE_FILE = os.path.join(BASE_DIR, 'douyin_hot_cookie.txt')
-HOME_URL = 'https://www.douyin.com/'
-LOGIN_COOKIE = 'sessionid'
+HOME_URL = 'https://douhot.douyin.com/square/hotspot?active_tab=hotspot_search&date_window=24&sub_type=3001'
+# 热点宝使用独立域名 Cookie；兼容普通抖音网页和热点宝两种登录态。
+LOGIN_COOKIE = ('sessionid_douhot', 'sessionid', 'sessionid_ss')
 WAIT_TIMEOUT = 6 * 60
 POLL_INTERVAL = 2
 
@@ -77,8 +78,9 @@ FIND_LOGIN_JS = r"""
 
 
 def _pick_cookie(context, name):
+    names = (name,) if isinstance(name, str) else tuple(name)
     for c in context.cookies():
-        if c['name'] == name:
+        if c['name'] in names:
             return c['value'] or ''
     return ''
 
