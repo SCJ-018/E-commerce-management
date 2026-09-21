@@ -57,9 +57,14 @@ import subprocess
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TOOLS_DIR = os.path.dirname(BASE_DIR)
+sys.path.insert(0, TOOLS_DIR)
 sys.path.insert(0, BASE_DIR)
 
 import shops  # noqa: E402
+from crawler_runtime import RequestGovernor  # noqa: E402
+
+GOVERNOR = RequestGovernor('jd')
 
 
 # ── 抓取收尾：自动补齐商品品类映射（增量）────────────────────────────────────
@@ -300,14 +305,12 @@ def launch(headless=False):
     pw = sync_playwright().start()
     browser = pw.chromium.launch(
         channel='chrome', headless=headless,
-        args=['--disable-blink-features=AutomationControlled',
-              '--no-first-run', '--no-default-browser-check', '--no-sandbox'])
+        args=['--no-first-run', '--no-default-browser-check', '--no-sandbox'])
     kw = {}
     if os.path.exists(STATE_PATH):
         kw['storage_state'] = STATE_PATH
     ctx = browser.new_context(locale='zh-CN', timezone_id='Asia/Shanghai',
                               viewport={'width': 1600, 'height': 950}, **kw)
-    ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
     page = ctx.new_page()
     return pw, browser, ctx, page
 
@@ -400,19 +403,24 @@ def capture_headers_for(page, page_url, key, wait=300, label=''):
     return keep
 
 
-def replay_post(page, url, payload, headers, what, max_retry=3):
+def replay_post(page, url, payload, headers, what, max_retry=2):
     """带网关头回放 POST，返回 body。"""
     body = json.dumps(payload, ensure_ascii=False)
     for attempt in range(max_retry):
+        GOVERNOR.before()
         try:
             raw = page.evaluate(GATEWAY_HEADERS_JS, {'url': url, 'h': headers, 'b': body})
         except Exception as e:
             if attempt >= max_retry - 1:
                 raise
             L('    [%s] 页面异常 %s，重试' % (what, str(e)[:60]))
-            time.sleep(3)
+            time.sleep(min(5 * (attempt + 1), 15))
             continue
         status, _, txt = raw.partition('|')
+        try:
+            GOVERNOR.after(int(status))
+        except ValueError:
+            GOVERNOR.after(0)
         if status != '200':
             raise RuntimeError('%s HTTP %s：%s' % (what, status, txt[:200]))
         d = json.loads(txt)
@@ -421,6 +429,9 @@ def replay_post(page, url, payload, headers, what, max_retry=3):
             return d
         # -402/-407「不安全的请求」= 网关头失效/不匹配，交给调用方重建头后重试
         if code in (-402, -407):
+            # 网关业务码可能仍是 HTTP 200；按受限响应进入短冷却，
+            # 避免“刷新头后立即重放”形成请求尖峰。
+            GOVERNOR.after(403)
             raise RuntimeError('NEED_REFRESH_HEADERS')
         raise RuntimeError('%s code=%s %s' % (what, code, (d.get('header') or {}).get('desc')))
     raise RuntimeError('%s 重试耗尽' % what)

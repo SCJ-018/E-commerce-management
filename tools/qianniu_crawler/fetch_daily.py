@@ -15,6 +15,7 @@
 - 必须 headless=False（有头）。无头 coreIndex 触发阿里数据安全风控（bixi deny）。
 - 万相台用同一 storage_state 直接 SSO，免登录；effectEqual=1（1天累计归因）与影刀历史口径一致。
 - 缺字段/非数字一律填 0；单链接 507 条、推广 446 条需分页抓全（pageSize=100）。
+- 登录/权限/HTTP 异常严格失败并跳过落库，避免把失效登录态伪装成 0 行成功。
 """
 import sys
 import os
@@ -23,14 +24,18 @@ import time
 import datetime
 import urllib.parse
 import subprocess
+import hashlib
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TOOLS_DIR = os.path.dirname(BASE_DIR)
+sys.path.insert(0, TOOLS_DIR)
 sys.path.insert(0, BASE_DIR)
 import shops  # noqa: E402
 import pymysql  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
+from crawler_runtime import RequestGovernor, response_headers  # noqa: E402
 
 
 # ── 抓取收尾：自动补齐商品品类映射（增量）────────────────────────────────────
@@ -94,6 +99,86 @@ SYCM = 'https://sycm.taobao.com'
 WULIANG = 'https://one.alimama.com/index.html'
 WULIANG_QUERY = 'https://one.alimama.com/report/query.json'
 PLATFORM = '千牛'
+PROFILE_ROOT = os.environ.get('QIANNIU_PROFILE_ROOT', os.path.join(BASE_DIR, '_profiles'))
+GOVERNOR = RequestGovernor('qianniu')
+
+
+def _profile_dir(account):
+    """每个千牛账号固定一个独立的 Chrome 用户目录。"""
+    digest = hashlib.sha256(account.encode('utf-8')).hexdigest()[:16]
+    safe = ''.join(c if c.isalnum() else '_' for c in account).strip('_')[:80]
+    return os.path.join(PROFILE_ROOT, '%s_%s' % (safe or 'account', digest))
+
+
+def _profile_has_data(path):
+    # 目录可能因一次滑块失败而已被 Chrome 创建；只有成功抓取后写入
+    # ready 标记，才允许后续完全依赖 Profile，不会误用半成品目录。
+    return os.path.isfile(os.path.join(path, '.qianniu_profile_ready'))
+
+
+class QianniuFetchError(RuntimeError):
+    """接口未返回可用的生意参谋数据。
+
+    千牛接口在登录态失效时经常仍返回 HTTP 200（甚至返回一段登录页 JSON），
+    因此不能只依赖 HTTP 状态码，也不能把异常接口当成空数据继续落库。
+    """
+
+
+def _body_preview(body, limit=320):
+    """生成不含 Cookie 的响应摘要，供日志定位登录/风控/接口改版。"""
+    try:
+        text = json.dumps(body, ensure_ascii=False, separators=(',', ':'))
+    except Exception:
+        text = str(body)
+    return text.replace('\n', ' ')[:limit]
+
+
+def _looks_like_auth_failure(body, url=''):
+    """识别淘宝返回的登录失效、无权限或风控响应。"""
+    text = (_body_preview(body, 5000) + ' ' + str(url)).lower()
+    markers = (
+        'login.taobao.com', 'loginmyseller.taobao.com',
+        'not_login', 'notlogin', 'login_required', 'unauthorized',
+        'forbidden', 'session_expired', 'session expired',
+        '请先登录', '登录失效', '登录过期', '未登录', '无权限',
+        '权限不足', 'bixi',
+    )
+    return any(x in text for x in markers)
+
+
+def _json_response(resp, label):
+    """严格解析接口响应，拒绝把登录页/风控响应当成空数据。"""
+    status = getattr(resp, 'status', 0) or 0
+    url = getattr(resp, 'url', '')
+    try:
+        body = resp.json()
+    except Exception as exc:
+        try:
+            preview = resp.text()[:240].replace('\n', ' ')
+        except Exception:
+            preview = ''
+        raise QianniuFetchError(
+            '%s 响应不是 JSON（HTTP %s，可能登录态失效/被重定向；%s）'
+            % (label, status, preview)) from exc
+
+    if status >= 400:
+        raise QianniuFetchError(
+            '%s HTTP %s（%s）' % (label, status, _body_preview(body)))
+    if _looks_like_auth_failure(body, url):
+        raise QianniuFetchError(
+            '%s 返回登录/权限/风控响应，请重新登录并上传 state（%s）'
+            % (label, _body_preview(body)))
+    return body
+
+
+def _state_has_login_cookies(state):
+    """只做本地结构检查；真正有效性由首次接口请求验证。"""
+    if not isinstance(state, dict):
+        return False
+    cookies = state.get('cookies') or []
+    names = {str(c.get('name') or '') for c in cookies if isinstance(c, dict)}
+    # 与 login_save_state.py 保持一致：unb + cookie2/sgcookie 是基础登录态。
+    return bool('unb' in names and ({'cookie2', 'sgcookie'} & names))
 
 # ---------- 工具：数值归一 ----------
 def _raw(v):
@@ -134,11 +219,15 @@ def _pct(v):
 def fetch_coreindex(page, date_str):
     dr = '%s|%s' % (date_str, date_str)
     url = SYCM + '/portal/coreIndex/new/overview/v3.json?needCycleCrc=true&dateType=day&dateRange=' + dr
+    GOVERNOR.before()
     resp = page.request.get(url, headers={'referer': SYCM + '/portal/home.htm'})
-    body = resp.json()
+    GOVERNOR.after(getattr(resp, 'status', 0), response_headers(resp))
+    body = _json_response(resp, 'coreIndex')
     selfobj = (body.get('content') or {}).get('data', {}).get('self') or {}
     if not selfobj:
-        raise RuntimeError('coreIndex.self 为空（可能无权限/无数据/被风控）')
+        raise QianniuFetchError(
+            'coreIndex.self 为空（登录态失效、无权限或接口已变更；响应=%s）'
+            % _body_preview(body))
 
     def g(k):
         return _f(selfobj.get(k), 0.0)
@@ -194,10 +283,33 @@ def fetch_wuliang_total(page, date_str):
         "csrfId": csrf, "loginPointId": lp,
     }
     url = WULIANG_QUERY + '?csrfId=%s&bizCode=universalBP&loginPointId=%s' % (csrf, lp)
-    resp = page.request.post(url, data=json.dumps(payload), fail_on_status_code=False,
-                             headers={'content-type': 'application/json;charset=UTF-8',
-                                      'referer': WULIANG, 'origin': 'https://one.alimama.com'})
-    b = resp.json()
+    # 必须在万相台页面上下文内发起请求：page.request 只复用 Cookie，
+    # 不会带上页面生成的 Local Storage/浏览器会话上下文，部分账号会被
+    # loginQueryService 判为未建立会话并返回 HTTP 403。
+    raw = page.evaluate("""async ({url, payload}) => {
+        try {
+            const r = await fetch(url, {
+                method: 'POST', credentials: 'include',
+                headers: {'content-type': 'application/json;charset=UTF-8'},
+                body: JSON.stringify(payload)
+            });
+            return {status: r.status, text: await r.text()};
+        } catch (e) {
+            return {status: 0, text: String(e)};
+        }
+    }""", {'url': url, 'payload': payload})
+    if not raw or raw.get('status', 0) >= 400:
+        raise QianniuFetchError('万相台 report/query HTTP %s（%s）'
+                                % (raw.get('status') if raw else 0,
+                                   (raw or {}).get('text', '')[:500]))
+    try:
+        b = json.loads(raw.get('text') or '{}')
+    except Exception:
+        raise QianniuFetchError('万相台 report/query 返回非 JSON（%s）'
+                                % (raw.get('text') or '')[:500])
+    # 万相台错误时不一定使用 HTTP 4xx，常见结构是 success=false 或 errorCode。
+    if b.get('success') is False or b.get('errorCode') or b.get('errorMsg'):
+        raise QianniuFetchError('万相台返回错误：%s' % _body_preview(b))
     lst = (b.get('data') or {}).get('list') or []
     return _f(lst[0].get('alipayInshopAmt'), 0.0) if lst else 0.0
 
@@ -211,10 +323,16 @@ def fetch_paged(page, url_template, date_str, referer, order_by, extra=''):
     max_pages = 60
     while page_no <= max_pages:
         url = url_template.format(dr=dr, page=page_no, order_by=order_by, extra=extra)
+        GOVERNOR.before()
         resp = page.request.get(url, headers={'referer': referer})
-        body = resp.json()
-        if body.get('code') != 0:
-            break
+        GOVERNOR.after(getattr(resp, 'status', 0), response_headers(resp))
+        body = _json_response(resp, '商品报表第%d页' % page_no)
+        # 部分版本返回数字 0，部分版本返回字符串 "0"；其余状态都必须报错，
+        # 不能像旧代码一样直接 break 后伪装成空列表。
+        if str(body.get('code')) != '0':
+            raise QianniuFetchError(
+                '商品报表第%d页返回 code=%r（%s）'
+                % (page_no, body.get('code'), _body_preview(body)))
         d = body.get('data') or {}
         items = d.get('data') or []
         all_rows.extend(items)
@@ -326,25 +444,72 @@ def fetch_one(account, date_str):
     if not shop.get('state'):
         print('[FAIL] 无登录态，请先跑 login_save_state.py:', account)
         return None
+    if not _state_has_login_cookies(shop['state']):
+        print('[FAIL] 登录态缺少淘宝基础 Cookie（unb + cookie2/sgcookie），请重新登录并上传 state:', account)
+        return None
 
     result = {'账号': account, '日期': date_str}
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel='chrome', headless=False,
-            args=['--disable-blink-features=AutomationControlled', '--no-sandbox',
-                  '--no-first-run', '--no-default-browser-check'],
-        )
-        ctx = browser.new_context(storage_state=shop['state'], locale='zh-CN',
-                                  timezone_id='Asia/Shanghai',
-                                  viewport={'width': 1600, 'height': 950})
-        ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+        profile_dir = _profile_dir(account)
+        os.makedirs(PROFILE_ROOT, exist_ok=True)
+        launch_args = ['--no-sandbox',
+                       '--no-first-run', '--no-default-browser-check']
+        persistent_opts = dict(channel='chrome', headless=False,
+                               args=launch_args, locale='zh-CN',
+                               timezone_id='Asia/Shanghai',
+                               viewport={'width': 1600, 'height': 950})
+        # 用数据库中的最新 state 给独立 Profile 刷新 Cookie；Profile 仍保留
+        # Local Storage、缓存和浏览器环境连续性。只在首次播种会让后来续期的
+        # 登录态永远进不了旧 Profile，最终表现为接口 code=5810。
+        seed_profile = not _profile_has_data(profile_dir)
+        if seed_profile:
+            print('  [profile] 首次初始化独立浏览器目录:', profile_dir)
+        else:
+            print('  [profile] 复用独立浏览器目录并刷新最新 Cookie:', profile_dir)
+        ctx = p.chromium.launch_persistent_context(profile_dir, **persistent_opts)
+        # launch_persistent_context 在当前 Playwright 版本不接受 storage_state；
+        # 先启动 Profile，再把现有 Cookie 注入进去。重复注入同名 Cookie 会替换
+        # 旧值，是 Playwright 官方语义，适合登录态续期。
+        seed_cookies = shop['state'].get('cookies') or []
+        if seed_cookies:
+            ctx.add_cookies(seed_cookies)
+        # storage_state 还可能包含淘宝/万相台用于会话续接的 Local Storage。
+        # 仅注入 Cookie 会出现生意参谋可访问、万相台 loginQueryService 仍 403。
+        # 在首次播种和后续刷新时都恢复这些键，随后由页面正常更新 Profile。
+        ls_by_origin = {}
+        for origin in (shop['state'].get('origins') or []):
+            origin_url = origin.get('origin') or ''
+            entries = origin.get('localStorage') or []
+            if origin_url and entries:
+                ls_by_origin[origin_url] = [
+                    [str(x.get('name', '')), str(x.get('value', ''))]
+                    for x in entries if x.get('name') is not None
+                ]
+        if ls_by_origin:
+            ctx.add_init_script("""(() => {
+                const items = %s;
+                const kv = items[location.origin];
+                if (!kv) return;
+                for (const pair of kv) {
+                    try { localStorage.setItem(pair[0], pair[1]); } catch (_) {}
+                }
+            })();""" % json.dumps(ls_by_origin, ensure_ascii=False))
         page = ctx.new_page()
+        errors = []
 
-        # 先访问生意参谋首页让会话生效
+        # 先访问生意参谋首页让会话生效；失效时通常会被重定向到登录页。
         try:
             page.goto(SYCM + '/portal/home.htm', wait_until='domcontentloaded', timeout=40000)
             time.sleep(2)
+            if any(x in (page.url or '').lower()
+                   for x in ('login.taobao.com', 'loginmyseller.taobao.com')):
+                raise QianniuFetchError(
+                    '生意参谋已重定向到登录页，请重新登录并上传 state')
+        except QianniuFetchError as e:
+            print('  [FAIL] 生意参谋首页:', e)
+            errors.append('生意参谋首页: %s' % e)
         except Exception as e:
+            # 首页偶发加载超时不等于登录失效；后面的 API 请求会给出最终判定。
             print('  [warn] 生意参谋首页:', e)
 
         # ① 店铺日汇总
@@ -356,6 +521,7 @@ def fetch_one(account, date_str):
             m = None
             result['营销'] = None
             print('  ①店铺日汇总失败:', e)
+            errors.append('店铺日汇总: %s' % e)
 
         # ② 推广总成交（万相台）
         ad_total = 0.0
@@ -364,8 +530,18 @@ def fetch_one(account, date_str):
             result['推广总成交'] = ad_total
             print('  ②推广总成交(万相台): %s' % ad_total)
         except Exception as e:
-            result['推广总成交'] = None
-            print('  ②推广总成交失败:', e)
+            # 部分店铺未开通万相台/推广权限时，loginQueryService 返回 403
+            # errorCode=5002004。这代表“无推广数据”，不是店铺登录失败；
+            # 不能因此阻断店铺日汇总和单链接数据落库。
+            msg = str(e)
+            if '5002004' in msg or 'loginQueryService' in msg:
+                ad_total = 0.0
+                result['推广总成交'] = 0.0
+                print('  ②推广总成交: 未开通万相台，按 0 处理（%s）' % msg[:220])
+            else:
+                result['推广总成交'] = None
+                print('  ②推广总成交失败:', e)
+                errors.append('推广总成交: %s' % e)
 
         # ③ 单链接
         link_rows = []
@@ -376,6 +552,7 @@ def fetch_one(account, date_str):
         except Exception as e:
             result['单链接数'] = 0
             print('  ③单链接失败:', e)
+            errors.append('单链接: %s' % e)
 
         # ④ 单链接推广
         promo_rows = []
@@ -386,12 +563,29 @@ def fetch_one(account, date_str):
         except Exception as e:
             result['推广数'] = 0
             print('  ④单链接推广失败:', e)
+            errors.append('单链接推广: %s' % e)
 
-        browser.close()
+        profile_state = None if errors else ctx.storage_state()
+        ctx.close()
+
+    # 任一维度失败都不落库。旧逻辑会把失败接口当成 0 行写入，导致定时任务
+    # 看起来执行成功，实际把“登录态失效/接口风控”伪装成了空数据。
+    if errors:
+        print('  [FAIL] 本账号未完整取数，已跳过落库；请先刷新登录态：%s'
+              % '；'.join(errors)[:1200])
+        return None
 
     # ---- 落库 ----
     conn = shops.get_conn()
     try:
+        if profile_state:
+            # 保留兼容性：即使后续切回 storage_state 方案，数据库里仍有最新快照。
+            shops.save_state(account, profile_state)
+            try:
+                with open(os.path.join(profile_dir, '.qianniu_profile_ready'), 'w', encoding='ascii') as fh:
+                    fh.write('ready\n')
+            except OSError as e:
+                print('  [warn] Profile 就绪标记写入失败:', e)
         if m is not None:
             n1 = save_marketing(conn, shop, date_str, m, ad_total)
             print('  [库] 店铺营销数据 upsert %d 行' % n1)
@@ -450,7 +644,7 @@ def main():
     # ★ 抓取收尾：自动补齐商品品类映射（增量）。
     #   放在「本轮全部账号抓完之后」跑一次：映射按 (平台, 商品ID) 去重，
     #   逐账号跑 N 次与跑 1 次结果完全相同，但只跑一次省掉 N-1 次全表扫描。
-    if not no_map:
+    if not no_map and results:
         auto_category_map('千牛')
 
     # 退出码：0=全部取到数据，3=有账号未取到（让 cron / fetch_reconcile 能感知失败，

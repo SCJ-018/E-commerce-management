@@ -10,7 +10,7 @@
 6. storage_state() 导出 → 写回「千牛账号表.登录状态」
 
 用法：
-  python login_save_state.py <账号> [--headless]
+  python login_save_state.py <账号> [--headless] [--persistent]
   python login_save_state.py all   # 逐个登录所有运营中的店（不推荐一次跑完，滑块多）
 
 账号格式：子账号写「主账号:子账号」，如「贝朵星球母婴用品:螃蟹」
@@ -19,6 +19,7 @@ import sys
 import os
 import time
 import json
+import hashlib
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
@@ -47,6 +48,7 @@ ACCOUNTS = {
 }
 
 STATE_DIR = os.path.join(BASE_DIR, '_states')
+PROFILE_ROOT = os.environ.get('QIANNIU_PROFILE_ROOT', os.path.join(BASE_DIR, '_profiles'))
 
 try:
     import shops  # noqa: E402
@@ -80,6 +82,13 @@ def _save_state_file(account, state):
         json.dump(state, f, ensure_ascii=False)
     print('  state 已存本地:', path)
     return path
+
+
+def _profile_dir(account):
+    """每个账号独立的持久化 Chrome 用户目录。"""
+    digest = hashlib.sha256(account.encode('utf-8')).hexdigest()[:16]
+    safe = ''.join(c if c.isalnum() else '_' for c in account).strip('_')[:80]
+    return os.path.join(PROFILE_ROOT, '%s_%s' % (safe or 'account', digest))
 
 
 def is_logged_in(ctx):
@@ -148,23 +157,27 @@ def try_slide(page):
         return False
 
 
-def login_one(account, headless=False):
+def login_one(account, headless=False, persistent=False):
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel=CHROME_CHANNEL,
-            headless=headless,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--no-first-run',
-                '--no-default-browser-check',
-                '--no-sandbox',
-            ],
-        )
-        ctx = browser.new_context(
-            locale='zh-CN',
-            timezone_id='Asia/Shanghai',
-            viewport={'width': 1400, 'height': 900},
-        )
+        args = [
+            '--disable-blink-features=AutomationControlled',
+            '--no-first-run',
+            '--no-default-browser-check',
+            '--no-sandbox',
+        ]
+        browser = None
+        if persistent:
+            profile_dir = _profile_dir(account)
+            os.makedirs(PROFILE_ROOT, exist_ok=True)
+            print('  使用独立持久化 Profile:', profile_dir)
+            ctx = p.chromium.launch_persistent_context(
+                profile_dir, channel=CHROME_CHANNEL, headless=headless,
+                args=args, locale='zh-CN', timezone_id='Asia/Shanghai',
+                viewport={'width': 1400, 'height': 900})
+        else:
+            browser = p.chromium.launch(channel=CHROME_CHANNEL, headless=headless, args=args)
+            ctx = browser.new_context(locale='zh-CN', timezone_id='Asia/Shanghai',
+                                      viewport={'width': 1400, 'height': 900})
         ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
         page = ctx.new_page()
         print('[1/6] 打开登录页...')
@@ -221,12 +234,18 @@ def login_one(account, headless=False):
             time.sleep(5)
         if not is_logged_in(ctx):
             print('[FAIL] 登录未成功。账号=%s' % account)
-            browser.close()
+            ctx.close()
             return False
 
         print('[6/6] 登录成功，导出 storage_state')
         state = ctx.storage_state()
         _save_state_file(account, state)
+        if persistent:
+            try:
+                with open(os.path.join(_profile_dir(account), '.qianniu_profile_ready'), 'w', encoding='ascii') as fh:
+                    fh.write('ready\n')
+            except OSError as e:
+                print('  [warn] Profile 就绪标记写入失败:', e)
 
         # 验证一下能访问生意参谋
         try:
@@ -236,14 +255,15 @@ def login_one(account, headless=False):
         except Exception as e:
             print('  [warn] 生意参谋访问异常', e)
 
-        browser.close()
+        ctx.close()
         return True
 
 
 def main():
     args = [a for a in sys.argv[1:]]
     headless = '--headless' in args
-    args = [a for a in args if a != '--headless']
+    persistent = '--persistent' in args
+    args = [a for a in args if a not in ('--headless', '--persistent')]
 
     if not args:
         print(__doc__)
@@ -254,11 +274,11 @@ def main():
         for acct in ACCOUNTS:
             print('\n======== 登录：%s ========' % acct)
             try:
-                login_one(acct, headless=headless)
+                login_one(acct, headless=headless, persistent=persistent)
             except Exception as e:
                 print('  异常：', e)
     else:
-        login_one(target, headless=headless)
+        login_one(target, headless=headless, persistent=persistent)
 
 
 if __name__ == '__main__':

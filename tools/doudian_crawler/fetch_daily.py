@@ -26,10 +26,13 @@ import subprocess
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TOOLS_DIR = os.path.dirname(BASE_DIR)
+sys.path.insert(0, TOOLS_DIR)
 sys.path.insert(0, BASE_DIR)
 import shops  # noqa: E402
 import pymysql  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
+from crawler_runtime import RequestGovernor  # noqa: E402
 
 
 # ── 抓取收尾：自动补齐商品品类映射（增量）────────────────────────────────────
@@ -101,6 +104,7 @@ API = 'https://compass.jinritemai.com/compass_api/shop/product/product/product_l
 # 口径：只重试 1 次、退避 90s 就放弃本店。重试本身也是新请求，会续期限流窗口。
 LIMIT_RETRY = 1
 LIMIT_BACKOFF = 90
+GOVERNOR = RequestGovernor('doudian')
 
 # 44 指标编码（与影刀 §5 的 44 项一一对应；后 2 项混资落库表无列，仍抓取备用）
 INDEX_44 = ('trans_amt,receive_amt,pay_amt,pay_cnt,pay_ucnt,pay_combo_cnt,per_user_price,'
@@ -242,7 +246,9 @@ def fetch_products(page, date_str):
               '&use_customize_gmv=false&use_customize_product_show=false'
               '&abnormal_threshold_gmv=0&abnormal_threshold_product_show=0'
               '&new_version=true&page_no=%d&page_size=10' % page_no)
+        GOVERNOR.before()
         r = page.evaluate(FETCH_JS, API + '?' + qs)
+        GOVERNOR.after(r.get('status', 0))
         b = json.loads(r['body'])
         st = b.get('st')
         data = b.get('data')
@@ -250,6 +256,10 @@ def fetch_products(page, date_str):
         total = pr.get('total') or 0
         if st != 0 or not isinstance(data, list) or not data:
             if st != 0:
+                # 抖店常把限流编码放在 HTTP 200 响应体中；把它转换为
+                # 共享冷却信号，避免下一家店立刻继续打同一账号配额。
+                if str(st) in ('11001', '11002', '429'):
+                    GOVERNOR.after(429)
                 if retry < LIMIT_RETRY:
                     # 只重试 LIMIT_RETRY 次（默认 1 次、退避 90s）就放弃本店。
                     # 旧版是 4 次（30/60/90/120s，共 5 分钟）—— 但每次重试都是新请求，
@@ -350,10 +360,9 @@ def fetch_one(shop_name, date_str):
     result = {'店铺': shop_name, '日期': date_str}
     with sync_playwright() as p:
         browser = p.chromium.launch(channel='chrome', headless=False,
-                                    args=['--disable-blink-features=AutomationControlled', '--no-sandbox'])
+                                    args=['--no-sandbox'])
         ctx = browser.new_context(storage_state=state, locale='zh-CN', timezone_id='Asia/Shanghai',
                                   viewport={'width': 1600, 'height': 950})
-        ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
         page = ctx.new_page()
 
         print('[1] 打开罗盘商品列表页（建立会话）...')

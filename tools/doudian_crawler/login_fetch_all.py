@@ -776,13 +776,25 @@ def main():
                         summary.append((shop_name, '取数异常: %s' % str(e)[:60]))
                         continue
                     print('  共 %d 个商品，落库...' % len(rows))
-                    n = fetch_daily.save_rows(conn, shop, date_str, rows)
-                    conn.commit()
+                    product_error = None
+                    try:
+                        n = fetch_daily.save_rows(conn, shop, date_str, rows)
+                        conn.commit()
+                    except Exception as e:
+                        # 商品明细表历史主键只有 (统计周期, 商品编码)，不同店铺
+                        # 共享商品编码时会冲突。回滚明细事务，继续写店铺营销主表，
+                        # 避免一处明细冲突把整家店的日汇总也丢掉。
+                        conn.rollback()
+                        n = 0
+                        product_error = str(e)[:180]
+                        print('  [warn] 商品明细落库冲突，保留旧明细并继续写主表:', product_error)
                     # 主表 16 字段（店铺营销数据）：core_index_v3 + income_expense + flow_overview
                     try:
                         fetch_main.fetch_one(page, conn, shop, date_str)
                         conn.commit()
-                        summary.append((shop_name, 'OK %d 行 + 主表' % n))
+                        summary.append((shop_name, ('OK %d 行 + 主表' % n)
+                                        if not product_error else
+                                        '主表已写，商品明细冲突: %s' % product_error))
                     except Exception as e:
                         conn.rollback()
                         summary.append((shop_name, 'OK %d 行, 主表失败: %s' % (n, str(e)[:50])))
