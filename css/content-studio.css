@@ -1,16 +1,11 @@
 /* 聚浪内容工坊：独立工作台视觉层，保持现有后台的留白和圆角语言 */
-.content-studio-mode .sidebar,
-.content-studio-mode .topbar { display:none; }
-.content-studio-mode .main-content {
-  margin-left:0;
-  width:100%;
-  padding-top:0;
-  background:#f5f7fb;
-}
 .nav-direct-link { text-decoration:none; }
 .nav-direct-link .ng-chevron { transform:none !important; }
-.nav-group-direct .nav-group-title { color:#5b4bd5; background:#f5f3ff; }
-.nav-group-direct .nav-group-title:hover { background:#efedff; }
+.nav-group-direct .nav-direct-link { color:#475569; background:transparent; }
+.nav-group-direct .nav-direct-link:hover { color:#1e293b; background:#f8fafc; }
+.nav-group-direct .nav-direct-link.active { color:#2563eb; background:#eff6ff; font-weight:500; }
+.content-studio-mode .cs-topbar { position:relative; top:auto; }
+.content-studio-mode .cs-nav { display:none; }
 .content-studio-page { padding:0 !important; min-height:100vh; }
 .cs-shell { min-height:100vh; color:#1e293b; }
 .cs-topbar {
