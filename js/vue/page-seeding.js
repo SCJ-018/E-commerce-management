@@ -349,15 +349,35 @@
             <div class="srm-title">种草监测中台</div>
             <div class="srm-subtitle">按部门、人员和品类查看内容产出与店铺流量</div>
           </div>
-          <div class="srm-top-meta">
-            <span class="srm-period-label"><i class="fa-regular fa-calendar"></i>{{ period.start }} 至 {{ period.end }}</span>
-            <span class="srm-sync"><span class="srm-dot"></span>{{ state.syncState }}</span>
+          <div class="srm-top-actions">
+            <div class="srm-pop-wrap">
+              <button class="srm-btn srm-btn-lg" @click="state.peoplePopup = !state.peoplePopup"><i class="fa-solid fa-user-check"></i>人员选择<i class="fa-solid fa-chevron-down srm-btn-chevron"></i></button>
+              <div v-if="state.peoplePopup" class="srm-pop">
+                <div class="srm-pop-title">{{ state.selectedDept === '全部' ? '全部部门' : state.selectedDept }} · 选择维护人员</div>
+                <button class="srm-btn" style="width:100%;justify-content:flex-start;margin-bottom:8px" @click="choosePerson('全部')">全部人员</button>
+                <button v-for="person in selectedDeptPeople" :key="person" class="srm-btn" style="width:100%;justify-content:flex-start;margin-bottom:6px" @click="choosePerson(person)">{{ person }}</button>
+              </div>
+            </div>
+            <div class="srm-pop-wrap">
+              <button class="srm-btn srm-btn-lg" :disabled="state.selectedDept === '全部'" @click="state.categoryPopup = !state.categoryPopup"><i class="fa-solid fa-link"></i>品类绑定<i class="fa-solid fa-chevron-down srm-btn-chevron"></i></button>
+              <div v-if="state.categoryPopup && state.selectedDept !== '全部'" class="srm-pop">
+                <div class="srm-pop-title">选择 {{ state.selectedDept }} 的店铺品类</div>
+                <div class="srm-check-grid">
+                  <label v-for="category in categoryOptions" :key="category" class="srm-check"><input type="checkbox" :checked="(state.categoryBindings[state.selectedDept] || []).includes(category)" @change="toggleCategory(category)"><span>{{ category }}</span></label>
+                </div>
+              </div>
+            </div>
+            <button class="srm-btn primary srm-btn-lg" @click="openCreate"><i class="fa-solid fa-plus"></i>新增记录</button>
           </div>
         </header>
 
-        <nav class="srm-tabs" aria-label="部门范围">
-          <button class="srm-tab" :class="{active: state.selectedDept === '全部'}" @click="selectDept('全部')">全部部门</button>
-          <button v-for="dept in departments" :key="dept" class="srm-tab" :class="{active: state.selectedDept === dept}" @click="selectDept(dept)">{{ dept }}</button>
+        <nav class="srm-tabs-row" aria-label="部门范围">
+          <span class="srm-range"><i class="fa-regular fa-calendar"></i><span class="srm-current-range">{{ period.start.slice(0, 7) }}</span><i class="fa-solid fa-chevron-down srm-range-chevron"></i></span>
+          <div class="srm-tabs">
+            <button class="srm-tab" :class="{active: state.selectedDept === '全部'}" @click="selectDept('全部')">全部</button>
+            <button v-for="dept in departments" :key="dept" class="srm-tab" :class="{active: state.selectedDept === dept}" @click="selectDept(dept)">{{ dept }}</button>
+          </div>
+          <div class="srm-tabs-meta"><span class="srm-sync"><span class="srm-dot"></span>{{ state.syncState }}</span></div>
         </nav>
 
         <section class="srm-stat-grid">
@@ -370,24 +390,7 @@
 
         <section class="srm-toolbar">
           <div class="srm-toolbar-left">
-            <span class="srm-range"><i class="fa-regular fa-calendar"></i><span class="srm-current-range">{{ period.start }}</span><span>→</span><span class="srm-current-range">{{ period.end }}</span></span>
-            <div class="srm-pop-wrap">
-              <button class="srm-btn" @click="state.peoplePopup = !state.peoplePopup"><i class="fa-solid fa-user-check"></i>人员：{{ state.selectedPerson }}</button>
-              <div v-if="state.peoplePopup" class="srm-pop">
-                <div class="srm-pop-title">{{ state.selectedDept === '全部' ? '全部部门' : state.selectedDept }} · 选择维护人员</div>
-                <button class="srm-btn" style="width:100%;justify-content:flex-start;margin-bottom:8px" @click="choosePerson('全部')">全部人员</button>
-                <button v-for="person in selectedDeptPeople" :key="person" class="srm-btn" style="width:100%;justify-content:flex-start;margin-bottom:6px" @click="choosePerson(person)">{{ person }}</button>
-              </div>
-            </div>
-            <div class="srm-pop-wrap">
-              <button class="srm-btn" :disabled="state.selectedDept === '全部'" @click="state.categoryPopup = !state.categoryPopup"><i class="fa-solid fa-link"></i>品类绑定<span v-if="state.selectedDept !== '全部'">（{{ (state.categoryBindings[state.selectedDept] || []).length }}）</span></button>
-              <div v-if="state.categoryPopup && state.selectedDept !== '全部'" class="srm-pop">
-                <div class="srm-pop-title">选择 {{ state.selectedDept }} 的店铺品类</div>
-                <div class="srm-check-grid">
-                  <label v-for="category in categoryOptions" :key="category" class="srm-check"><input type="checkbox" :checked="(state.categoryBindings[state.selectedDept] || []).includes(category)" @change="toggleCategory(category)"><span>{{ category }}</span></label>
-                </div>
-              </div>
-            </div>
+            <span class="srm-filter-context"><i class="fa-solid fa-filter"></i>{{ state.selectedDept === '全部' ? '全部部门' : state.selectedDept }} · {{ state.selectedPerson === '全部' ? '全部人员' : state.selectedPerson }}</span>
           </div>
           <div class="srm-toolbar-right">
             <span class="srm-filter-label">{{ filteredRows.length }} 条记录</span>
