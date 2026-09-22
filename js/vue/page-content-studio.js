@@ -46,16 +46,62 @@
       checks:'发布前核对车型适配、价格和测试条件；删除无法证明的“全网最好”“绝对不返味”等表述；补齐实拍画面与必要的对比依据。'};
   }
 
+  var FLOW_META = [
+    ['投喂爆文素材','抖音链接、口播文案或镜头摘要'],
+    ['爆文拆解','7 维结构化分析并落卡'],
+    ['选择参考母本','可选：只借鉴方法，不照抄原句'],
+    ['生成配置','品类 · 类型 · 真实卖点'],
+    ['AI 生成内容','选题 → 脚本，共 8 段产出'],
+    ['人工核验发布','核对适配、价格与测试条件']
+  ];
+  var BREAKDOWN_MAP = [
+    ['选题与受众','topic'],['内容结构','structure'],['标题策略','title'],['镜头与节奏','shots'],
+    ['评论区互动模板','comments'],['可借鉴点','learn'],['风险与验证','risks']
+  ];
+
   Vue.createApp({
     data: function () { return {
-      activeTab:'breakdown', input:'', status:'', statusError:false, busy:false, cards:loadCards(), selectedId:null,
+      activeTab:'breakdown', input:'', analysisFocus:'', status:'', statusError:false, busy:false, cards:loadCards(), selectedId:null,
       category:'汽车脚垫', noteType:'测评', imitate:false, referenceId:null, productName:'', sellingPoints:'', audience:'', scene:'',
-      output:null, productionBusy:false, productionStatus:'', productionError:false, categories:categories, noteTypes:noteTypes,
+      output:null, productionBusy:false, productionStatus:'', productionError:false, aiDegraded:false,
+      categories:categories, noteTypes:noteTypes,
       userName:sessionStorage.getItem('admin_current_user') || '当前用户', userRole:sessionStorage.getItem('admin_current_role') || '团队成员', avatar:''
     }; },
     computed: {
       selectedCard:function () { var id=this.selectedId; return this.cards.find(function (x) { return x.id === id; }) || null; },
-      referenceCard:function () { var id=this.referenceId; return this.cards.find(function (x) { return x.id === id; }) || null; }
+      referenceCard:function () { var id=this.referenceId; return this.cards.find(function (x) { return x.id === id; }) || null; },
+      flowSteps:function () {
+        var hasCards = this.cards.length > 0;
+        var flags = [
+          hasCards || !!this.input.trim(),
+          hasCards,
+          !!this.referenceId,
+          !!(this.productName.trim() && this.sellingPoints.trim()),
+          !!this.output,
+          !!this.output
+        ];
+        var head = -1;
+        for (var i=0;i<flags.length;i++) { if (!flags[i]) { head=i; break; } }
+        return FLOW_META.map(function (m,i) {
+          return { n:i+1, title:m[0], sub:m[1], state: flags[i] ? 'done' : (i === head ? 'now' : 'todo') };
+        });
+      },
+      flowProgress:function () {
+        var done = this.flowSteps.filter(function (s) { return s.state === 'done'; }).length;
+        return Math.round(done / FLOW_META.length * 100);
+      },
+      statusText:function () {
+        if (this.busy || this.productionBusy) return '处理中';
+        if (this.statusError || this.productionError) return '异常';
+        if (this.aiDegraded) return '演示降级';
+        return '正常';
+      },
+      statusClass:function () {
+        if (this.busy || this.productionBusy) return '';
+        if (this.statusError || this.productionError) return 'pink';
+        if (this.aiDegraded) return 'amber';
+        return 'mint';
+      }
     },
     mounted:function () { this.loadProfile(); },
     methods: {
@@ -70,28 +116,43 @@
       },
       navigate:function (page) { window.location.hash=page; if (window.App && App.navigateTo) App.navigateTo(page); },
       selectCard:function (id) { this.selectedId=id; },
+      draftBadge:function (card) {
+        var keys = (card && card.breakdown) ? Object.keys(card.breakdown) : [];
+        if (!keys.length) return { cls:'amber', text:'待核验' };
+        if (this.referenceId === card.id) return { cls:'pink', text:'参考中' };
+        return { cls:'mint', text:'已拆解' };
+      },
+      goProduction:function (card) {
+        if (!card) return;
+        this.referenceId=card.id; this.imitate=true; this.activeTab='production';
+      },
+      clearInput:function () { this.input=''; this.analysisFocus=''; },
       removeCard:function () {
-        if (!this.selectedCard) return;
-        this.cards=this.cards.filter(function (x) { return x.id !== this.selectedId; },this);
-        if (this.referenceId === this.selectedId) this.referenceId=null;
+        var id = this.selectedId;
+        if (!id) return;
+        this.cards=this.cards.filter(function (x) { return x.id !== id; });
+        if (this.referenceId === id) this.referenceId=null;
         this.selectedId=this.cards.length ? this.cards[0].id : null;
         saveCards(this.cards);
       },
       analyze:async function () {
         var raw=this.input.trim();
+        var focus=this.analysisFocus.trim();
         if (!raw) { this.status='请粘贴抖音链接、文案或镜头摘要'; this.statusError=true; return; }
         this.busy=true; this.status='正在读取素材并生成拆解卡…'; this.statusError=false;
         try {
           var d;
-          try { d=await post('analyze',{input:raw}); }
+          var payload = focus ? (raw + '\n\n【本次分析重点】\n' + focus) : raw;
+          try { d=await post('analyze',{input:payload}); }
           catch (apiError) {
             if ((apiError.message || '').indexOf('登录已过期') >= 0) throw apiError;
-            d=demoAnalysis(raw); this.status='服务端 AI 暂不可用，已生成演示拆解卡；配置 CONTENT_STUDIO_API_KEY 后可切换真实结果';
+            d=demoAnalysis(raw); this.aiDegraded=true;
+            this.status='服务端 AI 暂不可用，已生成演示拆解卡；配置 CONTENT_STUDIO_API_KEY 后可切换真实结果';
           }
           var card={id:Date.now(), createdAt:new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}), input:raw,
             title:d.title || '未命名爆文', sourceUrl:d.sourceUrl || '', evidence:d.evidence || '', breakdown:d.breakdown || {}};
           this.cards.unshift(card); this.cards=this.cards.slice(0,50); saveCards(this.cards); this.selectedId=card.id;
-          if (!this.status || this.status.indexOf('演示') < 0) this.status='拆解完成，已保存到本机爆文卡片'; this.statusError=false; this.input='';
+          if (!this.status || this.status.indexOf('演示') < 0) this.status='拆解完成，已保存到本机爆文卡片'; this.statusError=false; this.input=''; this.analysisFocus='';
         } catch (e) { this.status=e.message || '拆解失败'; this.statusError=true; }
         finally { this.busy=false; }
       },
@@ -106,7 +167,8 @@
           try { this.output=await post('generate',payload); this.productionStatus='已生成，可逐段复制并进行人工审核'; }
           catch (apiError) {
             if ((apiError.message || '').indexOf('登录已过期') >= 0) throw apiError;
-            this.output=demoGeneration(payload); this.productionStatus='服务端 AI 暂不可用，已生成演示内容；配置 CONTENT_STUDIO_API_KEY 后可切换真实结果';
+            this.output=demoGeneration(payload); this.aiDegraded=true;
+            this.productionStatus='服务端 AI 暂不可用，已生成演示内容；配置 CONTENT_STUDIO_API_KEY 后可切换真实结果';
           }
           this.productionError=false;
         } catch (e) { this.productionStatus=e.message || '生成失败'; this.productionError=true; }
@@ -116,39 +178,347 @@
         var self=this; navigator.clipboard.writeText(textVal(value)).then(function () { self.productionStatus='已复制到剪贴板'; self.productionError=false; })
           .catch(function () { self.productionStatus='复制失败，请手动选择文本'; self.productionError=true; });
       },
+      copyBreakdown:function () {
+        var b=this.selectedCard && this.selectedCard.breakdown;
+        if (!b) { this.status='请先选择一张拆解卡片'; this.statusError=true; return; }
+        var out=BREAKDOWN_MAP.map(function (x) { return '【'+x[0]+'】\n'+textVal(b[x[1]] || '暂无内容'); }).join('\n\n');
+        this.copy(out);
+      },
+      copyMatrix:function () { return textVal((this.output && this.output.matrix || []).map(function (x) { return x.angle+'：'+x.format+' / '+x.hook; })); },
       asText:textVal,
       display:function (value) { return textVal(value) || '暂无内容'; }
     },
     template:`<div class="cs-shell">
-      <header class="cs-topbar">
-        <div class="cs-brand"><div class="cs-brand-mark"><i class="fa-solid fa-water"></i></div><div><div class="cs-brand-name">聚浪内容工坊</div><span class="cs-brand-sub">JULANG CONTENT STUDIO</span></div></div>
-        <div class="cs-search"><i class="fa-solid fa-magnifying-glass"></i><input aria-label="搜索素材或功能" placeholder="搜索功能、素材或内容…"></div><nav class="cs-nav" aria-label="后台导航">
-          <button type="button" class="cs-nav-btn" @click="navigate('marketing-overview')">数据概览</button>
-          <button type="button" class="cs-nav-btn" @click="navigate('operation-performance')">运营管理</button>
-          <button type="button" class="cs-nav-btn active">内容创作中心</button>
-          <button type="button" class="cs-nav-btn" @click="navigate('finance')">财务中心</button>
-          <button type="button" class="cs-nav-btn" @click="navigate('profile')">个人中心</button>
-        </nav>
-        <div class="cs-user" :title="userName+' · '+userRole"><img v-if="avatar" :src="avatar" alt="当前用户头像" class="cs-user-avatar" style="object-fit:cover"><div v-else class="cs-user-avatar">{{ userName.charAt(0) }}</div><div class="cs-user-copy"><div class="cs-user-name">{{ userName }}</div><div class="cs-user-role">{{ userRole }}</div></div></div>
-      </header>
       <div class="cs-page">
-        <div class="cs-hero"><div class="cs-hero-copy"><div class="cs-kicker">CONTENT WORKSPACE</div><h1 class="cs-title">聚浪内容工坊</h1><p class="cs-desc">从爆文洞察，到原创内容。投喂抖音素材提炼方法，再结合真实产品信息，生成可审核、可拍摄的内容方案。</p><div class="cs-hero-stats"><div class="cs-stat"><b>{{ cards.length }}</b><span>爆文卡片</span></div><div class="cs-stat"><b>6</b><span>笔记类型</span></div><div class="cs-stat"><b>3</b><span>内容产出</span></div><div class="cs-stat"><b>24h</b><span>随时可用</span></div></div></div><div class="cs-hero-side"><div class="cs-hero-art"><i class="fa-solid fa-pen-nib"></i><span class="cs-art-dot dot-one"></span><span class="cs-art-dot dot-two"></span><span class="cs-art-dot dot-three"></span></div><div class="cs-hero-meta"><span class="cs-badge mint"><i class="fa-solid fa-circle-check"></i> 一站完成</span><span class="cs-badge"><i class="fa-solid fa-bolt"></i> AI 辅助</span></div></div></div>
-        <div class="cs-body-layout"><div class="cs-workspace">
-          <div class="cs-workspace-head"><div class="cs-tabs" role="tablist"><button type="button" role="tab" class="cs-tab" :class="{active:activeTab==='breakdown'}" :aria-selected="activeTab==='breakdown'" @click="activeTab='breakdown'"><i class="fa-solid fa-magnifying-glass-chart"></i> 爆文拆解</button><button type="button" role="tab" class="cs-tab" :class="{active:activeTab==='production'}" :aria-selected="activeTab==='production'" @click="activeTab='production'"><i class="fa-solid fa-wand-magic-sparkles"></i> 爆文生产</button></div><div class="cs-head-note"><i class="fa-solid fa-circle"></i> 基于提供的素材分析，发布前请人工核验</div></div>
-          <div class="cs-panel" v-show="activeTab==='breakdown'">
-            <div class="cs-grid"><div>
-              <div class="cs-card" style="margin-bottom:16px"><div class="cs-card-head"><div><div class="cs-card-title">投喂爆文素材</div><div class="cs-card-sub">支持抖音视频链接、分享文案，也可补充口播文本或镜头摘要</div></div><span class="cs-badge">01 / INPUT</span></div><div class="cs-card-body"><label class="cs-label" for="csInput">素材内容 <span>公开链接可能无法提取视频正文</span></label><textarea id="csInput" v-model="input" class="cs-textarea" maxlength="20000" placeholder="粘贴抖音视频链接；若希望分析结构和镜头，请一并粘贴口播文案、字幕或镜头摘要。"></textarea><div class="cs-row-actions"><span class="cs-hint">建议包含标题、开头钩子、主要画面和评论信息</span><button type="button" class="cs-btn primary" :disabled="busy" @click="analyze"><i class="fa-solid fa-sparkles"></i> {{ busy ? '正在拆解' : '生成拆解卡' }}</button></div><div class="cs-status" :class="{show:!!status,error:statusError}">{{ status }}</div></div></div>
-              <div class="cs-card soft"><div class="cs-card-head"><div><div class="cs-card-title">已拆解的爆文卡片</div><div class="cs-card-sub">点击卡片查看完整分析；本机当前账号保留最近 50 张</div></div><span class="cs-badge mint">{{ cards.length }} 张</span></div><div v-if="cards.length" class="cs-list"><button v-for="card in cards" :key="card.id" type="button" class="cs-source" :class="{selected:selectedId===card.id}" @click="selectCard(card.id)"><span class="cs-source-icon"><i class="fa-brands fa-tiktok"></i></span><span class="cs-source-copy"><span class="cs-source-title">{{ card.title }}</span><span class="cs-source-meta">{{ card.createdAt }} · {{ card.evidence || '用户提供素材' }}</span></span><i class="fa-solid fa-chevron-right" style="font-size:10px;color:#b9b3cb"></i></button></div><div v-else class="cs-result-empty" style="min-height:120px;margin:0 18px 18px">还没有拆解卡。先投喂一条素材开始。</div></div>
-            </div><div class="cs-card"><div class="cs-card-head"><div><div class="cs-card-title">拆解成果 <span v-if="selectedCard">· {{ selectedCard.title }}</span></div><div class="cs-card-sub">将选题、结构、标题、镜头和评论话术转成可复用的方法</div></div><button v-if="selectedCard" type="button" class="cs-btn ghost" @click="removeCard">删除卡片</button></div><div class="cs-card-body"><template v-if="selectedCard"><div class="cs-result-grid"><div style="display:flex;flex-direction:column;gap:9px"><div class="cs-result-block"><h4><i class="fa-solid fa-bullseye"></i> 选题与受众</h4><p>{{ display(selectedCard.breakdown.topic) }}</p></div><div class="cs-result-block"><h4><i class="fa-solid fa-list-ol"></i> 内容结构</h4><p>{{ display(selectedCard.breakdown.structure) }}</p></div><div class="cs-result-block"><h4><i class="fa-solid fa-heading"></i> 标题策略</h4><p>{{ display(selectedCard.breakdown.title) }}</p></div><div class="cs-result-block"><h4><i class="fa-solid fa-video"></i> 镜头与节奏</h4><p>{{ display(selectedCard.breakdown.shots) }}</p></div><div class="cs-result-block"><h4><i class="fa-solid fa-comments"></i> 评论区互动模板</h4><p>{{ display(selectedCard.breakdown.comments) }}</p></div></div><div style="display:flex;flex-direction:column;gap:9px"><div class="cs-result-block good"><h4><i class="fa-solid fa-lightbulb"></i> 可借鉴点</h4><p>{{ display(selectedCard.breakdown.learn) }}</p></div><div class="cs-result-block risk"><h4><i class="fa-solid fa-triangle-exclamation"></i> 风险与验证</h4><p>{{ display(selectedCard.breakdown.risks) }}</p></div><div class="cs-result-block"><h4><i class="fa-solid fa-circle-info"></i> 分析依据</h4><p>{{ selectedCard.evidence || '用户提供素材' }}</p></div><button type="button" class="cs-btn mint" style="width:100%" @click="referenceId=selectedCard.id;imitate=true;activeTab='production'"><i class="fa-solid fa-arrow-right"></i> 参考这张卡片去生产</button></div></div></template><div v-else class="cs-result-empty"><div><i class="fa-solid fa-layer-group"></i>拆解完成后，这里会展示每条爆文的分析结果。</div></div></div></div></div>
-          </div>
-          <div class="cs-panel" v-show="activeTab==='production'"><div class="cs-production-grid"><div class="cs-card"><div class="cs-card-head"><div><div class="cs-card-title">生成配置</div><div class="cs-card-sub">真实产品信息越完整，内容越可用</div></div></div><div class="cs-card-body cs-config">
-            <div class="cs-config-section"><div class="cs-label">01 · 选择品类</div><div class="cs-option-grid"><button v-for="item in categories" :key="item.name" type="button" class="cs-option" :class="{selected:category===item.name}" @click="category=item.name"><span class="cs-option-icon"><i class="fa-solid" :class="item.icon"></i></span><span><b>{{ item.name }}</b><small>{{ item.sub }}</small></span></button></div></div>
-            <div class="cs-config-section"><div class="cs-label">02 · 笔记类型</div><div class="cs-chips"><button v-for="type in noteTypes" :key="type" type="button" class="cs-chip" :class="{active:noteType===type}" @click="noteType=type">{{ type }}</button></div><div class="cs-hint" style="margin-top:8px">“扣测”按对比测试处理，仍需提供真实测试依据。</div></div>
-            <div class="cs-config-section"><div class="cs-label">03 · 产品信息 <span>必填项用 * 标记</span></div><input v-model="productName" class="cs-textarea" style="min-height:36px;height:36px;padding:8px 10px;margin-bottom:7px" placeholder="产品名称 *"><textarea v-model="sellingPoints" class="cs-textarea" style="min-height:69px;margin-bottom:7px" placeholder="真实卖点 / 参数 / 测试结论 *"></textarea><input v-model="audience" class="cs-textarea" style="min-height:36px;height:36px;padding:8px 10px;margin-bottom:7px" placeholder="目标人群（可选）"><input v-model="scene" class="cs-textarea" style="min-height:36px;height:36px;padding:8px 10px" placeholder="使用场景（可选）"></div>
-            <div class="cs-config-section"><div class="cs-switch-row"><div class="cs-switch-label">参考爆文结构<small>只借鉴方法，不照抄原句</small></div><button type="button" class="cs-switch" :class="{on:imitate}" :aria-pressed="imitate" @click="imitate=!imitate"><span></span></button></div><div v-if="imitate" class="cs-reference" style="margin-top:11px"><label v-for="card in cards" :key="card.id" class="cs-ref"><input type="radio" :value="card.id" v-model="referenceId"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ card.title }}</span></label><div v-if="!cards.length" class="cs-hint">暂无可选卡片，请先完成爆文拆解。</div></div></div>
-            <button type="button" class="cs-btn primary cs-generate" :disabled="productionBusy" @click="generate"><i class="fa-solid fa-wand-magic-sparkles"></i> {{ productionBusy ? '正在生成内容' : 'AI 生成内容' }}</button><div class="cs-status" :class="{show:!!productionStatus,error:productionError}">{{ productionStatus }}</div>
-          </div></div><div class="cs-card cs-output"><div class="cs-output-head"><div><div class="cs-card-title">AI 生成结果</div><div class="cs-card-sub">从选题到拍摄与评论区，一套内容完整交付</div></div><div class="cs-output-state"><strong>●</strong> {{ output ? '可编辑参考稿' : '等待生成' }}</div></div><div class="cs-output-card"><template v-if="output"><div class="cs-output-section"><div class="cs-output-title">选题池 <button @click="copy(output.topics)">复制</button></div><div class="cs-pill-list"><span class="cs-pill" v-for="(x,i) in output.topics || []" :key="i">{{ x }}</span></div></div><div class="cs-output-section"><div class="cs-output-title">内容矩阵 <button @click="copy((output.matrix || []).map(x=>x.angle+'：'+x.format+' / '+x.hook).join('；'))">复制</button></div><div class="cs-matrix"><div v-for="(x,i) in output.matrix || []" :key="i" class="cs-matrix-item"><b>{{ x.angle }}</b><span>{{ x.format }} · {{ x.hook }}</span></div></div></div><div class="cs-output-section"><div class="cs-output-title">拍摄建议 <button @click="copy(output.shooting)">复制</button></div><div class="cs-output-copy">{{ display(output.shooting) }}</div></div><div class="cs-output-section"><div class="cs-output-title">多版本标题 <button @click="copy(output.titles)">复制</button></div><div class="cs-output-copy">{{ display(output.titles) }}</div></div><div class="cs-output-section"><div class="cs-output-title">正文 <button @click="copy(output.body)">复制</button></div><div class="cs-output-copy">{{ display(output.body) }}</div></div><div class="cs-output-section"><div class="cs-output-title">评论区话术 <button @click="copy(output.comments)">复制</button></div><div class="cs-output-copy">{{ display(output.comments) }}</div></div><div class="cs-output-section"><div class="cs-output-title">短视频脚本 <button @click="copy(output.script)">复制</button></div><div class="cs-output-copy">{{ display(output.script) }}</div></div><div class="cs-output-section"><div class="cs-output-title">发布前核验</div><div class="cs-output-copy">{{ display(output.checks) }}</div></div></template><div v-else class="cs-result-empty"><div><i class="fa-solid fa-pen-nib"></i>选择品类、填写真实卖点，点击「AI 生成内容」开始。</div></div></div></div></div></div>
-        </div><aside class="cs-inspector"><div class="cs-inspector-card"><div class="cs-inspector-head"><div><i class="fa-solid fa-gear"></i><b>生成内容设置</b></div><button type="button" @click="productName='';sellingPoints='';audience='';scene='';output=null">重置</button></div><label class="cs-inspector-row"><span>创作目标</span><select v-model="noteType"><option v-for="type in noteTypes" :key="type" :value="type">{{ type }}内容</option></select></label><label class="cs-inspector-row"><span>内容形式</span><select><option>短视频脚本</option><option>图文笔记</option><option>直播话术</option></select></label><label class="cs-inspector-row"><span>生成数量</span><select><option>3 条</option><option>5 条</option><option>10 条</option></select></label><label class="cs-inspector-row"><span>语言风格</span><select><option>真实自然</option><option>专业清晰</option><option>轻松口语</option></select></label><label class="cs-inspector-field"><span>目标受众</span><input v-model="audience" placeholder="例如：18-30岁，喜欢旅行的年轻人"></label><label class="cs-inspector-field"><span>补充要求（选填）</span><textarea v-model="scene" maxlength="200" placeholder="例如：突出情感共鸣，口语化表达…"></textarea><em>{{ scene.length }}/200</em></label><button type="button" class="cs-inspector-generate" @click="activeTab='production';generate"><i class="fa-solid fa-wand-magic-sparkles"></i> 生成内容</button></div><div class="cs-inspector-card cs-preview-card"><div class="cs-inspector-head"><div><i class="fa-solid fa-eye"></i><b>生成内容预览</b></div><button type="button" @click="copy(output ? output.body : '')">复制</button></div><div class="cs-preview-copy"><template v-if="output"><b>标题</b><p>{{ (output.titles || [])[0] || '待生成标题' }}</p><b>开头（0-5秒）</b><p>{{ (output.script || '').split('\\n')[0] || '输入真实卖点后生成内容预览。' }}</p></template><template v-else><b>标题</b><p>输入素材或产品信息后，这里会出现生成预览。</p><b>开头（0-5秒）</b><p>选择“爆文拆解”或“爆文生产”，开始创建内容。</p></template></div></div></aside></div>
+        <div class="cs-layout">
+
+          <!-- ==================== 左栏：流程 + 草稿 ==================== -->
+          <aside class="cs-rail cs-rail-left">
+            <div class="cs-card tint-mint">
+              <div class="cs-brand">
+                <div class="cs-brand-mark"><i class="fa-solid fa-water"></i></div>
+                <div>
+                  <div class="cs-brand-name">聚浪内容工坊</div>
+                  <div class="cs-brand-sub">JULANG CONTENT STUDIO</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="cs-card tint-pink">
+              <div class="cs-user" :title="userName + ' · ' + userRole">
+                <img v-if="avatar" :src="avatar" alt="当前用户头像" class="cs-user-avatar" style="object-fit:cover">
+                <div v-else class="cs-user-avatar">{{ userName.charAt(0) }}</div>
+                <div class="cs-user-copy">
+                  <div class="cs-user-name">{{ userName }}</div>
+                  <div class="cs-user-role">{{ userRole }}</div>
+                  <div class="cs-user-tag"><span class="cs-badge mint"><i class="fa-solid fa-floppy-disk"></i> 草稿本机同步</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="cs-card">
+              <div class="cs-flow-head"><span class="t">创作流程</span><span class="p">{{ flowProgress }}%</span></div>
+              <div class="cs-bar"><i :style="{width: flowProgress + '%'}"></i></div>
+              <ul class="cs-steps">
+                <li v-for="s in flowSteps" :key="s.n" class="cs-step" :class="s.state">
+                  <span class="n">{{ s.n }}</span>
+                  <span class="txt"><b>{{ s.title }}</b><small>{{ s.sub }}</small></span>
+                </li>
+              </ul>
+            </div>
+
+            <div class="cs-card">
+              <div class="cs-head">
+                <div class="grow"><div class="cs-title">拆解卡片</div><div class="cs-sub">本机当前账号保留最近 50 张</div></div>
+                <span class="cs-badge">{{ cards.length }}</span>
+              </div>
+              <div v-if="cards.length" class="cs-list scroll">
+                <button v-for="card in cards" :key="card.id" type="button" class="cs-draft" :class="{on:selectedId===card.id}" @click="selectCard(card.id)">
+                  <span class="copy"><span class="nm">{{ card.title }}</span><span class="mt">{{ card.createdAt }}</span></span>
+                  <span class="cs-badge" :class="draftBadge(card).cls" style="flex:none">{{ draftBadge(card).text }}</span>
+                </button>
+              </div>
+              <div v-else class="cs-empty"><i class="fa-solid fa-layer-group"></i>还没有拆解卡，先投喂一条素材。</div>
+            </div>
+          </aside>
+
+          <!-- ==================== 中栏：主流程 ==================== -->
+          <main class="cs-main">
+            <div class="cs-toolbar">
+              <div class="cs-tabs" role="tablist">
+                <button type="button" role="tab" class="cs-tab" :class="{on:activeTab==='breakdown'}" :aria-selected="activeTab==='breakdown'" @click="activeTab='breakdown'"><i class="fa-solid fa-magnifying-glass-chart"></i> 爆文拆解</button>
+                <button type="button" role="tab" class="cs-tab" :class="{on:activeTab==='production'}" :aria-selected="activeTab==='production'" @click="activeTab='production'"><i class="fa-solid fa-wand-magic-sparkles"></i> 爆文生产</button>
+              </div>
+              <span class="cs-badge gray"><i class="fa-solid fa-circle-info"></i> 基于所提供素材分析，发布前请人工核验</span>
+              <div class="right"><span class="cs-badge mint"><i class="fa-solid fa-check"></i> 自动缓存</span></div>
+            </div>
+
+            <!-- ---------- 视图 A：爆文拆解 ---------- -->
+            <template v-if="activeTab==='breakdown'">
+              <div class="cs-card cs-hero">
+                <div class="cs-hero-top">
+                  <div class="col">
+                    <div class="cs-kicker">CONTENT WORKFLOW</div>
+                    <h1>从爆文素材到可发布草稿</h1>
+                    <p>投喂抖音链接或文案 → 自动拆解选题与结构 → 挑一张卡片做母本 → 结合真实产品信息生成可审核、可拍摄的完整内容方案。</p>
+                  </div>
+                  <div class="cs-hero-art"><i class="fa-solid fa-pen-nib"></i></div>
+                </div>
+                <div class="cs-stats">
+                  <div class="cs-stat"><b>{{ cards.length }}</b><span>爆文卡片</span></div>
+                  <div class="cs-stat"><b>7</b><span>拆解维度</span></div>
+                  <div class="cs-stat"><b>6</b><span>笔记类型</span></div>
+                  <div class="cs-stat"><b>8</b><span>内容产出段</span></div>
+                </div>
+              </div>
+
+              <div class="cs-card">
+                <div class="cs-head">
+                  <div class="cs-chip"><i class="fa-solid fa-note-sticky"></i></div>
+                  <div class="grow"><div class="cs-title">投喂爆文素材</div><div class="cs-sub">支持抖音视频链接、分享文案，也可补充口播文本或镜头摘要</div></div>
+                  <span class="cs-badge mint"><i class="fa-solid fa-floppy-disk"></i> 自动缓存</span>
+                  <button type="button" class="cs-btn primary" :disabled="busy" @click="analyze"><i class="fa-solid" :class="busy?'fa-spinner':'fa-wand-magic-sparkles'"></i> {{ busy ? '正在拆解' : '生成拆解卡' }}</button>
+                </div>
+                <div class="cs-pad">
+                  <div class="cs-grid2">
+                    <div class="cs-field">
+                      <label class="cs-label" for="csInput">素材内容 <em>公开链接可能无法提取视频正文</em></label>
+                      <textarea id="csInput" v-model="input" class="cs-ta" maxlength="20000" placeholder="粘贴抖音视频链接；若希望分析结构和镜头，请一并粘贴口播文案、字幕或镜头摘要。"></textarea>
+                      <div class="cs-count"><span class="cache"><i class="fa-solid fa-check"></i> 本机自动保存</span><span>{{ input.length }} / 20000</span></div>
+                    </div>
+                    <div class="cs-field">
+                      <label class="cs-label" for="csFocus">分析重点 <em>可选，留空则全维度拆解</em></label>
+                      <textarea id="csFocus" v-model="analysisFocus" class="cs-ta" maxlength="1000" placeholder="例如：重点分析标题钩子、内容结构与镜头节奏；忽略价格与无法验证的效果承诺。"></textarea>
+                      <div class="cs-count"><span>建议只写真正关心的维度，避免拆解跑偏</span><span>{{ analysisFocus.length }} / 1000</span></div>
+                    </div>
+                  </div>
+                  <div class="cs-row-actions">
+                    <span class="cs-hint">建议包含标题、开头钩子、主要画面和评论信息</span>
+                    <button type="button" class="cs-btn ghost" @click="clearInput"><i class="fa-solid fa-eraser"></i> 清空</button>
+                  </div>
+                  <div class="cs-status" :class="{show:!!status, error:statusError}">{{ status }}</div>
+                </div>
+              </div>
+
+              <div class="cs-grid2">
+                <div class="cs-card">
+                  <div class="cs-head">
+                    <div class="cs-chip pink"><i class="fa-solid fa-layer-group"></i></div>
+                    <div class="grow"><div class="cs-title">已拆解的爆文卡片</div><div class="cs-sub">点击卡片查看完整分析</div></div>
+                    <span class="cs-badge mint">{{ cards.length }} 张</span>
+                  </div>
+                  <div v-if="cards.length" class="cs-list">
+                    <button v-for="card in cards" :key="card.id" type="button" class="cs-item" :class="{on:selectedId===card.id}" @click="selectCard(card.id)">
+                      <span class="tile"><i class="fa-brands fa-tiktok"></i></span>
+                      <span class="body">
+                        <span class="h">{{ card.title }}</span>
+                        <span class="m"><span><b>{{ card.createdAt }}</b></span><span>{{ card.evidence || '用户提供素材' }}</span><span class="cs-badge" :class="draftBadge(card).cls" style="padding:2px 7px">{{ draftBadge(card).text }}</span></span>
+                      </span>
+                    </button>
+                  </div>
+                  <div v-else class="cs-empty"><i class="fa-solid fa-inbox"></i>还没有拆解卡。先在上方投喂一条素材开始。</div>
+                </div>
+
+                <div class="cs-card">
+                  <div class="cs-head">
+                    <div class="cs-chip mint"><i class="fa-solid fa-bullseye"></i></div>
+                    <div class="grow"><div class="cs-title">拆解成果 · 7 维<span v-if="selectedCard"> · {{ selectedCard.title }}</span></div><div class="cs-sub">把选题、结构、标题、镜头和评论话术转成可复用的方法</div></div>
+                    <button v-if="selectedCard" type="button" class="cs-btn" @click="copyBreakdown"><i class="fa-solid fa-copy"></i> 复制全部</button>
+                  </div>
+                  <template v-if="selectedCard">
+                    <div class="cs-res">
+                      <div class="cs-blk"><h4><i class="fa-solid fa-bullseye"></i> 选题与受众</h4><p>{{ display(selectedCard.breakdown.topic) }}</p></div>
+                      <div class="cs-blk"><h4><i class="fa-solid fa-list-ol"></i> 内容结构</h4><p>{{ display(selectedCard.breakdown.structure) }}</p></div>
+                      <div class="cs-grid2">
+                        <div class="cs-blk"><h4><i class="fa-solid fa-heading"></i> 标题策略</h4><p>{{ display(selectedCard.breakdown.title) }}</p></div>
+                        <div class="cs-blk"><h4><i class="fa-solid fa-video"></i> 镜头与节奏</h4><p>{{ display(selectedCard.breakdown.shots) }}</p></div>
+                      </div>
+                      <div class="cs-blk"><h4><i class="fa-solid fa-comments"></i> 评论区互动模板</h4><p>{{ display(selectedCard.breakdown.comments) }}</p></div>
+                      <div class="cs-grid2">
+                        <div class="cs-blk mint"><h4><i class="fa-solid fa-lightbulb"></i> 可借鉴点</h4><p>{{ display(selectedCard.breakdown.learn) }}</p></div>
+                        <div class="cs-blk pink"><h4><i class="fa-solid fa-triangle-exclamation"></i> 风险与验证</h4><p>{{ display(selectedCard.breakdown.risks) }}</p></div>
+                      </div>
+                      <div class="cs-blk"><h4><i class="fa-solid fa-circle-info"></i> 分析依据</h4><p>{{ selectedCard.evidence || '用户提供素材' }}</p></div>
+                    </div>
+                    <div class="cs-pad">
+                      <button type="button" class="cs-btn mint wide" @click="goProduction(selectedCard)"><i class="fa-solid fa-arrow-right"></i> 参考这张卡片去生产</button>
+                      <div class="cs-row-actions" style="margin-top:9px">
+                        <span class="cs-hint">只借鉴方法，不照抄原句与画面编排</span>
+                        <button type="button" class="cs-btn ghost" @click="removeCard"><i class="fa-solid fa-trash-can"></i> 删除卡片</button>
+                      </div>
+                    </div>
+                  </template>
+                  <div v-else class="cs-empty"><i class="fa-solid fa-layer-group"></i>拆解完成后，这里会展示每条爆文的 7 维分析结果。</div>
+                </div>
+              </div>
+            </template>
+
+            <!-- ---------- 视图 B：爆文生产 ---------- -->
+            <template v-else>
+              <div class="cs-card cs-hero">
+                <div class="cs-hero-top">
+                  <div class="col">
+                    <div class="cs-kicker">GENERATION WORKFLOW</div>
+                    <h1>从真实卖点到可拍摄脚本</h1>
+                    <p>配置品类、笔记类型与产品信息，需要时挂上一张拆解卡片做结构参考，一次生成 8 段可直接使用的产出。</p>
+                  </div>
+                  <div class="cs-hero-art"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
+                </div>
+                <div class="cs-stats">
+                  <div class="cs-stat"><b>{{ output ? (output.topics || []).length : 0 }}</b><span>选题候选</span></div>
+                  <div class="cs-stat"><b>{{ output ? (output.matrix || []).length : 0 }}</b><span>内容矩阵</span></div>
+                  <div class="cs-stat"><b>8</b><span>输出段落</span></div>
+                  <div class="cs-stat"><b>{{ referenceCard ? 1 : 0 }}</b><span>参考母本</span></div>
+                </div>
+              </div>
+
+              <div class="cs-card">
+                <div class="cs-head">
+                  <div class="cs-chip"><i class="fa-solid fa-sliders"></i></div>
+                  <div class="grow"><div class="cs-title">生成配置</div><div class="cs-sub">真实产品信息越完整，内容越可用</div></div>
+                  <span class="cs-badge mint"><i class="fa-solid fa-floppy-disk"></i> 自动缓存</span>
+                  <button type="button" class="cs-btn primary" :disabled="productionBusy" @click="generate"><i class="fa-solid" :class="productionBusy?'fa-spinner':'fa-wand-magic-sparkles'"></i> {{ productionBusy ? '正在生成' : 'AI 生成内容' }}</button>
+                </div>
+                <div class="cs-pad">
+                  <div class="cs-divider">
+                    <div class="cs-block-label">01 · 选择品类</div>
+                    <div class="cs-opts">
+                      <button v-for="item in categories" :key="item.name" type="button" class="cs-opt" :class="{on:category===item.name}" @click="category=item.name">
+                        <span class="tile"><i class="fa-solid" :class="item.icon"></i></span>
+                        <span><b>{{ item.name }}</b><small>{{ item.sub }}</small></span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="cs-divider">
+                    <div class="cs-block-label">02 · 笔记类型</div>
+                    <div class="cs-chips">
+                      <button v-for="type in noteTypes" :key="type" type="button" class="cs-ch" :class="{on:noteType===type}" @click="noteType=type">{{ type }}</button>
+                    </div>
+                    <div class="cs-hint" style="margin-top:9px">「扣测」按对比测试处理，仍需提供真实测试依据。</div>
+                  </div>
+                  <div class="cs-divider">
+                    <div class="cs-block-label">03 · 产品信息 <em>必填项用 * 标记</em></div>
+                    <div class="cs-grid2">
+                      <div class="cs-field">
+                        <input v-model="productName" class="cs-ta line" maxlength="120" placeholder="产品名称 *">
+                        <textarea v-model="sellingPoints" class="cs-ta" style="min-height:122px;margin-top:8px" maxlength="3000" placeholder="真实卖点 / 参数 / 测试结论 *"></textarea>
+                      </div>
+                      <div class="cs-field">
+                        <input v-model="audience" class="cs-ta line" maxlength="300" placeholder="目标人群（可选）">
+                        <input v-model="scene" class="cs-ta line" style="margin-top:8px" maxlength="300" placeholder="使用场景（可选）">
+                        <div class="cs-switch-row" style="margin-top:12px">
+                          <div class="cs-switch-label">参考爆文结构<small>只借鉴方法，不照抄原句</small></div>
+                          <button type="button" class="cs-switch" :class="{on:imitate}" :aria-pressed="imitate" @click="imitate=!imitate"><span></span></button>
+                        </div>
+                      </div>
+                    </div>
+                    <div v-if="imitate" class="cs-refs">
+                      <label v-for="card in cards" :key="card.id" class="cs-ref"><input type="radio" :value="card.id" v-model="referenceId"><span>{{ card.title }}</span></label>
+                      <div v-if="!cards.length" class="cs-hint">暂无可选卡片，请先完成爆文拆解。</div>
+                    </div>
+                  </div>
+                  <div class="cs-status" :class="{show:!!productionStatus, error:productionError}">{{ productionStatus }}</div>
+                </div>
+              </div>
+
+              <div class="cs-card">
+                <div class="cs-head">
+                  <div class="cs-chip mint"><i class="fa-solid fa-sparkles"></i></div>
+                  <div class="grow"><div class="cs-title">AI 生成结果</div><div class="cs-sub">从选题到拍摄与评论区，一套内容完整交付</div></div>
+                  <span class="cs-badge" :class="output?'mint':'gray'">{{ output ? '可编辑参考稿' : '等待生成' }}</span>
+                </div>
+                <div v-if="output" class="cs-pad">
+                  <div class="cs-out-sec">
+                    <div class="cs-out-head"><span class="n"><i class="fa-solid fa-layer-group"></i> 选题池</span><button type="button" class="cs-copy" @click="copy(output.topics)"><i class="fa-solid fa-copy"></i> 复制</button></div>
+                    <div class="cs-pills"><span class="cs-pl" v-for="(x,i) in output.topics || []" :key="i">{{ x }}</span></div>
+                  </div>
+                  <div class="cs-out-sec">
+                    <div class="cs-out-head"><span class="n"><i class="fa-solid fa-bullseye"></i> 内容矩阵</span><button type="button" class="cs-copy" @click="copyMatrix"><i class="fa-solid fa-copy"></i> 复制</button></div>
+                    <div class="cs-mx">
+                      <div v-for="(x,i) in output.matrix || []" :key="i" class="cs-mx-item"><b>{{ x.angle }}</b><span>{{ x.format }} · {{ x.hook }}</span></div>
+                    </div>
+                  </div>
+                  <div class="cs-out-sec">
+                    <div class="cs-out-head"><span class="n"><i class="fa-solid fa-video"></i> 拍摄建议</span><button type="button" class="cs-copy" @click="copy(output.shooting)"><i class="fa-solid fa-copy"></i> 复制</button></div>
+                    <div class="cs-out-body">{{ display(output.shooting) }}</div>
+                  </div>
+                  <div class="cs-out-sec">
+                    <div class="cs-out-head"><span class="n"><i class="fa-solid fa-heading"></i> 多版本标题</span><button type="button" class="cs-copy" @click="copy(output.titles)"><i class="fa-solid fa-copy"></i> 复制</button></div>
+                    <div class="cs-out-body">{{ display(output.titles) }}</div>
+                  </div>
+                  <div class="cs-out-sec">
+                    <div class="cs-out-head"><span class="n"><i class="fa-solid fa-note-sticky"></i> 正文</span><button type="button" class="cs-copy" @click="copy(output.body)"><i class="fa-solid fa-copy"></i> 复制</button></div>
+                    <div class="cs-out-body">{{ display(output.body) }}</div>
+                  </div>
+                  <div class="cs-out-sec">
+                    <div class="cs-out-head"><span class="n"><i class="fa-solid fa-comments"></i> 评论区话术</span><button type="button" class="cs-copy" @click="copy(output.comments)"><i class="fa-solid fa-copy"></i> 复制</button></div>
+                    <div class="cs-out-body">{{ display(output.comments) }}</div>
+                  </div>
+                  <div class="cs-out-sec">
+                    <div class="cs-out-head"><span class="n"><i class="fa-solid fa-film"></i> 短视频脚本</span><button type="button" class="cs-copy" @click="copy(output.script)"><i class="fa-solid fa-copy"></i> 复制</button></div>
+                    <div class="cs-out-body">{{ display(output.script) }}</div>
+                  </div>
+                  <div class="cs-out-sec">
+                    <div class="cs-out-head"><span class="n"><i class="fa-solid fa-triangle-exclamation"></i> 发布前核验</span><button type="button" class="cs-copy" @click="copy(output.checks)"><i class="fa-solid fa-copy"></i> 复制</button></div>
+                    <div class="cs-out-body">{{ display(output.checks) }}</div>
+                  </div>
+                </div>
+                <div v-else class="cs-empty"><i class="fa-solid fa-wand-magic-sparkles"></i>填好配置后点击「AI 生成内容」，这里会依次展示 8 段产出。</div>
+              </div>
+            </template>
+          </main>
+
+          <!-- ==================== 右栏：AI 服务状态 ==================== -->
+          <aside class="cs-rail cs-rail-right">
+            <div class="cs-card">
+              <div class="cs-head">
+                <div class="cs-chip"><i class="fa-solid fa-align-left"></i></div>
+                <div class="grow"><div class="cs-title">文案生成</div><div class="cs-sub">模型由服务端统一调度</div></div>
+                <span class="cs-badge" :class="aiDegraded?'amber':'mint'">{{ aiDegraded ? '演示降级' : '服务端 AI' }}</span>
+              </div>
+              <div class="cs-pad">
+                <div class="cs-kv">
+                  <div><span class="k">调用方式</span><div class="v">服务端 AI（密钥仅存在服务器环境变量，前端不保存）</div></div>
+                  <div><span class="k">接口</span><div class="v mute">/api/content-studio/analyze<br>/api/content-studio/generate</div></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="cs-card">
+              <div class="cs-head">
+                <div class="cs-chip pink"><i class="fa-solid fa-image"></i></div>
+                <div class="grow"><div class="cs-title">图片生成</div><div class="cs-sub">封面与配图能力</div></div>
+                <span class="cs-badge gray">未接入</span>
+              </div>
+              <div class="cs-pad">
+                <div class="cs-kv">
+                  <div><span class="k">当前状态</span><div class="v mute">本页暂不生成图片；封面与配图请走本地流程</div></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="cs-card">
+              <div class="cs-head">
+                <div class="cs-chip mint"><i class="fa-solid fa-circle-info"></i></div>
+                <div class="grow"><div class="cs-title">状态与错误提示</div><div class="cs-sub">降级、限流与失败原因集中在此</div></div>
+                <span class="cs-badge" :class="statusClass">{{ statusText }}</span>
+              </div>
+              <div class="cs-state" :class="aiDegraded?'':'mint'">
+                <div class="cs-state-line"><i class="fa-solid fa-check"></i> {{ cards.length ? '已拆解 ' + cards.length + ' 张卡片，本机保留最近 50 张' : '还没有拆解卡片，先从左侧投喂素材' }}</div>
+                <div class="cs-state-line"><i class="fa-solid fa-check"></i> {{ output ? '已生成 8 段内容产出，可逐段复制并人工核验' : '生成结果会逐段展示，可单独复制' }}</div>
+              </div>
+              <div class="cs-state">
+                <div class="cs-state-line amber"><i class="fa-solid fa-triangle-exclamation"></i> 服务端未配置模型密钥时自动降级为演示结果，页面以黄色提示条标出。</div>
+                <div class="cs-state-line amber"><i class="fa-solid fa-triangle-exclamation"></i> 登录过期（401）时提示重新登录，不会静默失败。</div>
+              </div>
+              <ul class="cs-tips">
+                <li><i class="fa-solid fa-circle-check"></i> 只根据你提供的素材分析，不臆造视频画面与真实评论。</li>
+                <li><i class="fa-solid fa-circle-check"></i> 参考爆文只借鉴选题与结构，不复制原句。</li>
+              </ul>
+            </div>
+          </aside>
+
+        </div>
       </div>
     </div>`
   }).mount(mount);
