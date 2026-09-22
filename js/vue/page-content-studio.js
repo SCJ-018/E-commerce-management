@@ -64,6 +64,7 @@
       activeTab:'breakdown', input:'', analysisFocus:'', status:'', statusError:false, busy:false, cards:loadCards(), selectedId:null,
       category:'汽车脚垫', noteType:'测评', imitate:false, referenceId:null, productName:'', sellingPoints:'', audience:'', scene:'',
       output:null, productionBusy:false, productionStatus:'', productionError:false, aiDegraded:false,
+      profileDone:false,
       categories:categories, noteTypes:noteTypes,
       userName:sessionStorage.getItem('admin_current_user') || '当前用户', userRole:sessionStorage.getItem('admin_current_role') || '团队成员', avatar:''
     }; },
@@ -103,15 +104,30 @@
         return 'mint';
       }
     },
-    mounted:function () { this.loadProfile(); },
+    mounted:function () {
+      var self = this;
+      self.loadProfile();
+      // 本页在「登录之前」就已挂载（脚本首屏执行），那一刻 /api/profile/me 还是 401，
+      // 之后再不会自动补取 → 用户卡会一直停在兜底文案「当前用户 / 团队成员」。
+      // 所以每次页面被切到前台时补取一次（成功后不再重复请求）。
+      try {
+        var obs = new MutationObserver(function () {
+          if (!mount.classList.contains('hidden') && !self.profileDone) self.loadProfile();
+        });
+        obs.observe(mount, { attributes:true, attributeFilter:['class', 'style'] });
+      } catch (e) {}
+      window.addEventListener('hashchange', function () { if (!self.profileDone) self.loadProfile(); });
+    },
     methods: {
       loadProfile:function () {
         var self=this;
+        if (self.profileDone) return;
         fetch('/api/profile/me', {credentials:'same-origin'}).then(function (r) { return r.json(); }).then(function (r) {
           if (!r || r.code !== 0 || !r.data) return;
           self.userName=r.data.name || self.userName;
           self.userRole=r.data.role || self.userRole;
           self.avatar=r.data.avatar || '';
+          self.profileDone=true;
         }).catch(function () {});
       },
       navigate:function (page) { window.location.hash=page; if (window.App && App.navigateTo) App.navigateTo(page); },
