@@ -909,6 +909,8 @@ const App = (() => {
     document.querySelectorAll('.page-section').forEach(el => el.classList.add('hidden'));
     const target = document.getElementById('page-' + page);
     if (target) target.classList.remove('hidden');
+    const seedingVueMount = document.getElementById('page-seeding-monitor-vue');
+    if (seedingVueMount) seedingVueMount.classList.toggle('hidden', page !== 'seeding-monitor');
     // Update title
     const titles = {
       'marketing-overview': '整体营销数据总览',
@@ -947,6 +949,9 @@ const App = (() => {
       'order-details', 'category-marketing', 'seeding-monitor'];
     const _skipLegacyRender = _VUE_PAGES.indexOf(page) >= 0
       && !!document.getElementById('page-' + page + '-vue');
+    if (page === 'seeding-monitor' && typeof window.mountSeedingVue === 'function') {
+      window.mountSeedingVue();
+    }
     if (!_skipLegacyRender) {
       if (page === 'marketing-overview') renderMarketingOverview();
       if (page === 'platform-store') renderPlatformStore();
@@ -4813,11 +4818,11 @@ const App = (() => {
   var _sdAccountPlatformFilter = '';
 
   function renderSeedingMonitor() {
-    _sdLoadCookie();
-    _sdLoadAccounts();
-    _sdLoadWorks();
-    _sdLoadMeta();
-    sdSwitchTab(_sdTab);
+    var legacy = document.getElementById('page-seeding-monitor');
+    var vueMount = document.getElementById('page-seeding-monitor-vue');
+    if (legacy) legacy.classList.add('hidden');
+    if (vueMount) vueMount.classList.remove('hidden');
+    if (typeof window.mountSeedingVue === 'function') window.mountSeedingVue();
   }
 
   function _sdLoadCookie() {
