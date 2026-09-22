@@ -28,7 +28,10 @@ FILES = {
     'js/app.js': REMOTE_ROOT + '/js/app.js',
     'css/style.css': REMOTE_ROOT + '/css/style.css',
     'css/hr.css': REMOTE_ROOT + '/css/hr.css',
+    'css/content-studio.css': REMOTE_ROOT + '/css/content-studio.css',
+    'css/seeding-monitor.css': REMOTE_ROOT + '/css/seeding-monitor.css',
     'backend/app.py': REMOTE_ROOT + '/backend/app.py',
+    'backend/content_studio_api.py': REMOTE_ROOT + '/backend/content_studio_api.py',
     'backend/dingtalk.py': REMOTE_ROOT + '/backend/dingtalk.py',
     # 日报长图渲染（钉钉图片消息用）：模块缺失时日报推送会直接失败，必须随部署上线
     'backend/report_image.py': REMOTE_ROOT + '/backend/report_image.py',

@@ -42,6 +42,17 @@
     return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
   }
 
+  function monthRange() {
+    var now = new Date();
+    var year = now.getFullYear();
+    var month = now.getMonth();
+    var lastDay = new Date(year, month + 1, 0).getDate();
+    return {
+      start: year + '-' + String(month + 1).padStart(2, '0') + '-01',
+      end: year + '-' + String(month + 1).padStart(2, '0') + '-' + String(lastDay).padStart(2, '0')
+    };
+  }
+
   function safeLocal(key, fallback) {
     try {
       var parsed = JSON.parse(localStorage.getItem(key) || 'null');
@@ -91,7 +102,7 @@
         lastSync: new Date().toLocaleString('zh-CN', { hour12: false }),
         form: {
           product: '', platform: '抖音', source: '代发', type: '种草', title: '', link: '',
-          author: '', workId: '', likes: 0, collects: 0, comments: 0, views: 0, date: currentMonth() + '-22', trafficImage: ''
+          author: '', workId: '', likes: 0, collects: 0, comments: 0, shares: 0, views: 0, date: currentMonth() + '-22', trafficImage: ''
         }
       });
 
@@ -119,6 +130,7 @@
         var key = currentMonth();
         return filteredRows.value.filter(function (row) { return monthKey(row.date) === key; });
       });
+      var period = Vue.computed(monthRange);
       var stats = Vue.computed(function () {
         var rows = monthRows.value;
         var views = rows.reduce(function (sum, row) { return sum + Number(row.views || 0); }, 0);
@@ -129,11 +141,14 @@
         var dayViews = state.selectedDept === '全部'
           ? (state.dashboardViews.all || fallbackDayViews)
           : (state.dashboardViews.departments[state.selectedDept] || fallbackDayViews);
+        function previous(value, comp) {
+          return Math.max(0, Math.round(Number(value || 0) / (1 + (Number(comp || 0) / 100))));
+        }
         return [
-          { label: '本月笔记总量', value: rows.length, unit: '篇', comp: 12.8, icon: 'fa-note-sticky', tone: 'blue' },
-          { label: '本月浏览量', value: views, unit: '', comp: 8.6, icon: 'fa-chart-line', tone: 'violet' },
-          { label: '本月爆文量', value: hot, unit: '篇', comp: -3.2, icon: 'fa-fire', tone: 'orange' },
-          { label: '店铺日浏览量', value: dayViews, unit: '', comp: 5.4, icon: 'fa-store', tone: 'green' }
+          { label: '本月笔记总量', value: rows.length, previous: previous(rows.length, 12.8), unit: '篇', comp: 12.8, icon: 'fa-note-sticky', tone: 'blue' },
+          { label: '本月浏览量', value: views, previous: previous(views, 8.6), unit: '', comp: 8.6, icon: 'fa-chart-line', tone: 'violet' },
+          { label: '本月爆文量', value: hot, previous: previous(hot, -3.2), unit: '篇', comp: -3.2, icon: 'fa-fire', tone: 'orange' },
+          { label: '店铺日浏览量', value: dayViews, previous: previous(dayViews, 5.4), unit: '', comp: 5.4, icon: 'fa-store', tone: 'green' }
         ];
       });
 
@@ -145,6 +160,20 @@
         if (value >= 100000000) return (value / 100000000).toFixed(1).replace('.0', '') + '亿';
         if (value >= 10000) return (value / 10000).toFixed(1).replace('.0', '') + '万';
         return formatNumber(value);
+      }
+      function rowShares(row) {
+        return Number(row.shares || 0);
+      }
+      function rowExposure(row) {
+        return Math.round(Number(row.views || 0) * 1.6);
+      }
+      function rowEngagementRate(row) {
+        var views = Number(row.views || 0);
+        if (!views) return '0.0%';
+        return ((Number(row.likes || 0) + Number(row.collects || 0) + Number(row.comments || 0) + rowShares(row)) / views * 100).toFixed(1) + '%';
+      }
+      function isHot(row) {
+        return Number(row.views || 0) >= (hotThreshold[row.type] || 10000);
       }
       function selectDept(dept) {
         state.selectedDept = dept;
@@ -170,7 +199,7 @@
           product: state.selectedDept !== '全部' ? (state.categoryBindings[state.selectedDept] || [])[0] || '' : '',
           platform: '抖音', source: '代发', type: '种草', title: '', link: '',
           author: currentUser.value || (selectedDeptPeople.value[0] || ''), workId: '',
-          likes: 0, collects: 0, comments: 0, views: 0, date: currentMonth() + '-22', trafficImage: ''
+          likes: 0, collects: 0, comments: 0, shares: 0, views: 0, date: currentMonth() + '-22', trafficImage: ''
         };
       }
       function openCreate() {
@@ -259,9 +288,9 @@
         }
       }
       function exportRows() {
-        var headers = ['部门', '品类', '平台', '来源', '笔记类型', '标题', '作品链接', '人员', '作品ID', '点赞', '收藏', '评论', '阅读量'];
+        var headers = ['部门', '品类', '平台', '来源', '笔记类型', '标题', '作品链接', '人员', '作品ID', '点赞', '收藏', '评论', '分享', '阅读量'];
         var body = filteredRows.value.map(function (row) {
-          return [row.dept, row.product, row.platform, row.source, row.type, row.title, row.link, row.author, row.workId, row.likes, row.collects, row.comments, row.views];
+          return [row.dept, row.product, row.platform, row.source, row.type, row.title, row.link, row.author, row.workId, row.likes, row.collects, row.comments, rowShares(row), row.views];
         });
         var csv = [headers].concat(body).map(function (line) { return line.map(function (item) { return '"' + String(item == null ? '' : item).replace(/"/g, '""') + '"'; }).join(','); }).join('\n');
         var blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -288,13 +317,18 @@
         noteTypes: noteTypes,
         categoryOptions: categoryOptions,
         bonusRules: bonusRules,
-        selectedDeptPeople: selectedDeptPeople,
-        filteredRows: filteredRows,
+         selectedDeptPeople: selectedDeptPeople,
+        period: period,
+         filteredRows: filteredRows,
         stats: stats,
         isSupervisor: isSupervisor,
         currentUser: currentUser,
-        formatNumber: formatNumber,
-        formatCompact: formatCompact,
+         formatNumber: formatNumber,
+         formatCompact: formatCompact,
+        rowShares: rowShares,
+        rowExposure: rowExposure,
+        rowEngagementRate: rowEngagementRate,
+        isHot: isHot,
         selectDept: selectDept,
         choosePerson: choosePerson,
         toggleCategory: toggleCategory,
@@ -310,35 +344,18 @@
     },
     template: `
       <div class="srm-shell">
-        <style>
-          .srm-shell{--ink:#162033;--muted:#718096;--line:#e7ebf2;--blue:#3568e8;--green:#16a36a;--red:#e45656;min-height:calc(100vh - 100px);background:#f5f7fb;color:var(--ink);font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif;padding:22px 26px 48px}
-          .srm-top{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:20px}.srm-kicker{font-size:12px;color:#8090a5;letter-spacing:.12em}.srm-title{font-size:25px;font-weight:750;margin:5px 0}.srm-subtitle{font-size:13px;color:var(--muted)}.srm-sync{display:flex;align-items:center;gap:10px;font-size:12px;color:#8490a3}.srm-dot{width:7px;height:7px;border-radius:50%;background:#1fbd7a;box-shadow:0 0 0 4px #def7ea}
-          .srm-actions{display:flex;gap:8px;align-items:center}.srm-btn{height:34px;border:1px solid var(--line);background:white;color:#3f4b60;border-radius:7px;padding:0 12px;cursor:pointer;font-size:13px;display:inline-flex;align-items:center;gap:7px}.srm-btn:hover{border-color:#a8b9e8;color:var(--blue)}.srm-btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}.srm-btn.icon{width:34px;padding:0;justify-content:center}.srm-btn:disabled,.srm-icon-btn:disabled{opacity:.45;cursor:not-allowed}
-          .srm-tabs{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line);margin-bottom:18px}.srm-tab{border:0;background:transparent;color:#728097;font-size:14px;padding:10px 14px 12px;cursor:pointer;position:relative}.srm-tab.active{color:var(--blue);font-weight:700}.srm-tab.active:after{content:"";position:absolute;height:2px;left:12px;right:12px;bottom:-1px;background:var(--blue);border-radius:2px}
-          .srm-stat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:18px}.srm-stat{background:#fff;border:1px solid var(--line);border-radius:8px;padding:18px 18px 15px;min-width:0}.srm-stat-head{display:flex;justify-content:space-between;color:#78869b;font-size:13px}.srm-stat-icon{width:30px;height:30px;border-radius:7px;display:grid;place-items:center}.srm-tone-blue{color:#3568e8;background:#e9efff}.srm-tone-violet{color:#7d56d9;background:#f0eaff}.srm-tone-orange{color:#dd7a25;background:#fff2df}.srm-tone-green{color:#129c68;background:#e1f7ed}.srm-stat-value{font-size:28px;font-weight:760;margin:15px 0 8px}.srm-stat-value small{font-size:13px;font-weight:500;color:#8994a6;margin-left:4px}.srm-trend{font-size:12px}.srm-up{color:var(--green)}.srm-down{color:var(--red)}.srm-trend i{margin-right:4px}
-          .srm-toolbar{display:flex;justify-content:space-between;align-items:center;gap:14px;background:#fff;border:1px solid var(--line);border-bottom:0;border-radius:8px 8px 0 0;padding:14px 16px}.srm-toolbar-left{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.srm-filter-label{font-size:13px;color:#77849a}.srm-pop-wrap{position:relative}.srm-pop{position:absolute;z-index:20;top:42px;right:0;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 12px 32px rgba(30,48,80,.14);padding:12px;min-width:230px}.srm-pop-title{font-size:12px;color:#8591a4;margin-bottom:8px}.srm-check-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px 13px}.srm-check{display:flex;gap:7px;align-items:center;color:#435168;font-size:13px;white-space:nowrap}.srm-check input{accent-color:var(--blue)}
-          .srm-table-wrap{background:#fff;border:1px solid var(--line);border-radius:0 0 8px 8px;overflow:auto}.srm-table{width:100%;border-collapse:collapse;min-width:1370px;font-size:12px}.srm-table th{height:40px;background:#fafbfe;color:#8691a3;text-align:left;font-weight:600;white-space:nowrap;padding:0 12px;border-bottom:1px solid var(--line)}.srm-table td{padding:12px;border-bottom:1px solid #eef1f5;color:#425068;vertical-align:middle}.srm-table tr:hover td{background:#fcfdff}.srm-title-cell{max-width:230px;color:#1f2d43;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.srm-link{color:var(--blue);max-width:155px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.srm-type{display:inline-flex;padding:3px 8px;border-radius:4px;background:#eef3ff;color:#4666b3}.srm-metric{text-align:right;font-variant-numeric:tabular-nums}.srm-row-actions{display:flex;gap:4px}.srm-icon-btn{width:28px;height:28px;border:1px solid var(--line);background:#fff;border-radius:5px;color:#7c899c;cursor:pointer}.srm-icon-btn:hover{color:var(--blue);border-color:#a8b9e8}.srm-icon-btn.danger:hover{color:var(--red);border-color:#eeb2b2}.srm-empty{text-align:center!important;color:#98a3b3!important;padding:45px!important}
-          .srm-standard{position:relative}.srm-standard summary{cursor:pointer;color:#5e6d83;font-size:13px;list-style:none}.srm-standard summary::-webkit-details-marker{display:none}.srm-standard table{position:absolute;right:0;top:34px;width:560px;max-width:calc(100vw - 44px);z-index:18;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 12px 32px rgba(30,48,80,.14);border-collapse:collapse;font-size:12px;color:#66748a}.srm-standard td,.srm-standard th{padding:8px 10px;border-bottom:1px solid #eef1f5;text-align:left}
-          .srm-mask{position:fixed;inset:0;background:rgba(22,32,51,.42);z-index:100;display:grid;place-items:center;padding:20px}.srm-modal{width:min(720px,100%);max-height:90vh;overflow:auto;background:#fff;border-radius:10px;box-shadow:0 18px 60px rgba(20,30,50,.24)}.srm-modal-head{display:flex;justify-content:space-between;align-items:center;padding:17px 20px;border-bottom:1px solid var(--line)}.srm-modal-title{font-size:16px;font-weight:700}.srm-modal-body{padding:20px}.srm-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.srm-field{display:flex;flex-direction:column;gap:6px}.srm-field.full{grid-column:1/-1}.srm-field label{font-size:12px;color:#758298}.srm-field input,.srm-field select{height:36px;border:1px solid #dfe5ee;border-radius:6px;padding:0 10px;color:#35435a;outline:0}.srm-field input:focus,.srm-field select:focus{border-color:#91a9ee}.srm-upload{height:80px;border:1px dashed #c7d1e0;border-radius:7px;display:flex;align-items:center;justify-content:center;color:#8490a4;cursor:pointer;overflow:hidden}.srm-upload img{height:100%;max-width:100%;object-fit:contain}.srm-modal-foot{display:flex;justify-content:flex-end;gap:8px;padding:13px 20px;border-top:1px solid var(--line)}
-          .srm-traffic-preview{max-width:100%;max-height:70vh;display:block;margin:auto}.srm-note{font-size:12px;color:#8a95a7;margin-top:8px}
-          @media(max-width:1000px){.srm-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.srm-top{flex-direction:column}.srm-toolbar{align-items:flex-start;flex-direction:column}.srm-actions{width:100%;flex-wrap:wrap}}
-          @media(max-width:560px){.srm-shell{padding:16px 12px 32px}.srm-stat-grid{grid-template-columns:1fr}.srm-form-grid{grid-template-columns:1fr}.srm-field.full{grid-column:auto}}
-        </style>
-
         <header class="srm-top">
           <div>
-            <div class="srm-kicker">CONTENT INTELLIGENCE / 2026</div>
             <div class="srm-title">种草监测中台</div>
             <div class="srm-subtitle">按部门、人员和品类查看内容产出与店铺流量</div>
           </div>
-          <div class="srm-actions">
-            <div class="srm-sync"><span class="srm-dot"></span>{{ state.syncState }} · {{ state.lastSync }}</div>
-            <button class="srm-btn" @click="exportRows"><i class="fa-solid fa-download"></i>导出</button>
-            <button class="srm-btn primary" @click="openCreate"><i class="fa-solid fa-plus"></i>新增记录</button>
+          <div class="srm-top-meta">
+            <span class="srm-period-label"><i class="fa-regular fa-calendar"></i>{{ period.start }} 至 {{ period.end }}</span>
+            <span class="srm-sync"><span class="srm-dot"></span>{{ state.syncState }}</span>
           </div>
         </header>
 
-        <nav class="srm-tabs">
+        <nav class="srm-tabs" aria-label="部门范围">
           <button class="srm-tab" :class="{active: state.selectedDept === '全部'}" @click="selectDept('全部')">全部部门</button>
           <button v-for="dept in departments" :key="dept" class="srm-tab" :class="{active: state.selectedDept === dept}" @click="selectDept(dept)">{{ dept }}</button>
         </nav>
@@ -347,43 +364,65 @@
           <article v-for="card in stats" :key="card.label" class="srm-stat">
             <div class="srm-stat-head"><span>{{ card.label }}</span><span class="srm-stat-icon" :class="'srm-tone-' + card.tone"><i class="fa-solid" :class="card.icon"></i></span></div>
             <div class="srm-stat-value">{{ formatCompact(card.value) }}<small>{{ card.unit }}</small></div>
-            <div class="srm-trend" :class="card.comp >= 0 ? 'srm-up' : 'srm-down'"><i class="fa-solid" :class="card.comp >= 0 ? 'fa-arrow-trend-up' : 'fa-arrow-trend-down'"></i>环比 {{ Math.abs(card.comp).toFixed(1) }}%</div>
+            <div class="srm-stat-foot"><span class="srm-previous">上周期 {{ formatCompact(card.previous) }}</span><span class="srm-trend" :class="card.comp >= 0 ? 'srm-up' : 'srm-down'"><i class="fa-solid" :class="card.comp >= 0 ? 'fa-arrow-trend-up' : 'fa-arrow-trend-down'"></i>{{ Math.abs(card.comp).toFixed(1) }}%</span></div>
           </article>
         </section>
 
         <section class="srm-toolbar">
           <div class="srm-toolbar-left">
-            <span class="srm-filter-label">当前范围</span>
-            <strong>{{ state.selectedDept === '全部' ? '全部部门' : state.selectedDept }}</strong>
-            <div v-if="state.selectedDept !== '全部'" class="srm-pop-wrap">
-              <button class="srm-btn" @click="state.categoryPopup = !state.categoryPopup"><i class="fa-solid fa-link"></i>品类绑定（{{ (state.categoryBindings[state.selectedDept] || []).length }}）</button>
-              <div v-if="state.categoryPopup" class="srm-pop">
+            <span class="srm-range"><i class="fa-regular fa-calendar"></i><span class="srm-current-range">{{ period.start }}</span><span>→</span><span class="srm-current-range">{{ period.end }}</span></span>
+            <div class="srm-pop-wrap">
+              <button class="srm-btn" @click="state.peoplePopup = !state.peoplePopup"><i class="fa-solid fa-user-check"></i>人员：{{ state.selectedPerson }}</button>
+              <div v-if="state.peoplePopup" class="srm-pop">
+                <div class="srm-pop-title">{{ state.selectedDept === '全部' ? '全部部门' : state.selectedDept }} · 选择维护人员</div>
+                <button class="srm-btn" style="width:100%;justify-content:flex-start;margin-bottom:8px" @click="choosePerson('全部')">全部人员</button>
+                <button v-for="person in selectedDeptPeople" :key="person" class="srm-btn" style="width:100%;justify-content:flex-start;margin-bottom:6px" @click="choosePerson(person)">{{ person }}</button>
+              </div>
+            </div>
+            <div class="srm-pop-wrap">
+              <button class="srm-btn" :disabled="state.selectedDept === '全部'" @click="state.categoryPopup = !state.categoryPopup"><i class="fa-solid fa-link"></i>品类绑定<span v-if="state.selectedDept !== '全部'">（{{ (state.categoryBindings[state.selectedDept] || []).length }}）</span></button>
+              <div v-if="state.categoryPopup && state.selectedDept !== '全部'" class="srm-pop">
                 <div class="srm-pop-title">选择 {{ state.selectedDept }} 的店铺品类</div>
                 <div class="srm-check-grid">
                   <label v-for="category in categoryOptions" :key="category" class="srm-check"><input type="checkbox" :checked="(state.categoryBindings[state.selectedDept] || []).includes(category)" @change="toggleCategory(category)"><span>{{ category }}</span></label>
                 </div>
               </div>
             </div>
-            <div class="srm-pop-wrap">
-              <button class="srm-btn" @click="state.peoplePopup = !state.peoplePopup"><i class="fa-solid fa-user-check"></i>人员：{{ state.selectedPerson }}</button>
-              <div v-if="state.peoplePopup" class="srm-pop">
-                <div class="srm-pop-title">选择维护人员</div>
-                <button class="srm-btn" style="width:100%;justify-content:flex-start;margin-bottom:8px" @click="choosePerson('全部')">全部人员</button>
-                <button v-for="person in selectedDeptPeople" :key="person" class="srm-btn" style="width:100%;justify-content:flex-start;margin-bottom:6px" @click="choosePerson(person)">{{ person }}</button>
-              </div>
-            </div>
           </div>
-          <div class="srm-actions"><span class="srm-filter-label">{{ filteredRows.length }} 条记录</span><span v-if="!isSupervisor" class="srm-filter-label"><i class="fa-solid fa-lock"></i> 仅可编辑本人数据</span><details class="srm-standard"><summary class="srm-btn"><i class="fa-solid fa-award"></i>爆文与奖金标准</summary><table><thead><tr><th>笔记类型</th><th>浏览量档位</th><th>奖金</th></tr></thead><tbody><tr v-for="rule in bonusRules" :key="rule.type"><td>{{ rule.type }}</td><td>{{ rule.levels }}</td><td>{{ rule.bonus }}</td></tr></tbody></table></details></div>
+          <div class="srm-toolbar-right">
+            <span class="srm-filter-label">{{ filteredRows.length }} 条记录</span>
+            <span v-if="!isSupervisor" class="srm-filter-label"><i class="fa-solid fa-lock"></i> 仅可编辑本人数据</span>
+            <details class="srm-standard"><summary class="srm-btn"><i class="fa-solid fa-award"></i>奖金标准</summary><table><thead><tr><th>笔记类型</th><th>浏览量档位</th><th>奖金</th></tr></thead><tbody><tr v-for="rule in bonusRules" :key="rule.type"><td>{{ rule.type }}</td><td>{{ rule.levels }}</td><td>{{ rule.bonus }}</td></tr></tbody></table></details>
+            <button class="srm-btn" @click="exportRows"><i class="fa-solid fa-download"></i>导出</button>
+            <button class="srm-btn primary" @click="openCreate"><i class="fa-solid fa-plus"></i>新增记录</button>
+          </div>
         </section>
 
         <div class="srm-table-wrap">
           <table class="srm-table">
-            <thead><tr><th>品类</th><th>平台</th><th>来源</th><th>笔记类型</th><th>标题</th><th>作品链接</th><th>维护人员</th><th>作品ID</th><th>点赞</th><th>收藏</th><th>评论</th><th>阅读量</th><th>流量分析</th><th>操作</th></tr></thead>
+            <thead>
+              <tr><th rowspan="2">品类</th><th rowspan="2">平台</th><th rowspan="2">类型</th><th rowspan="2">作品标题</th><th rowspan="2">维护人员</th><th rowspan="2" class="srm-metric">阅读量</th><th colspan="4" class="group">互动数据</th><th colspan="4" class="group">流量分析</th><th rowspan="2">操作</th></tr>
+              <tr><th class="srm-metric">点赞</th><th class="srm-metric">评论</th><th class="srm-metric">收藏</th><th class="srm-metric">分享</th><th class="srm-metric">预估曝光</th><th class="srm-metric">互动率</th><th>是否爆文</th><th>分析图</th></tr>
+            </thead>
             <tbody>
               <tr v-for="row in filteredRows" :key="row.id">
-                <td>{{ row.product || '-' }}</td><td>{{ row.platform }}</td><td>{{ row.source }}</td><td><span class="srm-type">{{ row.type }}</span></td><td class="srm-title-cell" :title="row.title">{{ row.title }}</td><td><a class="srm-link" :href="row.link" target="_blank" rel="noopener">{{ row.link }}</a></td><td>{{ row.author }}</td><td>{{ row.workId }}</td><td class="srm-metric">{{ formatNumber(row.likes) }}</td><td class="srm-metric">{{ formatNumber(row.collects) }}</td><td class="srm-metric">{{ formatNumber(row.comments) }}</td><td class="srm-metric">{{ formatNumber(row.views) }}</td><td><button class="srm-icon-btn" :disabled="!row.trafficImage" :title="row.trafficImage ? '查看流量分析图' : '暂无流量分析图'" @click="previewTraffic(row)"><i class="fa-regular fa-image"></i></button></td><td><div class="srm-row-actions"><button class="srm-icon-btn" :disabled="!canEdit(row)" title="编辑" @click="openEdit(row)"><i class="fa-solid fa-pen"></i></button><button class="srm-icon-btn danger" :disabled="!canEdit(row)" title="删除" @click="removeRow(row)"><i class="fa-solid fa-trash"></i></button></div></td>
+                <td>{{ row.product || '-' }}</td>
+                <td>{{ row.platform }}<span class="srm-sub-cell">{{ row.source || '自然发布' }}</span></td>
+                <td><span class="srm-type">{{ row.type }}</span></td>
+                <td class="srm-title-cell" :title="row.title"><a class="srm-title-link" :href="row.link" target="_blank" rel="noopener">{{ row.title }}</a><span class="srm-sub-cell">ID {{ row.workId || '-' }}</span></td>
+                <td>{{ row.author || '-' }}</td>
+                <td class="srm-metric">{{ formatNumber(row.views) }}</td>
+                <td class="srm-metric">{{ formatNumber(row.likes) }}</td>
+                <td class="srm-metric">{{ formatNumber(row.comments) }}</td>
+                <td class="srm-metric">{{ formatNumber(row.collects) }}</td>
+                <td class="srm-metric">{{ formatNumber(rowShares(row)) }}</td>
+                <td class="srm-metric">{{ formatCompact(rowExposure(row)) }}</td>
+                <td class="srm-metric srm-rate">{{ rowEngagementRate(row) }}</td>
+                <td><span v-if="isHot(row)" class="srm-hot"><i class="fa-solid fa-fire"></i>爆文</span><span v-else class="srm-cold">未达标</span></td>
+                <td><button class="srm-icon-btn" :disabled="!row.trafficImage" :title="row.trafficImage ? '查看流量分析图' : '暂无流量分析图'" @click="previewTraffic(row)"><i class="fa-regular fa-image"></i></button></td>
+                <td><div class="srm-row-actions"><button class="srm-icon-btn" :disabled="!canEdit(row)" title="编辑" @click="openEdit(row)"><i class="fa-solid fa-pen"></i></button><button class="srm-icon-btn danger" :disabled="!canEdit(row)" title="删除" @click="removeRow(row)"><i class="fa-solid fa-trash"></i></button></div></td>
               </tr>
-              <tr v-if="!filteredRows.length"><td class="srm-empty" colspan="14">当前筛选范围暂无记录</td></tr>
+              <tr v-if="!filteredRows.length"><td class="srm-empty" colspan="15">当前筛选范围暂无记录</td></tr>
             </tbody>
           </table>
         </div>
@@ -402,8 +441,9 @@
                 <div class="srm-field"><label>维护人员</label><input v-model="state.form.author" :disabled="!isSupervisor && !!currentUser" placeholder="姓名"></div>
                 <div class="srm-field"><label>作品ID *</label><input v-model="state.form.workId" placeholder="平台作品ID"></div>
                 <div class="srm-field"><label>点赞</label><input v-model.number="state.form.likes" type="number" min="0"></div>
-                <div class="srm-field"><label>收藏</label><input v-model.number="state.form.collects" type="number" min="0"></div>
                 <div class="srm-field"><label>评论</label><input v-model.number="state.form.comments" type="number" min="0"></div>
+                <div class="srm-field"><label>收藏</label><input v-model.number="state.form.collects" type="number" min="0"></div>
+                <div class="srm-field"><label>分享</label><input v-model.number="state.form.shares" type="number" min="0"></div>
                 <div class="srm-field"><label>阅读量</label><input v-model.number="state.form.views" type="number" min="0"></div>
                 <div class="srm-field"><label>发布日期</label><input v-model="state.form.date" type="date"></div>
                 <div class="srm-field"><label>流量分析图</label><label class="srm-upload"><input type="file" accept="image/*" style="display:none" @change="onImageChange"><img v-if="state.form.trafficImage" :src="state.form.trafficImage" alt="流量分析图"><span v-else><i class="fa-regular fa-image"></i> 点击上传</span></label></div>

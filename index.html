@@ -10,6 +10,8 @@
   <script>tailwind.config={theme:{extend:{colors:{brand:'#1677ff','brand-dark':'#0958d9','brand-light':'#e6f4ff','bg-gray':'#f5f7fa'},borderRadius:{'8':'8px'},boxShadow:{card:'0 2px 8px rgba(0,0,0,0.06),0 1px 4px rgba(0,0,0,0.04)','card-hover':'0 4px 16px rgba(0,0,0,0.08),0 2px 8px rgba(0,0,0,0.06)',login:'0 4px 24px rgba(0,0,0,0.08)'}}}}</script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   <link rel="stylesheet" href="css/hr.css">
+  <link rel="stylesheet" href="css/content-studio.css">
+  <link rel="stylesheet" href="css/seeding-monitor.css?v=20260922a">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script async src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" onerror="console.warn('ECharts加载失败')"></script>
   <script src="js/vendor/vue.global.js"></script>
@@ -915,6 +917,10 @@
         </div>
       </div>
       <div class="nav-group-divider"></div>
+      <div class="nav-group nav-group-direct open">
+        <a href="#content-studio" class="nav-group-title nav-direct-link" data-page="content-studio"><i class="fa-solid fa-wand-magic-sparkles ng-icon"></i> 内容创作中心 <i class="fa-solid fa-arrow-up-right-from-square ng-chevron"></i></a>
+      </div>
+      <div class="nav-group-divider"></div>
       <div class="nav-group">
         <div class="nav-group-title"><i class="fa-solid fa-coins ng-icon"></i> 财务中心 <i class="fa-solid fa-chevron-right ng-chevron"></i></div>
         <div class="nav-group-items">
@@ -1293,6 +1299,7 @@
     <div id="page-daily-analysis-vue" class="hidden" style="padding:8px 24px 40px;width:100%"></div>
     <div id="page-store-account" class="page-section hidden" style="padding:8px 24px 40px;width:100%"></div>
     <div id="page-operation-performance" class="page-section hidden" style="padding:8px 24px 40px;width:100%"></div>
+    <section id="page-content-studio" class="page-section hidden content-studio-page"></section>
     <section id="page-product-selection" class="page-section hidden">
       <div id="page-product-selection-vue" style="padding:8px 24px 40px;width:100%"></div>
     </section>
@@ -2130,5 +2137,6 @@
     <script src="js/vue/page-store-account.js?v=20260918b"></script>
 <script src="js/vue/page-operation-performance.js"></script>
 <script src="js/vue/page-finance.js"></script>
+<script src="js/vue/page-content-studio.js"></script>
 </body>
 </html>

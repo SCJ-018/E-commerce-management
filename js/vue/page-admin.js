@@ -28,6 +28,9 @@
       { id: 'product-selection', name: '选品助手' },
       { id: 'seeding-monitor', name: '种草监测中台' },
     ]},
+    { group: '内容创作中心', pages: [
+      { id: 'content-studio', name: '聚浪内容工坊' },
+    ]},
     { group: '财务中心', pages: [
       { id: 'finance', name: '财务中心' },
     ]},

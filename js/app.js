@@ -747,7 +747,15 @@ const App = (() => {
         errEl.textContent = '该账号已被禁用，请联系超级管理员';
         return;
       }
-      adminData = { name: matchedAdmin.name, role: matchedAdmin.role, account: matchedAdmin.account, status: matchedAdmin.status };
+      adminData = {
+        name: matchedAdmin.name,
+        role: matchedAdmin.role,
+        account: matchedAdmin.account,
+        status: matchedAdmin.status,
+        permissions: (Array.isArray(matchedAdmin.permissions) && matchedAdmin.permissions.length)
+          ? matchedAdmin.permissions
+          : (matchedAdmin.role === '超级管理员' ? ['*'] : [])
+      };
     }
 
     // 检查禁用状态
@@ -856,6 +864,7 @@ const App = (() => {
   }
 
   function navigateTo(page) {
+    document.getElementById('appPage').classList.toggle('content-studio-mode', page === 'content-studio');
     // 权限检查
     // 人事中心是单页面 + 页内卡片切换，权限点按数据表拆分（hr-roster / hr-interview / ...）。
     // 只要拥有任意一个人事数据表权限，即允许进入人事数据中心页面；具体可见哪张表由页面内部再判定。
@@ -873,12 +882,12 @@ const App = (() => {
     if (_accDeny || (_ALLOWED_PAGES !== null && !_ALLOWED_PAGES.includes(page) && page !== 'profile' && !_hrPermHit)) {
       _showPermissionDenied();
       // 高亮当前点击的菜单项
-      document.querySelectorAll('.nav-item').forEach(function(el) {
+      document.querySelectorAll('.nav-item, .nav-direct-link').forEach(function(el) {
         el.classList.toggle('active', el.dataset.page === page);
       });
       // 展开对应的导航组和子菜单
       document.querySelectorAll('.nav-group').forEach(function(group) {
-        var hasActive = group.querySelector('.nav-item[data-page="' + page + '"]');
+        var hasActive = group.querySelector('.nav-item[data-page="' + page + '"], .nav-direct-link[data-page="' + page + '"]');
         group.classList.toggle('open', !!hasActive);
         if (hasActive) delete group.dataset.collapseArmed;
       });
@@ -891,12 +900,12 @@ const App = (() => {
     }
     state.currentPage = page;
     // Update nav active state
-    document.querySelectorAll('.nav-item').forEach(el => {
+    document.querySelectorAll('.nav-item, .nav-direct-link').forEach(el => {
       el.classList.toggle('active', el.dataset.page === page);
     });
     // Open parent group for active item
     document.querySelectorAll('.nav-group').forEach(group => {
-      const hasActive = group.querySelector('.nav-item[data-page="' + page + '"]');
+      const hasActive = group.querySelector('.nav-item[data-page="' + page + '"], .nav-direct-link[data-page="' + page + '"]');
       group.classList.toggle('open', !!hasActive);
       if (hasActive) delete group.dataset.collapseArmed;
     });
@@ -907,9 +916,9 @@ const App = (() => {
     });
     // Update page sections
     document.querySelectorAll('.page-section').forEach(el => el.classList.add('hidden'));
-    const target = document.getElementById('page-' + page);
-    if (target) target.classList.remove('hidden');
     const seedingVueMount = document.getElementById('page-seeding-monitor-vue');
+    const target = document.getElementById('page-' + page);
+    if (target && !(page === 'seeding-monitor' && seedingVueMount)) target.classList.remove('hidden');
     if (seedingVueMount) seedingVueMount.classList.toggle('hidden', page !== 'seeding-monitor');
     // Update title
     const titles = {
@@ -919,6 +928,7 @@ const App = (() => {
       'store-account': '店铺账号管理',
       'operation-performance': '运营业绩面板',
       'product-selection': '选品助手',
+      'content-studio': '聚浪内容工坊',
       finance: '财务中心',
       hr: '人事数据中心',
       'admin-permissions': '管理员与权限',
@@ -2708,6 +2718,9 @@ const App = (() => {
       { id: 'product-selection', name: '选品助手' },
       { id: 'seeding-monitor', name: '种草监测中台' },
     ]},
+    { group: '内容创作中心', pages: [
+      { id: 'content-studio', name: '聚浪内容工坊' },
+    ]},
     { group: '财务中心', pages: [
       { id: 'finance', name: '财务中心' },
     ]},
@@ -3189,7 +3202,7 @@ const App = (() => {
     console.log('[App] API状态:', state.apiAvailable ? '已连接' : '不可用（3次重试后）');
 
     // Nav click events
-    document.querySelectorAll('.nav-item').forEach(el => {
+    document.querySelectorAll('.nav-item, .nav-direct-link').forEach(el => {
       el.addEventListener('click', function(e) {
         e.preventDefault();
         navigateTo(this.dataset.page);
@@ -3197,7 +3210,7 @@ const App = (() => {
     });
 
     // Nav group expand/collapse
-    document.querySelectorAll('.nav-group-title').forEach(el => {
+    document.querySelectorAll('.nav-group-title:not(.nav-direct-link)').forEach(el => {
       el.addEventListener('click', function(e) {
         e.preventDefault();
         var group = this.closest('.nav-group');
@@ -3322,7 +3335,7 @@ const App = (() => {
     // Hash routing（权限受限用户跳转到首个允许的页面）
     const validPages = [
       'marketing-overview', 'platform-store',
-      'store-account', 'operation-performance', 'product-selection', 'finance', 'hr',
+      'store-account', 'operation-performance', 'product-selection', 'content-studio', 'finance', 'hr',
       'admin-permissions', 'profile', 'daily-analysis', 'toolbox-violation-check', 'order-details', 'category-marketing',
       'toolbox-announce',
       'seeding-monitor',

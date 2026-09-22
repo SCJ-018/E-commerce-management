@@ -980,6 +980,14 @@ def success(data=None, msg='ok'):
 def fail(msg='error', code=1):
     return jsonify({'code': code, 'msg': msg, 'data': None})
 
+# 内容创作中心：独立模块只读取服务端 CONTENT_STUDIO_API_KEY，避免把密钥暴露到浏览器。
+try:
+    from content_studio_api import register_content_studio
+    register_content_studio(app, success, fail, DEEPSEEK_API_URL)
+    print('[内容工坊] AI 接口已注册: /api/content-studio/analyze, /api/content-studio/generate')
+except Exception as _content_studio_err:
+    print('[内容工坊] AI 接口注册失败:', _content_studio_err)
+
 
 # ======================== 人事数据中心（5 张人事表通用 CRUD） ========================
 # 独立模块 backend/hr_api.py，技术框架与本文件完全一致（Flask Blueprint + 同一连接池）
