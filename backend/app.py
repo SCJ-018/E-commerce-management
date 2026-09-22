@@ -8384,6 +8384,28 @@ def _selection_v2_key(name):
     return s[:80]
 
 
+# 选品助手明确排除的品类。该规则同时应用于天猫原始池、模型候选、
+# 榜单补位和裂变品，避免某个入口绕过筛选。
+_SELECTION_V2_EXCLUDED_TERMS = (
+    '宠物用品', '宠物', '猫粮', '狗粮', '猫砂', '猫窝', '狗窝', '猫罐头', '猫条', '冻干', '驱虫',
+    '鞋', '运动鞋', '跑鞋', '篮球鞋', '板鞋', '帆布鞋', '皮鞋', '凉鞋', '拖鞋', '靴子', '雪地靴',
+    '学步鞋', '女鞋', '男鞋', '童鞋',
+    '洗发水', '洗发露', 'shampoo', '沐浴露', '沐浴乳', 'body wash',
+    '护肤品', '护肤', 'skincare', '面霜', '乳液', '水乳', '精华液', '洁面', '洗面奶', '防晒霜',
+)
+
+
+def _selection_v2_is_excluded(name, category=''):
+    """判断候选商品是否命中用户指定的排除品类。"""
+    name_text = str(name or '').strip().lower()
+    category_text = str(category or '').strip().lower()
+    if any(term.lower() in name_text for term in _SELECTION_V2_EXCLUDED_TERMS):
+        return True
+    # “服饰鞋包”是混合类目，不能因为类目名含“鞋”而过滤掉其中的服装和包。
+    category_terms = ('宠物', '鞋类', '女鞋', '男鞋', '童鞋')
+    return any(term in category_text for term in category_terms) and category_text != '服饰鞋包'
+
+
 def _selection_v2_parse_object(raw):
     if not raw:
         return None
@@ -8412,6 +8434,9 @@ def _selection_v2_market_from_rows(rows, display_name, match_source, fallback_ca
     prices, categories = {}, {}
     for row in rows:
         raw_name = str(row.get('产品名') or '').strip()
+        raw_category = str(row.get('类别名') or '').strip()
+        if _selection_v2_is_excluded(raw_name, raw_category):
+            continue
         raw_key = _selection_v2_key(raw_name)
         if not raw_key or raw_key in prices:
             continue
@@ -8437,7 +8462,7 @@ def _selection_v2_tmall_market(search_term, display_name=None):
     """用内部同类词搜索价格样本，但最终产品名保持候选生成阶段的原名称。"""
     query = str(search_term or '').strip()
     display_name = str(display_name or search_term or '').strip()
-    if not query or not display_name:
+    if not query or not display_name or _selection_v2_is_excluded(query, display_name):
         return None
     like = '%' + query + '%'
     rows = list(db_execute(
@@ -8461,11 +8486,14 @@ def _selection_v2_tmall_pool(band):
     out, seen = [], set()
     for row in rows:
         name = str(row.get('产品名') or '').strip()
+        category = str(row.get('类别名') or '').strip()
+        if _selection_v2_is_excluded(name, category):
+            continue
         key = _selection_v2_key(name)
         if not name or not key or key in seen:
             continue
         seen.add(key)
-        out.append({'name': name, 'category': str(row.get('类别名') or ''),
+        out.append({'name': name, 'category': category,
                     'rank_name': str(row.get('排行榜名') or ''),
                     'price': float(row.get('价格') or 0)})
     return out
@@ -8485,7 +8513,8 @@ def _selection_v2_candidates():
         '你是严谨的电商选品研究员。沿用原有候选商品命名方式：根据抖音热搜和天猫商品生成具体可购买单品名称，'
         'name 是最终展示并送爱搜的产品名，不要把 name 改成价格查询词；不可为品牌词或过宽大类，不能用颜色、规格、Pro/Plus 制造重复。'
         '每组按 quota 返回。另给每个商品一个 market_query，仅供后台搜索同类商品并计算平均客单价，必须是简短通用品类词；'
-        'market_query 不会替换 name。只引用输入，不编造销量或成本。返回 JSON：'
+        'market_query 不会替换 name。严禁输出宠物用品、鞋类、洗发水、沐浴露、护肤品及其同义词。'
+        '只引用输入，不编造销量或成本。返回 JSON：'
         '{"bands":[{"key":"volume","items":[{"name":"原逻辑具体商品名","category":"品类",'
         '"market_query":"同类价格查询词","reason":"十字内机会说明"}]}]}。'
     )
@@ -8502,7 +8531,8 @@ def _selection_v2_candidates():
             name = str(item.get('name') or '').strip()
             key = _selection_v2_key(name)
             market_query = str(item.get('market_query') or '').strip()
-            if not name or not key or key in proposed_seen or not market_query:
+            if (not name or _selection_v2_is_excluded(name, item.get('category')) or
+                    _selection_v2_is_excluded(market_query) or not key or key in proposed_seen or not market_query):
                 continue
             found = _selection_v2_tmall_market(market_query, display_name=name)
             if not found:
@@ -8529,7 +8559,7 @@ def _selection_v2_candidates():
                 "WHERE `排行榜名` = %s AND `价格` > 0 ORDER BY `日期` DESC", [rank_name]))
         found = _selection_v2_market_from_rows(
             rank_rows_cache[rank_name], row['name'], '排行榜名', row.get('category') or '')
-        if not found:
+        if not found or _selection_v2_is_excluded(found.get('name'), found.get('category')):
             continue
         actual_band = next((b for b in _SELECTION_V2_BANDS
                             if b['min'] <= found['market_avg_price'] <= b['max']), None)
@@ -8547,6 +8577,8 @@ def _selection_v2_candidates():
         items = []
         for found in buckets[band['key']]:
             price = found['market_avg_price']
+            if _selection_v2_is_excluded(found.get('name'), found.get('category')):
+                continue
             key = _selection_v2_key(found['name'])
             if not key or key in global_seen:
                 continue
@@ -8652,6 +8684,7 @@ def _selection_v2_variants(finalists):
     sys_p = (
         '为每个原品生成恰好 3 个裂变品。裂变品必须是同类目中相关但不同的具体单品，'
         '不能是原品加型号、颜色、容量、尺寸、Pro/Plus，不能重复、不能是品牌词；要有创新性和相邻场景关联。'
+        '严禁生成宠物用品、鞋类、洗发水、沐浴露、护肤品及其同义词。'
         '返回 JSON：{"items":[{"name":"原品","variants":[{"name":"具体裂变品","category":"","reason":"十字内关联理由"}]}]}。'
     )
     raw = call_deepseek_api(sys_p, json.dumps({'finalists': [{'name': x['name'], 'category': x['category'], 'band': x['band_name']} for x in finalists]}, ensure_ascii=False),
@@ -8665,7 +8698,8 @@ def _selection_v2_variants(finalists):
             if not isinstance(v, dict):
                 continue
             name, key = str(v.get('name') or '').strip(), _selection_v2_key(v.get('name'))
-            if not name or not key or key in all_keys:
+            if (not name or _selection_v2_is_excluded(name, v.get('category')) or
+                    not key or key in all_keys):
                 continue
             variants.append({'name': name, 'category': str(v.get('category') or item['category']), 'reason': str(v.get('reason') or '')[:20]})
             all_keys.add(key)
