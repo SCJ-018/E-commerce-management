@@ -542,3 +542,171 @@
   .srm-shell>.srm-console>.srm-tabs-row{padding:10px 14px 10px 22px}
   .srm-shell .srm-stat{padding:16px 16px 14px}
 }
+/* ==========================================================================
+   布局 V5 —— 顶格 · 收边 · 框更大 · 卡片归位 · 两盒合流 · 图标淡色
+   --------------------------------------------------------------------------
+   用户原话 → 落成规则（每条都能在线上实测验证）
+   ①「上方顶格 / 页面两边和上方都有空白」   .srm-shell padding-top 18 -> 0
+                                          控制台卡与 topbar 之间留 14px 呼吸
+   ②「两边缩短空白间距 / 把元素框范围变大」  .page-section 两侧 24px **全吃掉**
+                                          （V4 只吃了 12px）→ margin:0 -24px
+                                          shell 左右内距 22 -> 14
+                                          ⇒ 单侧留白 34 -> 14px，两侧共省 40px 给内容
+   ③「文本等框内元素分辨率不动，而非跟着放大」
+                                          ★ 只放宽容器，不放字：
+                                            V4 把 字号 12->13.5、行高 52->60、
+                                            页签 32->42、按钮 40->46 全部放大过，
+                                            这正是用户说的「跟着放大」→ V5 一律收回基准
+   ④「把数值卡片放到监测中台元素框中」      .srm-stat-grid 由独立区块移进 .srm-console
+   ⑤「当前收录/全部/一部…/全部部门·」这一行放在表格上方、与表格共用一个大盒子
+                                          .srm-tabs-row 移出 .srm-console，
+                                          成为 .srm-table-box（筛选行+工具条+表）的头部
+   ⑥「种草监测中台的大盒子和下方表的大盒子用前端样式融合到一块，不要那么刻意地分开」
+                                          两卡间距 20 -> 7px；品牌竖条拆成上下两段，
+                                          上段从卡顶 16px 处直插卡底、下段从盒顶直插盒底内缩 16px
+                                          ⇒ 视觉上是一条连续竖条贯穿两卡
+   ⑦「种草监测中台图标换个淡色」          实心渐变块 -> #eef4ff 淡底 + #d3e3fb 描边 + #3b82f6 图标
+   --------------------------------------------------------------------------
+   ★ 结构性约束（别踩）
+   · .srm-table-box / .srm-console 都不能 overflow:hidden
+     —— 会裁掉「品类绑定」弹层 .srm-pop（absolute;top:42px，靠溢出卡外显示）
+   · 表头双层结构：sticky 只认 thead tr:first-child 的 th，
+     写 thead th:first-child/:last-child 会连第二行的「产品」「阅读量」一起命中
+   · 左列 sticky 只认 .srm-date-cell 类（日期格按 rowspan 分组渲染）
+   ========================================================================== */
+
+/* ---------- ① ② 外壳：顶格 + 收两边 ---------- */
+.srm-shell{
+  background:transparent;             /* 页级蓝晕已在 V4 去掉，保持无色 */
+  /* ★★ 两侧共两层内距：#page-seeding-monitor-vue 的 8px 24px 40px + .page-section 的 8px 24px 40px
+     → 实际单侧 48px。只吃一层（V4 做法 -24px）仍剩 24px。这里两层一起吃（-48px），
+     再由自己的 padding 定成 14px → 单侧总留白恰好 14px（1920 屏实测：右沿贴齐 1920）。 */
+  margin:0 -48px;
+  padding:0 14px 40px;                /* ① 上方 padding-top 归零 */
+}
+.srm-shell > .srm-console{margin-top:14px}   /* ① 与 topbar 下沿留一线呼吸，非留白 */
+
+/* ---------- ③ 框更大：只放宽、不放字 ---------- */
+.srm-shell > .srm-console > .srm-top{padding:20px 26px 18px 30px}
+
+/* 表格盒：筛选行 + 工具条 + 表，一个大盒子包住 */
+.srm-shell > .srm-table-box{
+  position:relative;background:#fff;border:1px solid #e6eaf2;border-radius:18px;
+  box-shadow:0 1px 2px rgba(16,24,40,.04),0 20px 42px -30px rgba(16,24,40,.6);
+}
+
+/* ---------- ④ 数值卡片归位：进指挥台卡，露在标题条下方 ---------- */
+.srm-shell > .srm-console > .srm-stat-grid{
+  gap:16px;margin:0;padding:0 26px 20px 30px;
+}
+.srm-shell > .srm-console > .srm-stat-grid > .srm-stat{
+  background:#fbfcfe;border-color:#eef2f8;box-shadow:none;
+}
+.srm-shell > .srm-console > .srm-stat-grid > .srm-stat:hover{
+  background:#fff;border-color:var(--srm-tb);
+}
+
+/* ---------- ⑤ 筛选行 = 表格盒头部 ---------- */
+.srm-shell > .srm-table-box > .srm-tabs-row{
+  margin:0;border:0;border-bottom:1px solid #eef2f8;border-radius:17px 17px 0 0;
+  background:#fff;box-shadow:none;padding:12px 20px 12px 24px;gap:16px;
+}
+.srm-shell > .srm-table-box > .srm-tabs-row > .srm-range{height:38px;font-size:12.5px;gap:9px}
+.srm-shell > .srm-table-box > .srm-tabs-row > .srm-range b{font-size:13px}
+.srm-shell > .srm-table-box > .srm-tabs-row > .srm-range i{font-size:13px}
+.srm-shell > .srm-table-box > .srm-tabs-row > .srm-range:after{height:20px}
+.srm-shell > .srm-table-box > .srm-tabs-row .srm-tabs{padding:4px;gap:4px;border-radius:11px}
+.srm-shell > .srm-table-box > .srm-tabs-row .srm-tab{height:32px;padding:0 16px;font-size:13px;border-radius:8px}
+.srm-shell > .srm-table-box > .srm-tabs-row .srm-person-select{height:38px;padding:0 12px;border-radius:11px;font-size:12.5px;gap:7px}
+.srm-shell > .srm-table-box > .srm-tabs-row .srm-person-select select{font-size:12.5px}
+/* 工具条：盒内一段（白底、无边框，由盒子统一描边） */
+.srm-shell > .srm-table-box > .srm-toolbar{
+  background:transparent;border:0;border-radius:0;padding:12px 20px 10px 24px;
+}
+.srm-shell > .srm-table-box > .srm-table-wrap{
+  border:0;border-top:1px solid #e6eaf2;border-radius:0 0 17px 17px;
+}
+.srm-shell > .srm-table-box .srm-filter-context{font-size:12.5px}
+.srm-shell > .srm-table-box .srm-filter-context em{min-width:22px;height:20px;font-size:11.5px;padding:0 7px}
+.srm-shell > .srm-table-box .srm-toolbar-tip{font-size:11.5px}
+
+/* ---------- ⑦ 图标淡色 ---------- */
+.srm-shell .srm-mark{
+  background:#eef4ff;color:#3b82f6;border:1px solid #d3e3fb;
+  box-shadow:0 2px 6px rgba(37,99,235,.08);
+}
+.srm-shell .srm-mark i{color:#3b82f6}
+
+/* ---------- ③ 文本分辨率还原：V4 的放大一律收回基准 ---------- */
+.srm-shell .srm-mark{width:50px;height:50px;flex:0 0 50px;border-radius:15px;font-size:20px}
+.srm-shell .srm-top .srm-title{font-size:26px}
+.srm-shell .srm-top .srm-subtitle{font-size:12.5px;margin-top:8px}
+.srm-shell .srm-live{height:23px;padding:0 10px;font-size:11.5px;gap:6px}
+.srm-shell .srm-live i{width:6px;height:6px}
+.srm-shell .srm-top .srm-btn-lg{height:40px;padding:0 16px;border-radius:10px;font-size:13px}
+.srm-shell .srm-stat{padding:15px 16px 13px}
+.srm-shell .srm-stat-head{font-size:12.5px;gap:11px}
+.srm-shell .srm-stat-icon{width:40px;height:40px;flex:0 0 40px;border-radius:12px;font-size:16px}
+.srm-shell .srm-stat-value{font-size:28px;margin:15px 0 11px}
+.srm-shell .srm-stat-value small{font-size:12.5px}
+.srm-shell .srm-stat-foot{font-size:11.5px;padding-top:10px}
+.srm-shell .srm-stat-sub i{font-size:10px}
+.srm-shell .srm-stat-tag{height:21px;padding:0 9px;font-size:11px}
+.srm-shell .srm-table{font-size:12px}
+.srm-shell .srm-entry-table{min-width:1560px}
+.srm-shell .srm-entry-table thead tr.srm-g th{height:32px;font-size:11.5px;letter-spacing:1.5px}
+.srm-shell .srm-entry-table thead tr.srm-h th{height:38px;font-size:12px}
+.srm-shell .srm-entry-table td{height:52px;padding:0 12px}
+.srm-shell .srm-entry-table .srm-metric{font-size:12px}
+.srm-shell .srm-entry-table td select,.srm-shell .srm-entry-table td input{height:30px;font-size:12px;max-width:170px}
+.srm-shell .srm-entry-table td .srm-chip{height:28px;padding:0 10px;font-size:12px;gap:6px}
+.srm-shell .srm-entry-table td .srm-chip>select{font-size:12px}
+.srm-shell .srm-entry-table td .srm-chip i{width:6px;height:6px}
+.srm-shell .srm-entry-table td .srm-chip-prod{width:118px}
+.srm-shell .srm-entry-table td .srm-chip-plat{width:104px}
+.srm-shell .srm-entry-table td .srm-chip-src{width:92px}
+.srm-shell .srm-entry-table td .srm-chip-type{width:96px}
+.srm-shell .srm-entry-table td.srm-date-cell{min-width:132px;padding:0 14px!important}
+.srm-shell .srm-entry-table td.srm-date-cell:before{width:3px}
+.srm-shell .srm-entry-table td.srm-date-cell b{font-size:12.5px}
+.srm-shell .srm-entry-table td.srm-date-cell small{font-size:10.5px}
+.srm-shell .srm-entry-table td.srm-date-cell .srm-grp{font-size:10.5px;padding:3px 8px;margin-top:7px}
+.srm-shell .srm-entry-table .srm-title-cell{max-width:300px}
+.srm-shell .srm-entry-table .srm-title-cell input{width:280px;max-width:280px}
+.srm-shell .srm-entry-table .srm-title-link{max-width:288px}
+.srm-shell .srm-entry-table td.srm-acct{min-width:174px}
+.srm-shell .srm-entry-table td.srm-acct b{font-size:12.5px}
+.srm-shell .srm-entry-table td.srm-acct small{font-size:10.5px}
+.srm-shell .srm-entry-table td.srm-acct input{max-width:154px}
+.srm-shell .srm-entry-table .srm-iv i{font-size:10px}
+.srm-shell .srm-entry-table .srm-view-val{font-size:12.5px}
+.srm-shell .srm-entry-table .srm-view-bar{width:62px}
+.srm-shell .srm-entry-table .srm-heat{font-size:10px}
+.srm-shell .srm-entry-table .srm-link-state{padding:6px 11px;font-size:11px}
+.srm-shell .srm-entry-table .srm-sum,.srm-shell .srm-entry-table tfoot td{font-size:12px}
+.srm-shell .srm-entry-table .srm-sum b{font-size:13.5px}
+.srm-shell .srm-entry-table .srm-empty{padding:48px!important;font-size:13px!important}
+
+/* ---------- ⑥ 两卡合流：窄缝 + 连续竖条 ---------- */
+.srm-shell > .srm-console{margin-bottom:7px}
+.srm-shell > .srm-console:before{top:16px;bottom:0;border-radius:4px 4px 0 0}
+.srm-shell > .srm-table-box:before{
+  content:"";position:absolute;left:0;top:0;bottom:16px;width:4px;z-index:3;border-radius:0 0 4px 4px;
+  background:linear-gradient(180deg,#4f46e5 0%,#8b5cf6 60%,#a78bfa 100%);
+}
+
+/* ---------- ⑧ 窄屏回落 ---------- */
+@media(max-width:1100px){
+  .srm-shell{margin:0;padding:0 16px 32px}
+  .srm-shell > .srm-console > .srm-top{padding:18px 20px 16px 26px}
+  .srm-shell > .srm-console > .srm-stat-grid{padding:0 20px 18px 26px}
+  .srm-shell > .srm-table-box > .srm-tabs-row{padding:10px 16px 10px 22px;gap:12px}
+  .srm-shell > .srm-table-box > .srm-toolbar{padding:10px 16px 8px 22px}
+}
+@media(max-width:560px){
+  .srm-shell{margin:0;padding:0 12px 28px}
+  .srm-shell > .srm-console > .srm-top{padding:16px 14px 14px 20px}
+  .srm-shell > .srm-console > .srm-stat-grid{padding:0 14px 16px 20px}
+  .srm-shell > .srm-table-box > .srm-tabs-row{padding:10px 12px 10px 18px}
+  .srm-shell > .srm-table-box > .srm-toolbar{padding:10px 12px 8px 18px}
+}
