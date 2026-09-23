@@ -249,7 +249,7 @@
         state.trafficModal = true;
       }
       function syncPeople() {
-        var getter = window.ApiService && (window.ApiService.getSeedingAccounts || window.ApiService.getDepartmentAccounts);
+        var getter = window.ApiService && window.ApiService.getAnnounceOptions;
         if (typeof getter !== 'function') return;
         Promise.resolve(getter.call(window.ApiService)).then(function (result) {
           var accounts = Array.isArray(result) ? result : (result && (result.data || result.list || result.accounts)) || [];
@@ -305,9 +305,7 @@
       Vue.onMounted(function () {
         syncPeople();
         syncDashboard();
-        var oldSection = document.getElementById('page-seeding-monitor');
         var mount = document.getElementById('page-seeding-monitor-vue');
-        if (oldSection) oldSection.classList.add('hidden');
         if (mount) mount.classList.remove('hidden');
       });
 

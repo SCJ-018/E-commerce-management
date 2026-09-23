@@ -55,9 +55,6 @@ tools/xhs_profile/
 tools/cookie.txt
 tools/_xhs_works.json
 
-# === 种草监测运行态（作品快照 + 被删作品记录，勿提交）===
-tools/_seeding_state.json
-
 # === 第三方开源项目（从上游克隆，不纳入本仓库）===
 tools/Spider_XHS/
 

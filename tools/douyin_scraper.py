@@ -15,7 +15,7 @@ import sys
 import time
 from urllib.parse import quote
 
-# 让 Windows 控制台/日志能正确输出中文（与 douyin_video_scraper.py 一致）
+# 让 Windows 控制台和日志保持中文输出
 sys.stdout.reconfigure(encoding="utf-8")
 
 DEFAULT_KEYWORD = "汽车脚垫"
