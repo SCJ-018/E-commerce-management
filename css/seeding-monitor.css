@@ -910,3 +910,7 @@
   .srm-shell .srm-entry-table td.srm-date-cell{left:40px!important}
   .srm-traffic-foot{flex-direction:column;align-items:stretch}
 }
+
+/* ---------- ② 无效链接态（库里 publishLink 存了非 URL 文本时） ---------- */
+.srm-shell .srm-entry-table .srm-title-link.nolink{cursor:default;color:#7c8798;text-decoration:none}
+.srm-shell .srm-entry-table .srm-title-link.nolink:hover{color:#7c8798;text-decoration:none}
