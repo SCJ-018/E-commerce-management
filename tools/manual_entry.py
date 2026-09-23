@@ -58,8 +58,10 @@ BRAND_DEFAULT = {'京东': '西西猫'}   # 京东账号表没有「品牌」列
 def get_conn():
     """服务器上 /opt/pw 存在 → 直连 3306；否则（本机）走 SSH 隧道 3307。"""
     host, port = ('127.0.0.1', 3306) if os.path.exists('/opt/pw') else ('127.0.0.1', 3307)
-    return pymysql.connect(host=host, port=port, user='ecom', password='Ecom@2026',
-                           database='数据', charset='utf8mb4',
+    return pymysql.connect(host=host, port=port,
+                           user=os.environ.get('FETCH_DB_USER', ''),
+                           password=os.environ.get('FETCH_DB_PASSWORD', ''),
+                           database=os.environ.get('FETCH_DB_NAME', ''), charset='utf8mb4',
                            cursorclass=pymysql.cursors.DictCursor)
 
 

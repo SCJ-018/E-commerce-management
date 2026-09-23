@@ -15,14 +15,15 @@
     dateStart: '',
     dateEnd: '',
     dateLabel: '选择日期',
-    platform: '',
-    brand: '',
+    platforms: [],
+    brands: [],
     platformOptions: [],
     brandOptions: [],
     metrics: null,        // 完整返回对象（netPayment/payment/refundAmount/.../trends/comparison/agg）
     loaded: false,        // 数据是否加载成功（对应旧 state.apiAvailable）
     updateTime: '更新于 --',
     cal: { open: false, base: null, start: null, end: null, pickStart: true },   // 双月日历
+    filterOpen: '',
   });
 
   // ECharts 实例容器：普通对象（非响应式），避免 Vue Proxy 包裹
@@ -244,7 +245,7 @@
       }
       async function loadData() {
         var data = null;
-        try { data = await ApiService.getMarketingOverview(_mo.dateStart, _mo.dateEnd, _mo.platform, _mo.brand); } catch (e) {}
+        try { data = await ApiService.getMarketingOverview(_mo.dateStart, _mo.dateEnd, _mo.platforms, _mo.brands); } catch (e) {}
         if (data) {
           if (!data.refundRate && data.netPayment > 0) data.refundRate = (data.refundAmount || 0) / data.netPayment * 100;
           if (!data.roi && data.adSpend > 0) data.roi = (data.adTotal || 0) / data.adSpend;
@@ -301,8 +302,14 @@
       }
 
       // ---- 平台/品牌切换 ----
-      function onPlatformChange() { loadData(); }
-      function onBrandChange() { loadData(); }
+      function toggleFilter(name) { _mo.filterOpen = _mo.filterOpen === name ? '' : name; }
+      function toggleOption(name, value) {
+        var list = name === 'platforms' ? _mo.platforms : _mo.brands;
+        var i = list.indexOf(value); if (i >= 0) list.splice(i, 1); else list.push(value);
+        loadData();
+      }
+      function clearFilter(name) { if (name === 'platforms') _mo.platforms.splice(0); else _mo.brands.splice(0); loadData(); }
+      function filterLabel(name, all) { var list = name === 'platforms' ? _mo.platforms : _mo.brands; return list.length ? (list.length === 1 ? list[0] : list.length + '项已选') : all; }
 
       // ---- 双月日历 ----
       function calToggle() {
@@ -378,6 +385,7 @@
       }
       function onDocClick(e) {
         if (dateWrap.value && !dateWrap.value.contains(e.target)) _mo.cal.open = false;
+        if (!e.target.closest('.mo-multi-filter')) _mo.filterOpen = '';
       }
 
       Vue.onMounted(function () {
@@ -395,7 +403,7 @@
         trendInfo: trendInfo,
         calMonths: calMonths, dateWrap: dateWrap,
         setDateRange: setDateRange, isShortcutActive: isShortcutActive,
-        onPlatformChange: onPlatformChange, onBrandChange: onBrandChange,
+        toggleFilter: toggleFilter, toggleOption: toggleOption, clearFilter: clearFilter, filterLabel: filterLabel,
         calToggle: calToggle, calPick: calPick, calNav: calNav, calClear: calClear, calToday: calToday,
         trendChartEl: trendChartEl, funnelChartEl: funnelChartEl, adChartEl: adChartEl,
         gaugeAmountEl: gaugeAmountEl, gaugeOrderEl: gaugeOrderEl, refundMiniBarEl: refundMiniBarEl,
@@ -418,14 +426,8 @@
         <button class="dh-ds-btn" :class="{ active: isShortcutActive(7) }" @click="setDateRange(7)">近7天</button>
         <button class="dh-ds-btn" :class="{ active: isShortcutActive(30) }" @click="setDateRange(30)">近30天</button>
       </div>
-      <select v-model="mo.platform" class="dh-select" @change="onPlatformChange">
-        <option value="">全部平台</option>
-        <option v-for="p in mo.platformOptions" :key="p" :value="p">{{ p }}</option>
-      </select>
-      <select v-model="mo.brand" class="dh-select" @change="onBrandChange">
-        <option value="">全部品牌</option>
-        <option v-for="b in mo.brandOptions" :key="b" :value="b">{{ b }}</option>
-      </select>
+      <div class="mo-multi-filter"><button type="button" class="dh-select mo-multi-trigger" @click.stop="toggleFilter('platforms')">{{ filterLabel('platforms','全部平台') }} <i class="fa-solid fa-chevron-down"></i></button><div v-if="mo.filterOpen==='platforms'" class="mo-multi-panel" @click.stop><button type="button" class="mo-multi-clear" @click="clearFilter('platforms')">全部平台</button><label v-for="p in mo.platformOptions" :key="p"><input type="checkbox" :checked="mo.platforms.indexOf(p)>=0" @change="toggleOption('platforms',p)"> {{p}}</label></div></div>
+      <div class="mo-multi-filter"><button type="button" class="dh-select mo-multi-trigger" @click.stop="toggleFilter('brands')">{{ filterLabel('brands','全部品牌') }} <i class="fa-solid fa-chevron-down"></i></button><div v-if="mo.filterOpen==='brands'" class="mo-multi-panel" @click.stop><button type="button" class="mo-multi-clear" @click="clearFilter('brands')">全部品牌</button><label v-for="b in mo.brandOptions" :key="b"><input type="checkbox" :checked="mo.brands.indexOf(b)>=0" @change="toggleOption('brands',b)"> {{b}}</label></div></div>
       <div class="dh-date-picker" style="position:relative" ref="dateWrap">
         <button type="button" @click="calToggle" style="display:flex;align-items:center;gap:6px;background:#fff;border:1px solid #e2e8f0;border-radius:9px;padding:5px 12px;height:33px;cursor:pointer;font-size:0.82rem;color:#334155;font-family:inherit">
           <i class="fa-regular fa-calendar" style="color:#94a3b8;font-size:0.82rem"></i>

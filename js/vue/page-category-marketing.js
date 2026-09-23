@@ -15,6 +15,9 @@
     dateStart: '',
     dateEnd: '',
     dateLabel: '近7天',
+    stores: [],
+    storeOptions: [],
+    storeFilterOpen: false,
     cal: { open: false, base: null, start: null, end: null, pickStart: true },   // 双月日历
     totals: null,        // { payment, orders, buyers, refund, productCount, refundRate, categoryCount, spend, adGmv, roi }
     categories: [],      // [{ category, keywords[], products, payment, orders, buyers, refund, refundRate, spend, ad_gmv, roi }]
@@ -82,16 +85,22 @@
       async function loadData() {
         var range = _computeRange(_cat.range, _cat.dateStart, _cat.dateEnd);
         var data = null;
-        try { data = await ApiService.getCategoryMarketing(range[0], range[1]); } catch (e) {}
+        try { data = await ApiService.getCategoryMarketing(range[0], range[1], _cat.stores); } catch (e) {}
         if (data && data.totals) {
           _cat.totals = data.totals;
           _cat.categories = data.categories || [];
+          _cat.storeOptions = data.stores || [];
         } else {
           _cat.totals = null;
           _cat.categories = [];
         }
         renderChart();
       }
+
+      function toggleStoreFilter() { _cat.storeFilterOpen = !_cat.storeFilterOpen; }
+      function toggleStore(store) { var i = _cat.stores.indexOf(store); if (i >= 0) _cat.stores.splice(i, 1); else _cat.stores.push(store); loadData(); }
+      function clearStores() { _cat.stores.splice(0); loadData(); }
+      function storeLabel() { return _cat.stores.length ? (_cat.stores.length === 1 ? _cat.stores[0] : _cat.stores.length + '家店铺') : '全部店铺'; }
 
       function updateDateLabel() {
         var s = _cat.dateStart, e = _cat.dateEnd;
@@ -186,6 +195,7 @@
       }
       function onDocClick(e) {
         if (dateWrap.value && !dateWrap.value.contains(e.target)) _cat.cal.open = false;
+        if (!e.target.closest('.cat-store-filter')) _cat.storeFilterOpen = false;
       }
 
       function keywordsText(kw) {
@@ -212,6 +222,7 @@
         cat: _cat, barChart: barChart,
         fmtMoney: _fmtMoney, fmtNum: _fmtNum, fmtPct: _fmtPct,
         setRange: setRange, keywordsText: keywordsText,
+        toggleStoreFilter: toggleStoreFilter, toggleStore: toggleStore, clearStores: clearStores, storeLabel: storeLabel,
         dateWrap: dateWrap, calMonths: calMonths,
         updateDateLabel: updateDateLabel,
         calToggle: calToggle, calPick: calPick, calNav: calNav, calClear: calClear, calToday: calToday,
@@ -233,6 +244,7 @@
         <button class="cat-ds-btn" :class="{ active: cat.range === '7' }" @click="setRange('7')">近7天</button>
         <button class="cat-ds-btn" :class="{ active: cat.range === '30' }" @click="setRange('30')">近30天</button>
       </div>
+      <div class="cat-store-filter" style="position:relative;margin-left:4px"><button type="button" class="dh-select" style="display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:118px" @click.stop="toggleStoreFilter">{{ storeLabel() }} <i class="fa-solid fa-chevron-down" style="font-size:10px;color:#94a3b8"></i></button><div v-if="cat.storeFilterOpen" style="position:absolute;right:0;top:38px;z-index:80;min-width:190px;max-height:260px;overflow:auto;padding:8px;background:#fff;border:1px solid #e2e8f0;border-radius:9px;box-shadow:0 10px 28px rgba(15,23,42,.14)"><button type="button" @click="clearStores" style="display:block;width:100%;border:0;border-bottom:1px solid #f1f5f9;background:transparent;text-align:left;padding:6px 8px;margin-bottom:3px;color:#2563eb;font-size:12px;cursor:pointer">全部店铺</button><label v-for="s in cat.storeOptions" :key="s" style="display:block;padding:7px 8px;font-size:12px;color:#334155;white-space:nowrap;cursor:pointer"><input type="checkbox" :checked="cat.stores.indexOf(s)>=0" @change="toggleStore(s)"> {{s}}</label><div v-if="!cat.storeOptions.length" style="padding:8px;color:#94a3b8;font-size:12px">暂无店铺数据</div></div></div>
       <div class="ps-date-picker" style="position:relative;margin-left:10px" ref="dateWrap">
         <button type="button" @click="calToggle" style="display:flex;align-items:center;gap:6px;background:#fff;border:1px solid #e2e8f0;border-radius:9px;padding:5px 12px;height:33px;cursor:pointer;font-size:0.82rem;color:#334155;font-family:inherit">
           <i class="fa-regular fa-calendar" style="color:#94a3b8;font-size:0.82rem"></i>

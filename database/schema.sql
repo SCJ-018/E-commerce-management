@@ -1,7 +1,7 @@
 -- =============================================
 -- 电商后台管理系统 - 数据库建表脚本
 -- 目标数据库：MySQL
--- 使用方式：mysql -h 192.168.2.10 -u root -p < schema.sql
+-- 使用方式：mysql -h <DB_HOST> -u <DB_USER> -p < schema.sql
 -- =============================================
 
 CREATE DATABASE IF NOT EXISTS `ecommerce_admin`
@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS `种草收录表` (
   `发布链接` VARCHAR(1000) NOT NULL DEFAULT '',
   `发布账号名称` VARCHAR(100) NOT NULL DEFAULT '',
   `发布账号ID` VARCHAR(150) NOT NULL DEFAULT '',
+  `负责人` VARCHAR(100) NOT NULL DEFAULT '',
   `点赞` BIGINT NOT NULL DEFAULT 0,
   `收藏` BIGINT NOT NULL DEFAULT 0,
   `评论` BIGINT NOT NULL DEFAULT 0,
@@ -81,7 +82,8 @@ CREATE TABLE IF NOT EXISTS `种草收录表` (
   `创建时间` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `更新时间` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX `idx_种草收录_部门日期` (`部门`, `发布时间`),
-  INDEX `idx_种草收录_账号` (`发布账号名称`)
+  INDEX `idx_种草收录_账号` (`发布账号名称`),
+  INDEX `idx_种草收录_负责人` (`负责人`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='种草收录表';
 
 CREATE TABLE IF NOT EXISTS `种草品类绑定表` (

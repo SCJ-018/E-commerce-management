@@ -5,8 +5,8 @@
 敏感信息（DB 密码、DeepSeek Key）不要写在这里，放到项目根目录的 .env
 （复制 .env.example 为 .env 后填入真实值；.env 已被 .gitignore 排除）。
 
-【数据源策略】默认指向「内网自建 MySQL」192.168.2.10:3306，库名「数据」。
-禁止指向线上腾讯云数据库（119.45.187.154 / julangkeji.site），不要用 SSH 隧道端口 3307。
+【数据源策略】数据库端点与凭据必须通过环境变量或项目根目录 .env 显式提供。
+本文件不内置任何内网地址、账号、密码或数据库名。
 """
 import os
 
@@ -36,11 +36,11 @@ def _load_dotenv():
 HAS_DOTENV = _load_dotenv()
 
 DB_CONFIG = {
-    'host': os.environ.get('DB_HOST', '192.168.2.10'),
+    'host': os.environ.get('DB_HOST', '').strip(),
     'port': int(os.environ.get('DB_PORT', '3306')),
-    'user': os.environ.get('DB_USER', 'root'),
+    'user': os.environ.get('DB_USER', '').strip(),
     'password': os.environ.get('DB_PASSWORD', ''),
-    'database': os.environ.get('DB_NAME', '数据'),
+    'database': os.environ.get('DB_NAME', '').strip(),
     'charset': 'utf8mb4',
     'autocommit': True,
     # 连接超时 & 自动重连
@@ -63,18 +63,20 @@ DEEPSEEK_MODEL = 'deepseek-chat'
 # 选品助手智能体专用 DeepSeek Key（与全局 key 隔离，不影响其它 AI 功能）
 DEEPSEEK_SELECTION_API_KEY = os.environ.get('DEEPSEEK_SELECTION_API_KEY', '')
 
-# ---- 启动自检：敏感项缺失 / 数据源误配，都在这里提示（正常配置时静默）----
-# 线上站点（julangkeji.site）使用 .deploy/stage/backend/config.py，与本文件互不影响。
-_FORBIDDEN_HOSTS = {'119.45.187.154', 'julangkeji.site', 'www.julangkeji.site'}
+# ---- 启动自检：数据库配置缺失时直接失败，禁止隐式回落到历史内网库 ----
 _WARNINGS = []
 
-if DB_CONFIG['host'] in _FORBIDDEN_HOSTS or DB_CONFIG['port'] == 3307:
-    _WARNINGS.append(
-        '数据库配置指向了线上腾讯云地址 / SSH 隧道端口：%s:%s\n'
-        '         数据入口必须接入自建 MySQL：192.168.2.10:3306（库名「数据」）'
-        % (DB_CONFIG['host'], DB_CONFIG['port']))
-if not DB_CONFIG['password']:
-    _WARNINGS.append('未配置 DB_PASSWORD —— 请在项目根目录 .env 中设置（可从 .env.example 复制）')
+_missing_db = [name for name, value in (
+    ('DB_HOST', DB_CONFIG['host']),
+    ('DB_USER', DB_CONFIG['user']),
+    ('DB_PASSWORD', DB_CONFIG['password']),
+    ('DB_NAME', DB_CONFIG['database']),
+) if not value]
+if _missing_db:
+    raise RuntimeError(
+        '数据库配置不完整：缺少 %s。请通过环境变量或项目根目录 .env 显式配置；'
+        '程序不会回落到任何内网数据库。' % ', '.join(_missing_db)
+    )
 if not DEEPSEEK_API_KEY:
     _WARNINGS.append('未配置 DEEPSEEK_API_KEY —— AI 功能（每日分析 / 选品 / 种草智能体）将不可用')
 if not DEEPSEEK_SELECTION_API_KEY:

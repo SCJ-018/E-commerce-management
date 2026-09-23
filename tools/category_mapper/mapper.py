@@ -12,11 +12,10 @@
   python mapper.py --dry-run             # 只跑规则看覆盖率，不写库、不调 LLM
   python mapper.py --platform 京东       # 只查某个平台（抓取脚本收尾自动用这个）
   python mapper.py --reclassify          # 重分类映射表里「其他」的行（改完规则后手动跑）
-  python mapper.py --db inner            # 改连 backend/config.py 的内网库（默认连抓取库）
 
 数据源（默认「抓取库」，与 tools/*/shops.py 同源）：
   服务器本机 127.0.0.1:3306（存在 /opt/pw 标记目录）／本地 127.0.0.1:3307（需先开 SSH 隧道）
-  三张单链接表与「商品品类映射表」都在这个库；backend/config.py 的内网库只是备用。
+  三张单链接表与「商品品类映射表」都在这个库。
 
 被抓取脚本自动调用：见 run_incremental()；抓取收尾会以子进程方式跑
   `mapper.py --platform <平台>`，无新商品时秒退（不调 LLM、不写库）。
@@ -45,7 +44,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 def _load_dotenv():
     """零依赖读取项目根目录 .env（与 backend/config.py 同规则：系统环境变量优先）。
 
-    这里刻意**不复用** backend/config.py，避免 import 时打印内网库配置告警、
+    这里刻意**不复用** backend/config.py，避免把 mapper 和网站后端绑死、
     也避免把 mapper 和网站后端绑死（本脚本读的是抓取库）。
     """
     env_path = os.path.join(_ROOT_DIR, '.env')
@@ -78,9 +77,9 @@ DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
 # ⚠️ 这三处常量必须保持一致；改连接信息时三处一起改。
 FETCH_DB = {
     'host': '127.0.0.1',
-    'user': 'ecom',
-    'password': 'Ecom@2026',
-    'database': '数据',
+    'user': os.environ.get('FETCH_DB_USER', ''),
+    'password': os.environ.get('FETCH_DB_PASSWORD', ''),
+    'database': os.environ.get('FETCH_DB_NAME', ''),
     'charset': 'utf8mb4',
 }
 
@@ -93,15 +92,10 @@ def _fetch_db_port():
 def resolve_db(db_mode='fetch'):
     """返回 pymysql 连接参数。
 
-    db_mode='fetch'（默认）：抓取库 —— 三张单链接表 + 映射表都在这里
-    db_mode='inner'        ：backend/config.py 的内网自建库（仅备用，需网络可达）
+    db_mode='fetch'（唯一模式）：抓取库 —— 三张单链接表 + 映射表都在这里
     """
-    if db_mode == 'inner':
-        backend = os.path.join(_ROOT_DIR, 'backend')
-        if backend not in sys.path:
-            sys.path.insert(0, backend)
-        from config import DB_CONFIG  # noqa: E402  （延迟导入：默认路径不触发它的告警）
-        return {k: v for k, v in DB_CONFIG.items() if k != 'autocommit'}
+    if db_mode != 'fetch':
+        raise ValueError('不支持的数据库模式：%s' % db_mode)
     cfg = dict(FETCH_DB)
     cfg['host'] = os.environ.get('FETCH_DB_HOST', cfg['host'])
     cfg['port'] = int(os.environ.get('FETCH_DB_PORT', _fetch_db_port()))
@@ -600,8 +594,8 @@ def main():
     ap.add_argument('--reclassify', action='store_true', help='重分类映射表中「其他」的行')
     ap.add_argument('--platform', default=None,
                     help='只处理指定平台：抖店 / 京东 / 千牛（默认三个都查）')
-    ap.add_argument('--db', default='fetch', choices=['fetch', 'inner'],
-                    help='连哪个库：fetch=抓取库(默认，与抓取脚本同源) / inner=backend 内网库')
+    ap.add_argument('--db', default='fetch', choices=['fetch'],
+                    help='数据库模式：fetch=抓取库（唯一模式）')
     args = ap.parse_args()
 
     platforms = [args.platform] if args.platform else None

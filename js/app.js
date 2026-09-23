@@ -112,23 +112,24 @@ const ApiService = (() => {
     },
 
     /** 获取营销数据总览，支持日期、平台、品牌筛选 */
-    async getMarketingOverview(start, end, platform, brand) {
+    async getMarketingOverview(start, end, platforms, brands) {
       let path = '/marketing/overview';
       const params = [];
       if (start) params.push('start=' + encodeURIComponent(start));
       if (end)   params.push('end=' + encodeURIComponent(end));
-      if (platform) params.push('platform=' + encodeURIComponent(platform));
-      if (brand)   params.push('brand=' + encodeURIComponent(brand));
+      (Array.isArray(platforms) ? platforms : (platforms ? [platforms] : [])).forEach(function (v) { params.push('platform=' + encodeURIComponent(v)); });
+      (Array.isArray(brands) ? brands : (brands ? [brands] : [])).forEach(function (v) { params.push('brand=' + encodeURIComponent(v)); });
       if (params.length) path += '?' + params.join('&');
       return request(path);
     },
 
     /** 获取品类营销数据，按统一品类汇总单链接成交 */
-    async getCategoryMarketing(start, end) {
+    async getCategoryMarketing(start, end, stores) {
       let path = '/category-marketing/data';
       const params = [];
       if (start) params.push('start=' + encodeURIComponent(start));
       if (end)   params.push('end=' + encodeURIComponent(end));
+      (Array.isArray(stores) ? stores : (stores ? [stores] : [])).forEach(function (v) { params.push('store=' + encodeURIComponent(v)); });
       if (params.length) path += '?' + params.join('&');
       return request(path);
     },
@@ -204,12 +205,15 @@ const ApiService = (() => {
 
     /** 种草监测中台：部门账号、店铺品类绑定和收录记录 */
     async getSeedingOptions() { return request('/seeding/options'); },
-    async getSeedingRecords(department, person) {
+    async getSeedingRecords(department, person, responsible) {
       const params = [];
       if (department && department !== '全部') params.push('department=' + encodeURIComponent(department));
       if (person && person !== '全部') params.push('person=' + encodeURIComponent(person));
+      if (responsible && responsible !== '全部') params.push('responsible=' + encodeURIComponent(responsible));
       return request('/seeding/records' + (params.length ? '?' + params.join('&') : ''));
     },
+    async getSeedingCategoryViews() { return request('/seeding/category-views'); },
+    async getSeedingSummary(department) { return request('/seeding/summary' + (department && department !== '全部' ? '?department=' + encodeURIComponent(department) : '')); },
     async createSeedingRecord(data) { return request('/seeding/records', { method: 'POST', body: JSON.stringify(data) }); },
     async updateSeedingRecord(id, data) { return request('/seeding/records/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
     async deleteSeedingRecord(id) { return request('/seeding/records/' + id, { method: 'DELETE' }); },
@@ -387,6 +391,10 @@ const ApiService = (() => {
     },
   };
 })();
+
+// Vue 页面脚本（尤其是种草监测中台）通过 window.ApiService 访问接口层。
+// 顶层 const 不会自动成为 window 属性，因此显式导出，确保页面能读取数据库数据。
+window.ApiService = ApiService;
 
 // ==================== 主应用 ====================
 

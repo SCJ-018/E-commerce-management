@@ -34,23 +34,19 @@ except ImportError:
     HAS_XLRD = False
 
 # ─── 默认数据库配置 ─────────────────────────────────────────
-# 【唯一数据源】所有数据入口统一指向「内网自建 MySQL」：192.168.2.10:3306
-# 真源是 backend/config.py 的 DB_CONFIG，这里优先复用它，保证导入工具与后端读同一个库。
-# ⚠️ 禁止改回 127.0.0.1:3307（那是 SSH 隧道到腾讯云服务器的库），会造成
-#    「导入成功但网页看不到」的两库分裂问题。
-# ⚠️ 禁止指向腾讯云 119.45.187.154。
+# 数据库端点必须由调用环境显式提供；这里不保留任何内网地址、账号或密码回退值。
 _FALLBACK_DB = {
-    'host': '192.168.2.10',   # 内网自建 MySQL
+    'host': os.environ.get('DB_HOST', ''),
     'port': 3306,
-    'user': 'root',
-    'password': os.environ.get('DB_PASSWORD', '123456'),
-    'database': '数据',
+    'user': os.environ.get('DB_USER', ''),
+    'password': os.environ.get('DB_PASSWORD', ''),
+    'database': os.environ.get('DB_NAME', ''),
     'charset': 'utf8mb4',
 }
 
 
 def _load_default_db():
-    """优先复用 backend/config.py 的 DB_CONFIG；取不到时用内置的自建库默认值。"""
+    """优先复用 backend/config.py 的 DB_CONFIG；缺少配置时保持为空并提示用户。"""
     try:
         _backend_dir = os.path.normpath(
             os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'backend')
@@ -64,7 +60,7 @@ def _load_default_db():
                 cfg[k] = DB_CONFIG[k]
         return cfg, 'backend/config.py'
     except Exception:
-        return dict(_FALLBACK_DB), '内置默认值'
+        return dict(_FALLBACK_DB), '环境变量（未完整配置）'
 
 
 DEFAULT_DB, DB_SOURCE = _load_default_db()
@@ -167,12 +163,12 @@ class ImportToolApp:
         self.lbl_conn_status = ttk.Label(r2, text='未连接', foreground='red')
         self.lbl_conn_status.pack(side=tk.LEFT, padx=12)
 
-        # 数据源提示：始终提醒当前指向的是自建 MySQL，避免误连线上库
+        # 数据源提示：显示显式配置来源，避免误把历史默认值当成当前数据源
         r3 = ttk.Frame(f)
         r3.pack(fill=tk.X, pady=(2, 0))
         ttk.Label(
             r3,
-            text='数据源：%s:%s/%s（内网自建 MySQL · 配置来源 %s）'
+            text='数据源：%s:%s/%s（显式配置 · 配置来源 %s）'
                  % (DEFAULT_DB['host'], DEFAULT_DB['port'], DEFAULT_DB['database'], DB_SOURCE),
             foreground='#0d9488',
         ).pack(side=tk.LEFT)

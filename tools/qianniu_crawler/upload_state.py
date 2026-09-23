@@ -22,8 +22,8 @@ SSH_HOST = '119.45.187.154'
 SSH_USER = 'root'
 SSH_PWD = 'pcl520526.'
 REMOTE_DIR = '/opt/pw/states'
-MYSQL_PWD = 'Ecom@2026'
-MYSQL_DB = '数据'
+MYSQL_PWD = os.environ.get('FETCH_DB_PASSWORD', '')
+MYSQL_DB = os.environ.get('FETCH_DB_NAME', '')
 
 
 def main():

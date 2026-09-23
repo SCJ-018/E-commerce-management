@@ -985,14 +985,55 @@ def fail(msg='error', code=1):
 # 记录、品类绑定和账号选项统一由服务端提供。旧页面的 localStorage 只作为
 # 后端不可用时的临时空态，不再作为正式数据源。
 _SEEDING_DEPARTMENTS = ('一部', '二部', '三部', '四部', '五部')
+_SEEDING_RESPONSIBLES = ('全部', '马楠', '李世友', '李鑫雨', '刘昱岑', '黄新茹', '李喆')
 _SEEDING_RECORD_FIELDS = {
     'date': '发布时间', 'department': '部门', 'product': '产品',
     'platform': '发布平台', 'source': '发布渠道', 'noteType': '笔记类型',
     'title': '标题', 'publishLink': '发布链接', 'accountName': '发布账号名称',
     'accountId': '发布账号ID', 'likes': '点赞', 'collects': '收藏',
     'comments': '评论', 'views': '阅读量', 'trafficImage': '流量分析',
-    'remark': '备注'
+    'remark': '备注', 'responsible': '负责人'
 }
+
+# 种草中台卡片的固定品类口径。浏览量来自三平台单链接数据：
+# 抖店取「商品点击人数」，京东和千牛取「商品访客数」。
+_SEEDING_CATEGORY_VIEW_RULES = {
+    '一部': {'store': '西西猫', 'keywords': ('脚垫', '坐垫', '座垫', '香薰', '去油膜', '头枕', '腰靠')},
+    '二部': {'store': '西西猫', 'keywords': ('脚垫', '坐垫', '座垫', '香薰', '去油膜', '头枕', '腰靠')},
+    '三部': {'store': '御车宝', 'keywords': ('脚垫', '坐垫', '座垫', '车衣')},
+    '四部': {'store': '', 'keywords': ('剃须刀', '爬楼机')},
+    '五部': {'store': '', 'keywords': ('电动牙刷', '护腰坐垫', '护腰座垫')},
+}
+
+
+def _seeding_category_view_total(rule, date_value=None):
+    """按部门固定口径汇总三平台单链接浏览量/点击人数。"""
+    platforms = (
+        ('抖店单链接数据表', '统计周期', '店铺名', '商品名称', '商品点击人数'),
+        ('京东单链接数据表', '时间', '店铺名', 'SPU名称', '商品访客数'),
+        ('千牛单链接数据表', '统计日期', '店铺名', '商品名称', '商品访客数'),
+    )
+    total = 0
+    for table, date_col, store_col, title_col, metric_col in platforms:
+        conditions = []
+        params = []
+        if rule['store']:
+            conditions.append(f'`{store_col}` LIKE %s')
+            params.append('%' + rule['store'] + '%')
+        if date_value:
+            conditions.append(f'`{date_col}` = %s')
+            params.append(date_value)
+        title_conditions = [f'`{title_col}` LIKE %s' for _ in rule['keywords']]
+        conditions.append('(' + ' OR '.join(title_conditions) + ')')
+        params.extend('%' + keyword + '%' for keyword in rule['keywords'])
+        row = db_execute(
+            f'SELECT COALESCE(SUM(`{metric_col}`), 0) AS total FROM `{table}` '
+            + 'WHERE ' + ' AND '.join(conditions),
+            params,
+        )
+        if row:
+            total += int(float(row[0].get('total') or 0))
+    return total
 
 
 def _seeding_record_to_front(row):
@@ -1025,6 +1066,7 @@ def _ensure_seeding_tables():
         "`发布链接` VARCHAR(1000) NOT NULL DEFAULT '',"
         "`发布账号名称` VARCHAR(100) NOT NULL DEFAULT '',"
         "`发布账号ID` VARCHAR(150) NOT NULL DEFAULT '',"
+        "`负责人` VARCHAR(100) NOT NULL DEFAULT '',"
         "`点赞` BIGINT NOT NULL DEFAULT 0,"
         "`收藏` BIGINT NOT NULL DEFAULT 0,"
         "`评论` BIGINT NOT NULL DEFAULT 0,"
@@ -1048,6 +1090,13 @@ def _ensure_seeding_tables():
         "UNIQUE KEY `uk_种草绑定_部门店铺品类` (`部门`, `店铺`, `品类`),"
         "INDEX `idx_种草绑定_部门` (`部门`)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='种草部门店铺品类绑定表'", fetch=False)
+    try:
+        cols = {r.get('Field') for r in (db_execute('SHOW COLUMNS FROM `种草收录表`') or [])}
+        if '负责人' not in cols:
+            db_execute("ALTER TABLE `种草收录表` ADD COLUMN `负责人` VARCHAR(100) NOT NULL DEFAULT '' AFTER `发布账号ID`", fetch=False)
+            db_execute("ALTER TABLE `种草收录表` ADD INDEX `idx_种草收录_负责人` (`负责人`)", fetch=False)
+    except Exception:
+        pass
 
 
 def _seeding_store_options():
@@ -1119,9 +1168,87 @@ def seeding_options():
             name = str(row.get('name') or row.get('account') or '').strip()
             if dept in people and name and name not in people[dept]:
                 people[dept].append(name)
-        return success({'departments': list(_SEEDING_DEPARTMENTS), 'stores': _seeding_store_options(),
+        return success({'departments': list(_SEEDING_DEPARTMENTS), 'responsibles': list(_SEEDING_RESPONSIBLES), 'stores': _seeding_store_options(),
                         'bindings': bindings, 'people': people})
     except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/category-views', methods=['GET'])
+def seeding_category_views():
+    """返回种草中台按部门固定口径汇总的三平台品类浏览量。"""
+    try:
+        yesterday = date.today() - timedelta(days=1)
+        previous = yesterday - timedelta(days=1)
+        departments = {
+            dept: _seeding_category_view_total(rule, yesterday)
+            for dept, rule in _SEEDING_CATEGORY_VIEW_RULES.items()
+        }
+        previous_departments = {
+            dept: _seeding_category_view_total(rule, previous)
+            for dept, rule in _SEEDING_CATEGORY_VIEW_RULES.items()
+        }
+        return success({
+            'departments': departments,
+            'previousDepartments': previous_departments,
+            'date': str(yesterday),
+            'previousDate': str(previous),
+            'total': sum(departments.values()),
+            'rules': {
+                dept: {'store': rule['store'], 'keywords': list(rule['keywords'])}
+                for dept, rule in _SEEDING_CATEGORY_VIEW_RULES.items()
+            },
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return fail(str(e))
+
+
+@app.route('/api/seeding/summary', methods=['GET'])
+def seeding_summary():
+    """返回昨日收录指标及前一日环比，供中台四张卡片使用。"""
+    try:
+        yesterday = date.today() - timedelta(days=1)
+        previous = yesterday - timedelta(days=1)
+        department = (request.args.get('department') or '').strip()
+        conditions = ''
+        params = []
+        if department and department != '全部':
+            conditions = ' AND `部门` = %s'
+            params.append(department)
+
+        def record_stats(target):
+            rows = db_execute(
+                'SELECT COUNT(*) AS count, COALESCE(SUM(`阅读量`), 0) AS views, '
+                'COALESCE(SUM(CASE WHEN `阅读量` >= 10000 THEN 1 ELSE 0 END), 0) AS hot '
+                'FROM `种草收录表` WHERE `发布时间` = %s' + conditions,
+                [target] + params,
+            ) or [{}]
+            item = rows[0]
+            return {'count': int(item.get('count') or 0), 'views': int(float(item.get('views') or 0)), 'hot': int(item.get('hot') or 0)}
+
+        category_current = {
+            dept: _seeding_category_view_total(rule, yesterday)
+            for dept, rule in _SEEDING_CATEGORY_VIEW_RULES.items()
+        }
+        category_previous = {
+            dept: _seeding_category_view_total(rule, previous)
+            for dept, rule in _SEEDING_CATEGORY_VIEW_RULES.items()
+        }
+        if department and department != '全部':
+            category_current_value = category_current.get(department, 0)
+            category_previous_value = category_previous.get(department, 0)
+        else:
+            category_current_value = sum(category_current.values())
+            category_previous_value = sum(category_previous.values())
+        return success({
+            'date': str(yesterday), 'previousDate': str(previous),
+            'current': record_stats(yesterday), 'previous': record_stats(previous),
+            'categoryCurrent': category_current_value,
+            'categoryPrevious': category_previous_value,
+        })
+    except Exception as e:
+        traceback.print_exc()
         return fail(str(e))
 
 
@@ -1154,10 +1281,13 @@ def seeding_records():
         conditions, params = [], []
         department = (request.args.get('department') or '').strip()
         person = (request.args.get('person') or '').strip()
+        responsible = (request.args.get('responsible') or '').strip()
         if department and department != '全部':
             conditions.append('`部门` = %s'); params.append(department)
         if person and person != '全部':
             conditions.append('`发布账号名称` = %s'); params.append(person)
+        if responsible and responsible != '全部':
+            conditions.append('`负责人` = %s'); params.append(responsible)
         where = (' WHERE ' + ' AND '.join(conditions)) if conditions else ''
         rows = db_execute('SELECT * FROM `种草收录表`' + where + ' ORDER BY `发布时间` DESC, id DESC', params) or []
         return success([_seeding_record_to_front(row) for row in rows])
@@ -1645,8 +1775,11 @@ def marketing_overview():
     try:
         start_date = request.args.get('start')
         end_date   = request.args.get('end')
-        platform   = request.args.get('platform', '').strip()
-        brand      = request.args.get('brand', '').strip()
+        platforms  = [v.strip() for v in request.args.getlist('platform') if v.strip()]
+        brands     = [v.strip() for v in request.args.getlist('brand') if v.strip()]
+        # 兼容旧客户端把多个值逗号拼接到一个参数中的写法
+        if len(platforms) == 1 and ',' in platforms[0]: platforms = [v.strip() for v in platforms[0].split(',') if v.strip()]
+        if len(brands) == 1 and ',' in brands[0]: brands = [v.strip() for v in brands[0].split(',') if v.strip()]
 
         conditions = []
         params = []
@@ -1659,12 +1792,12 @@ def marketing_overview():
         elif end_date:
             conditions.append('日期 <= %s')
             params.append(end_date)
-        if platform:
-            conditions.append('平台 = %s')
-            params.append(platform)
-        if brand:
-            conditions.append('品牌 = %s')
-            params.append(brand)
+        if platforms:
+            conditions.append('平台 IN (' + ','.join(['%s'] * len(platforms)) + ')')
+            params.extend(platforms)
+        if brands:
+            conditions.append('品牌 IN (' + ','.join(['%s'] * len(brands)) + ')')
+            params.extend(brands)
 
         where_clause = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
 
@@ -1711,12 +1844,12 @@ def marketing_overview():
         # 上期 WHERE
         prev_conds = ['日期 >= %s', '日期 <= %s']
         prev_params = [prev_s, prev_e]
-        if platform:
-            prev_conds.append('平台 = %s')
-            prev_params.append(platform)
-        if brand:
-            prev_conds.append('品牌 = %s')
-            prev_params.append(brand)
+        if platforms:
+            prev_conds.append('平台 IN (' + ','.join(['%s'] * len(platforms)) + ')')
+            prev_params.extend(platforms)
+        if brands:
+            prev_conds.append('品牌 IN (' + ','.join(['%s'] * len(brands)) + ')')
+            prev_params.extend(brands)
         prev_where = 'WHERE ' + ' AND '.join(prev_conds)
 
         prev_row = db_execute(f"""
@@ -1871,12 +2004,15 @@ def marketing_overview():
 # 各平台单链接表 → 品类映射聚合的字段口径（与订单详情「全部平台」共同字段一致）
 _CAT_PLATFORM = {
     '抖店': {'table': '抖店单链接数据表', 'id': '商品编码', 'date': '统计周期',
+             'store': '店铺名',
              'payment': '成交金额', 'orders': '成交订单数', 'buyers': '成交人数', 'refund': '成交退款金额',
              'spend_sql': "COALESCE(SUM(t.`投放消耗（店铺被投）`),0) + COALESCE(SUM(t.`投放消耗（推商品）`),0)",
              'ad_gmv': '投放贡献成交金额'},
     '京东': {'table': '京东单链接数据表', 'id': 'SPU', 'date': '时间',
+             'store': '店铺名',
              'payment': '成交金额', 'orders': '成交单量', 'buyers': '成交客户数', 'refund': '取消及售后退款金额'},
     '千牛': {'table': '千牛单链接数据表', 'id': '商品ID', 'date': '统计日期',
+             'store': '店铺名',
              'payment': '支付金额', 'orders': '支付件数', 'buyers': '支付买家数', 'refund': '成功退款金额'},
 }
 
@@ -1885,7 +2021,7 @@ _QN_PROMO = {'table': '千牛单链接推广数据表', 'id': '商品ID', 'date'
              'spend': '推广消耗', 'ad_gmv': '总引导成交金额'}
 
 
-def _gather_category_data(start_date='', end_date=''):
+def _gather_category_data(start_date='', end_date='', stores=None):
     """按统一品类汇总成交/消耗/产出数据（品类营销页 + 每日分析共用）。
     返回 {'totals': {...}, 'categories': [...]}"""
     agg = {}  # 品类 -> {payment, orders, buyers, refund, products, spend, ad_gmv}
@@ -1898,6 +2034,9 @@ def _gather_category_data(start_date='', end_date=''):
         if end_date:
             where.append(f"t.`{meta['date']}` <= %s")
             params.append(end_date)
+        if stores:
+            where.append('t.`' + meta['store'] + '` IN (' + ','.join(['%s'] * len(stores)) + ')')
+            params.extend(stores)
         spend_sql = meta.get('spend_sql', '0')
         ad_gmv_col = meta.get('ad_gmv')
         ad_gmv_sql = f"COALESCE(SUM(t.`{ad_gmv_col}`), 0)" if ad_gmv_col else '0'
@@ -1941,6 +2080,9 @@ def _gather_category_data(start_date='', end_date=''):
     if end_date:
         qn_where.append(f"p.`{_QN_PROMO['date']}` <= %s")
         qn_params.append(end_date)
+    if stores:
+        qn_where.append('p.`店铺名` IN (' + ','.join(['%s'] * len(stores)) + ')')
+        qn_params.extend(stores)
     qn_sql = f"""
         SELECT m.`统一品类` AS cat,
                COALESCE(SUM(p.`{_QN_PROMO['spend']}`), 0)  AS spend,
@@ -1992,10 +2134,18 @@ def category_marketing_data():
     try:
         start_date = request.args.get('start', '').strip()
         end_date = request.args.get('end', '').strip()
-        result = _gather_category_data(start_date, end_date)
+        stores = [v.strip() for v in request.args.getlist('store') if v.strip()]
+        if len(stores) == 1 and ',' in stores[0]: stores = [v.strip() for v in stores[0].split(',') if v.strip()]
+        result = _gather_category_data(start_date, end_date, stores)
         # 附上各品类的命中关键词（供前端展示）
         for c in result['categories']:
             c['keywords'] = _category_keywords(c['category'])
+        # 店铺选项来自三张单链接表，返回去重后的真实店铺名
+        options = set()
+        for meta in _CAT_PLATFORM.values():
+            rows = db_execute('SELECT DISTINCT `' + meta['store'] + '` AS store FROM `' + meta['table'] + '` WHERE `' + meta['store'] + '` IS NOT NULL AND `' + meta['store'] + '` <> %s', [''])
+            options.update(str(r['store']).strip() for r in rows if str(r.get('store') or '').strip())
+        result['stores'] = sorted(options)
         return success(result)
     except Exception as e:
         traceback.print_exc()
@@ -6063,7 +6213,7 @@ def _ensure_aisou_columns():
     历史遗留：该表原本是宽表——主键 (日期, 电商词关键词, 下拉词关键词, 相关词关联词)，
     且下拉词/相关词的月覆盖人次、七日搜索人次都是 NOT NULL 无默认值，
     智能体只插业务字段会直接报 1364。2026-09-17 已把线上表改成窄表，
-    这里保留一段自愈逻辑，保证其它库（内网库等）第一次跑也不会挂。
+    这里保留一段自愈逻辑，保证历史迁移过来的库第一次跑也不会挂。
     """
     info = {r['Field']: r for r in db_execute("SHOW COLUMNS FROM `爱搜数据表`")}
     specs = {
@@ -7307,7 +7457,7 @@ def _douyin_hot_auto_loop():
     # ---- 启动补跑 ----
     # 覆盖两种会让当天数据永久丢失的情况：
     #   ① 服务恰在 07:00 重启 → 主循环 next_run <= now 会顺延到次日，当天被跳过且无补跑；
-    #   ② 覆盖式整库同步（sync_db.py）把当天已落库的数据冲掉。
+    #   ② 覆盖式整库同步曾把当天已落库的数据冲掉；同步脚本已移除。
     # 只在 07:00 之后判断：若服务在 7 点前启动，交给下面的主循环正常触发，避免重复抓取。
     try:
         time.sleep(15)  # 等 gunicorn worker 与数据库连接池就绪

@@ -66,9 +66,9 @@ PW_BASE = '/opt/pw' if IS_SERVER else BASE_DIR
 SERVER_DB = {
     'host': '127.0.0.1',
     'port': 3306,
-    'user': 'ecom',
-    'password': 'Ecom@2026',
-    'database': '数据',
+    'user': os.environ.get('FETCH_DB_USER', ''),
+    'password': os.environ.get('FETCH_DB_PASSWORD', ''),
+    'database': os.environ.get('FETCH_DB_NAME', ''),
     'charset': 'utf8mb4',
     'connect_timeout': 15,
 }

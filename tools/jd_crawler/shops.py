@@ -20,9 +20,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SERVER_DB = {
     'host': '127.0.0.1',      # 脚本在服务器本机跑时用 127.0.0.1
     'port': 3306,
-    'user': 'ecom',
-    'password': 'Ecom@2026',
-    'database': '数据',
+    'user': os.environ.get('FETCH_DB_USER', ''),
+    'password': os.environ.get('FETCH_DB_PASSWORD', ''),
+    'database': os.environ.get('FETCH_DB_NAME', ''),
     'charset': 'utf8mb4',
 }
 

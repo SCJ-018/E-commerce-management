@@ -21,16 +21,16 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SERVER_DB = {
     'host': '127.0.0.1',      # 脚本在服务器本机跑时用 127.0.0.1
     'port': 3306,
-    'user': 'ecom',
-    'password': 'Ecom@2026',
-    'database': '数据',
+    'user': os.environ.get('FETCH_DB_USER', ''),
+    'password': os.environ.get('FETCH_DB_PASSWORD', ''),
+    'database': os.environ.get('FETCH_DB_NAME', ''),
     'charset': 'utf8mb4',
 }
 
 # 连接目标统一是「云数据库」= 腾讯云服务器(119.45.187.154)上的 MySQL：
 #   - 脚本在服务器上跑（存在 /opt/pw 目录）→ 直连 127.0.0.1:3306（服务器本机）
 #   - 本地跑 → 走 SSH 隧道 127.0.0.1:3307（先跑 `python .deploy/ssx.py tunnel` 建隧道）
-# 内网自建库 192.168.2.10 已废弃，不再使用。
+# 数据库端点由环境变量提供，避免把脚本绑定到任何固定网络。
 import socket
 
 
