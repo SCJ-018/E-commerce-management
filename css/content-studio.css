@@ -13,7 +13,7 @@
 
 /* 进入创作中心时让出版面：隐藏全局顶栏，页面自己铺满 */
 .content-studio-mode .topbar { display:none; }
-.content-studio-mode .main-content { background:#f6f4fb; }
+.content-studio-mode .main-content { background:#f6f4fb; padding-top:0; }
 .content-studio-page {
   padding:0 !important; min-height:100vh;
   background:
