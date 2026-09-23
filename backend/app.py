@@ -5085,7 +5085,7 @@ _ocr_executor = ThreadPoolExecutor(max_workers=1)
 # ==================== 预处理参数 ====================
 _UPSCALE_THRESHOLD_SMALL  = 1000
 _UPSCALE_THRESHOLD_MEDIUM = 1800
-_DOWNSCALE_MAX_SIDE = 2000
+_DOWNSCALE_MAX_SIDE = 2400
 _CLAHE_CLIP_LIMIT = 2.8
 _CLAHE_TILE_SIZE  = (8, 8)
 _BILATERAL_D_SMALL  = 5
@@ -5134,15 +5134,17 @@ def _get_ocr_reader():
     with _ocr_lock:
         if _paddle_ocr is not None:
             return _paddle_ocr
-        os.environ['FLAGS_use_mkldnn'] = '0'
+        # CPU 部署默认开启 oneDNN/MKLDNN；如目标机器不兼容，可显式设置 OCR_ENABLE_MKLDNN=0 回退。
+        enable_mkldnn = os.environ.get('OCR_ENABLE_MKLDNN', '1').strip().lower() not in ('0', 'false', 'no')
+        os.environ['FLAGS_use_mkldnn'] = '1' if enable_mkldnn else '0'
         from paddleocr import PaddleOCR
         print('[PaddleOCR] 正在加载模型...')
         _paddle_ocr = PaddleOCR(
             lang='ch',
             use_textline_orientation=False,  # 关闭方向分类，显著提速（商品图文字基本为正方向）
-            enable_mkldnn=False,
+            enable_mkldnn=enable_mkldnn,
         )
-        print('[PaddleOCR] 模型加载完成')
+        print(f'[PaddleOCR] 模型加载完成，MKLDNN={enable_mkldnn}')
     return _paddle_ocr
 
 
@@ -5178,6 +5180,16 @@ def _preprocess_image(img_bgr: np.ndarray) -> np.ndarray:
     return img_bgr
 
 
+def _prepare_original_image(img_bgr: np.ndarray) -> np.ndarray:
+    """保留原始笔画，只限制异常大图尺寸；默认首轮识别使用此图。"""
+    h, w = img_bgr.shape[:2]
+    max_side = max(h, w)
+    if max_side > _DOWNSCALE_MAX_SIDE:
+        scale = _DOWNSCALE_MAX_SIDE / max_side
+        return cv2.resize(img_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    return img_bgr
+
+
 def _decode_base64_image(data_url: str, preprocess: bool = True):
     """从 base64 data URL 解码图片，返回 BGR numpy array（PaddleOCR 格式）"""
     import base64
@@ -5187,9 +5199,7 @@ def _decode_base64_image(data_url: str, preprocess: bool = True):
     if img.mode != 'RGB':
         img = img.convert('RGB')
     img_bgr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-    if preprocess:
-        img_bgr = _preprocess_image(img_bgr)
-    return img_bgr
+    return _preprocess_image(img_bgr) if preprocess else _prepare_original_image(img_bgr)
 
 
 def _to_grayscale_binary(img_bgr: np.ndarray) -> np.ndarray:
@@ -5270,63 +5280,82 @@ def _parse_paddle_result(result) -> list:
 # ==================== 核心识别逻辑 ====================
 def _do_ocr_single(img_data: str) -> dict:
     """单张图片的完整识别流程"""
+    import time
+    started_at = time.perf_counter()
     reader = _get_ocr_reader()
     if reader is None:
         return {'text': '', 'confidence': 0, 'lines': 0, 'error': 'OCR引擎未就绪'}
 
-    # 第一轮：预处理增强图
-    img_bgr = _decode_base64_image(img_data, preprocess=True)
+    # 第一轮：优先使用原图（仅限制最大边），避免 CLAHE/锐化破坏小字笔画。
+    decode_started = time.perf_counter()
+    img_bgr = _decode_base64_image(img_data, preprocess=False)
+    decode_seconds = time.perf_counter() - decode_started
+    predict_started = time.perf_counter()
     raw_result = reader.predict(img_bgr)
+    predict_seconds = time.perf_counter() - predict_started
     ocr_lines = _filter_ocr_results(_parse_paddle_result(raw_result))
-    print(f'[OCR] 预处理图检出 {len(ocr_lines)} 条')
+    avg_first_conf = (sum(conf for _text, conf in ocr_lines) / len(ocr_lines)) if ocr_lines else 0
+    print(f'[OCR] 原图检出 {len(ocr_lines)} 条，平均置信度={avg_first_conf:.2f}')
 
     fallback_used = False
     fallback_stage = None
 
-    # 降级1：无结果 → 原图
-    if not ocr_lines:
-        print('[OCR] 预处理图无有效文字，降级为原图重试...')
-        img_raw = _decode_base64_image(img_data, preprocess=False)
-        raw_result_fb = reader.predict(img_raw)
-        ocr_lines = _filter_ocr_results(_parse_paddle_result(raw_result_fb))
-        print(f'[OCR] 原图检出 {len(ocr_lines)} 条')
+    # 仅在无结果或整体置信度过低时做一次增强重试，不再默认执行三轮 OCR。
+    retry_seconds = 0
+    if not ocr_lines or avg_first_conf < 0.55:
+        print('[OCR] 原图结果不足，使用增强图重试...')
+        retry_started = time.perf_counter()
+        img_enhanced = _decode_base64_image(img_data, preprocess=True)
+        enhanced_result = reader.predict(img_enhanced)
+        enhanced_lines = _filter_ocr_results(_parse_paddle_result(enhanced_result))
+        enhanced_conf = (sum(conf for _text, conf in enhanced_lines) / len(enhanced_lines)) if enhanced_lines else 0
+        retry_seconds = time.perf_counter() - retry_started
+        print(f'[OCR] 增强图检出 {len(enhanced_lines)} 条，平均置信度={enhanced_conf:.2f}')
+        # 只有增强结果确实更可靠时才替换，避免“识别出了文字但字符更错”。
+        if enhanced_lines and (not ocr_lines or enhanced_conf > avg_first_conf + 0.03):
+            ocr_lines = enhanced_lines
+            avg_first_conf = enhanced_conf
+            fallback_stage = 'enhanced'
         fallback_used = True
-        fallback_stage = 'raw'
-
-    # 降级2：仍无结果 → 灰度二值化
-    if not ocr_lines:
-        print('[OCR] 原图仍无有效文字，降级为灰度二值化重试...')
-        img_raw = _decode_base64_image(img_data, preprocess=False)
-        binary = _to_grayscale_binary(img_raw)
-        raw_result_b = reader.predict(binary)
-        ocr_lines = _filter_ocr_results(_parse_paddle_result(raw_result_b))
-        print(f'[OCR] 二值化图检出 {len(ocr_lines)} 条')
-        fallback_used = True
-        fallback_stage = 'binary'
 
     # 输出
     lines_text = [text for text, _conf in ocr_lines]
     total_conf = sum(conf for _text, conf in ocr_lines)
     raw_text = '\n'.join(lines_text)
-    corrected_text, was_corrected = _apply_corrections(raw_text)
+    normalized_text, was_corrected = _apply_corrections(raw_text)
     if was_corrected:
-        print(f'[OCR] 纠错字典已应用')
+        print('[OCR] 已生成匹配用规范化文本；展示与留档仍保留 OCR 原文')
 
     avg_conf = round(total_conf / len(lines_text), 2) if lines_text else 0
 
     # 调试日志：打印实际返回的文本内容（截断过长文本）
-    preview = corrected_text[:120].replace('\n', '\\n')
-    if len(corrected_text) > 120:
-        preview += f'... (+{len(corrected_text) - 120}字)'
-    print(f'[OCR] 返回文本: lines={len(lines_text)} conf={avg_conf} fallback={fallback_used} text="{preview}"')
+    preview = raw_text[:120].replace('\n', '\\n')
+    if len(raw_text) > 120:
+        preview += f'... (+{len(raw_text) - 120}字)'
+    total_seconds = time.perf_counter() - started_at
+    print(f'[OCR] 返回原文: lines={len(lines_text)} conf={avg_conf} fallback={fallback_used} '
+          f'decode={decode_seconds:.2f}s predict={predict_seconds:.2f}s retry={retry_seconds:.2f}s '
+          f'total={total_seconds:.2f}s text="{preview}"')
 
     return {
-        'text': corrected_text,
+        'text': raw_text,
+        'normalized_text': normalized_text,
         'confidence': avg_conf,
         'lines': len(lines_text),
         'fallback': fallback_used,
         'fallback_stage': fallback_stage,
     }
+
+
+@app.route('/api/ocr/warmup', methods=['POST'])
+def ocr_warmup():
+    """提前加载 OCR 模型，避免用户第一次正式检测承担模型初始化时间。"""
+    try:
+        _ocr_executor.submit(_get_ocr_reader)
+        return jsonify({'success': True, 'status': 'warming'})
+    except Exception as exc:
+        app.logger.exception('OCR 预热失败')
+        return jsonify({'success': False, 'error': str(exc)}), 500
 
 
 # ==================== Flask 接口 ====================

@@ -359,6 +359,10 @@ const ApiService = (() => {
         return null;
       }
     },
+    async ocrWarmup() {
+      const res = await fetch(BASE_URL + '/ocr/warmup', { method: 'POST' });
+      return await res.json();
+    },
     async violationDetect(text) {
       try {
         const res = await fetch(BASE_URL + '/violation/detect', {
@@ -839,6 +843,14 @@ const App = (() => {
   }
 
   function navigateTo(page) {
+    // 违规词检测已并入内容创作中心；旧书签/旧 hash 自动落到融合页。
+    var legacyViolationPage = page === 'toolbox-violation-check';
+    if (page === 'toolbox-violation-check') {
+      page = 'content-studio';
+      setTimeout(function () {
+        window.dispatchEvent(new CustomEvent('content-studio-tab', { detail: 'violation' }));
+      }, 0);
+    }
     document.getElementById('appPage').classList.toggle('content-studio-mode', page === 'content-studio');
     // 权限检查
     // 人事中心是单页面 + 页内卡片切换，权限点按数据表拆分（hr-roster / hr-interview / ...）。
@@ -853,8 +865,10 @@ const App = (() => {
     //   先按「非主管」处理，由页面内部再纠正（不会误放行敏感操作，因为后端有硬校验）。
     var _accDeny = page === 'admin-permissions'
       && !_CAN_MANAGE_ACCOUNTS && !_IS_DEPT_LEAD;
+    var _contentStudioPerm = page === 'content-studio' && _ALLOWED_PAGES !== null &&
+      (_ALLOWED_PAGES.includes('content-studio') || (legacyViolationPage && _ALLOWED_PAGES.includes('toolbox-violation-check')));
 
-    if (_accDeny || (_ALLOWED_PAGES !== null && !_ALLOWED_PAGES.includes(page) && page !== 'profile' && !_hrPermHit)) {
+    if (_accDeny || (_ALLOWED_PAGES !== null && !_ALLOWED_PAGES.includes(page) && page !== 'profile' && !_hrPermHit && !_contentStudioPerm)) {
       _showPermissionDenied();
       // 高亮当前点击的菜单项
       document.querySelectorAll('.nav-item, .nav-direct-link').forEach(function(el) {

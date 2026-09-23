@@ -59,8 +59,10 @@
     ['评论区互动模板','comments'],['可借鉴点','learn'],['风险与验证','risks']
   ];
 
-  Vue.createApp({
+  var studioApp = Vue.createApp({
+    components: { 'content-violation-page': window.ContentViolationPage },
     data: function () { return {
+      workspaceTab:'creative',
       activeTab:'breakdown', input:'', analysisFocus:'', status:'', statusError:false, busy:false, cards:loadCards(), selectedId:null,
       category:'汽车脚垫', noteType:'测评', imitate:false, referenceId:null, productName:'', sellingPoints:'', audience:'', scene:'',
       output:null, productionBusy:false, productionStatus:'', productionError:false, aiDegraded:false,
@@ -107,6 +109,9 @@
     mounted:function () {
       var self = this;
       self.loadProfile();
+      window.addEventListener('content-studio-tab', function (e) {
+        if (e && e.detail === 'violation') self.workspaceTab = 'violation';
+      });
       // 本页在「登录之前」就已挂载（脚本首屏执行），那一刻 /api/profile/me 还是 401，
       // 之后再不会自动补取 → 用户卡会一直停在兜底文案「当前用户 / 团队成员」。
       // 所以每次页面被切到前台时补取一次（成功后不再重复请求）。
@@ -205,7 +210,18 @@
       display:function (value) { return textVal(value) || '暂无内容'; }
     },
     template:`<div class="cs-shell">
-      <div class="cs-page">
+      <nav class="cs-workspace-nav" aria-label="内容创作中心功能导航">
+        <div class="cs-workspace-nav-inner">
+          <div class="cs-workspace-title"><span class="mark"><i class="fa-solid fa-water"></i></span><span><b>内容创作中心</b><small>CONTENT STUDIO</small></span></div>
+          <div class="cs-workspace-links" role="tablist">
+            <button type="button" role="tab" :aria-selected="workspaceTab==='creative'" :class="{on:workspaceTab==='creative'}" @click="workspaceTab='creative'"><i class="fa-solid fa-wand-magic-sparkles"></i> 爆文创作</button>
+            <button type="button" role="tab" :aria-selected="workspaceTab==='violation'" :class="{on:workspaceTab==='violation'}" @click="workspaceTab='violation'"><i class="fa-solid fa-shield-halved"></i> 违规词检测</button>
+          </div>
+          <div class="cs-workspace-note"><i class="fa-solid fa-circle-check"></i> 创作与合规一体化工作台</div>
+        </div>
+      </nav>
+
+      <div v-if="workspaceTab==='creative'" class="cs-page">
         <div class="cs-layout">
 
           <!-- ==================== 左栏：流程 + 草稿 ==================== -->
@@ -536,6 +552,15 @@
 
         </div>
       </div>
+
+      <div v-else class="cs-page cs-violation-wrap">
+        <div class="cs-violation-hero">
+          <div><div class="cs-kicker">CONTENT COMPLIANCE</div><h1>发布前违规词检测</h1><p>图片由本地 PaddleOCR 提取原文，文本直接匹配启用中的违规词库；低置信度结果请人工复核。</p></div>
+          <div class="cs-violation-shield"><i class="fa-solid fa-shield-halved"></i></div>
+        </div>
+        <content-violation-page></content-violation-page>
+      </div>
     </div>`
-  }).mount(mount);
+  });
+  studioApp.mount(mount);
 })();

@@ -1,13 +1,13 @@
-// ==================== 工具箱 - 违规词检测（图片OCR）Vue 版 ====================
-// 与旧版 App 内部逻辑保持一致，仅用 Vue 响应式重写渲染层。
+// ==================== 内容创作中心 - 违规词检测 Vue 版 ====================
+// 同时支持图片 OCR 检测与直接文本检测，并可嵌入内容创作中心。
 // 状态保留在模块级（切走页面不丢），挂载/卸载只控制 DOM。
 // 违规词高亮用 Vue 文本插值拆分渲染，XSS 只强不弱（沿用 CSS 类 vd-conf-mark/vd-susp-mark）。
 (function () {
   if (typeof Vue === 'undefined' || typeof ApiService === 'undefined' || typeof App === 'undefined') return;
 
   // ---- 常量（与旧版一致） ----
-  var _VD_OCR_MAX_SIDE = 1600;
-  var _VD_OCR_JPEG_QUALITY = 0.9;
+  var _VD_OCR_MAX_SIDE = 2400;
+  var _VD_OCR_JPEG_QUALITY = 0.95;
   var _VD_BATCH_SIZE = 5;
 
   // ---- 模块级状态（跨挂载/卸载保留，切走页面检测结果不丢） ----
@@ -25,7 +25,7 @@
     notifications: [],
   });
 
-  // ---- 压缩图片用于 OCR 上传，返回 dataUrl；失败回退原图 ----
+  // ---- 仅对超大图片缩放；PNG 保持无损，避免小字在 JPEG 转码后丢笔画 ----
   function compressForOcr(dataUrl) {
     return new Promise(function (resolve) {
       var img = new Image();
@@ -39,7 +39,7 @@
           h = Math.max(1, Math.round(h * scale));
           changed = true;
         }
-        if (!changed && dataUrl.length < 400 * 1024) {
+        if (!changed) {
           resolve(dataUrl);
           return;
         }
@@ -50,7 +50,8 @@
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
         ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', _VD_OCR_JPEG_QUALITY));
+        var isPng = dataUrl.indexOf('data:image/png') === 0;
+        resolve(canvas.toDataURL(isPng ? 'image/png' : 'image/jpeg', _VD_OCR_JPEG_QUALITY));
       };
       img.onerror = function () { resolve(dataUrl); };
       img.src = dataUrl;
@@ -141,8 +142,13 @@
   // ==================== 组件 ====================
   var ViolationPage = {
     setup: function () {
+      var activeMode = Vue.ref('image');
       var dragOver = Vue.ref(false);
       var notifyOpen = Vue.ref(false);
+      var textInput = Vue.ref('');
+      var textRunning = Vue.ref(false);
+      var textResult = Vue.ref(null);
+      var textError = Vue.ref('');
 
       function hasIssue(img) {
         return (img.violations && img.violations.length > 0) || (img.suspectedWords && img.suspectedWords.length > 0);
@@ -183,16 +189,15 @@
         return '未发现违规词';
       }
 
-      // 把 OCR 文本拆成「普通片段 / 命中片段」，命中片段用 mark 高亮，文本走插值自动转义
-      function buildSegments(img) {
-        var text = img.ocrText || '';
+      // 把文本拆成「普通片段 / 命中片段」，命中片段用 mark 高亮，文本走插值自动转义
+      function segmentText(text, violations, suspectedWords) {
         var marks = [];
-        (img.violations || []).forEach(function (v) {
+        (violations || []).forEach(function (v) {
           if (v.position !== undefined && v.length) {
             marks.push({ type: 'confirmed', start: v.position, end: v.position + v.length, word: v.word });
           }
         });
-        (img.suspectedWords || []).forEach(function (v) {
+        (suspectedWords || []).forEach(function (v) {
           if (v.position !== undefined && v.length) {
             marks.push({ type: 'suspected', start: v.position, end: v.position + v.length, word: v.word });
           }
@@ -208,6 +213,46 @@
         if (pos < text.length) segs.push({ hit: false, text: text.slice(pos) });
         return segs;
       }
+
+      function buildSegments(img) {
+        return segmentText(img.ocrText || '', img.violations, img.suspectedWords);
+      }
+
+      function buildTextSegments() {
+        if (!textResult.value) return [];
+        return segmentText(textInput.value || '', textResult.value.confirmed, textResult.value.suspected);
+      }
+
+      async function startTextCheck() {
+        var text = textInput.value.trim();
+        if (!text) { textError.value = '请先输入需要检测的文案'; return; }
+        textRunning.value = true;
+        textError.value = '';
+        textResult.value = null;
+        try {
+          var result = await ApiService.violationDetect(text);
+          if (!result || !result.success) throw new Error((result && result.error) || '文本检测失败');
+          textResult.value = {
+            confirmed: result.confirmed || [],
+            suspected: result.suspected || [],
+          };
+        } catch (e) {
+          textError.value = e.message || '文本检测失败';
+        } finally {
+          textRunning.value = false;
+        }
+      }
+
+      function clearTextCheck() {
+        textInput.value = '';
+        textResult.value = null;
+        textError.value = '';
+      }
+
+      Vue.onMounted(function () {
+        // 提前触发服务端模型懒加载，用户选择图片期间即可完成 OCR 预热。
+        if (ApiService.ocrWarmup) ApiService.ocrWarmup().catch(function () {});
+      });
 
       var allProcessed = Vue.computed(function () {
         return _state.images.length > 0 &&
@@ -369,16 +414,24 @@
 
       return {
         state: _state,
-        dragOver, notifyOpen,
+        activeMode, dragOver, notifyOpen,
+        textInput, textRunning, textResult, textError,
         hitCount, passRate, allProcessed, resultSummary,
         imgState, thumbBorder, headerInfo, resultStatusText, buildSegments,
         onFileChange, onDrop, removeImage, startOcr, clearAll,
+        startTextCheck, clearTextCheck, buildTextSegments,
         toggleNotifications, clearNotifications,
       };
     },
 
     template: `
-<div>
+<div class="vd-integrated">
+  <div class="vd-mode-tabs" role="tablist" aria-label="违规词检测方式">
+    <button type="button" :class="{on:activeMode==='image'}" @click="activeMode='image'"><i class="fa-solid fa-image"></i><span>图片检测<small>PaddleOCR 提取文字并匹配词库</small></span></button>
+    <button type="button" :class="{on:activeMode==='text'}" @click="activeMode='text'"><i class="fa-solid fa-align-left"></i><span>文本检测<small>直接检测文案与脚本内容</small></span></button>
+  </div>
+
+  <template v-if="activeMode==='image'">
   <!-- 顶部统计卡片 -->
   <div class="vd-stats-row">
     <div class="vd-stat-card">
@@ -536,12 +589,61 @@
       </div>
     </div>
   </div>
+  </template>
+
+  <template v-else>
+    <div class="vd-text-grid">
+      <section class="vd-upload-panel vd-text-panel">
+        <div class="vd-panel-header">
+          <span class="vd-panel-title"><i class="fa-solid fa-pen-to-square"></i> 输入待检测文本</span>
+          <span class="vd-panel-hint">标题 / 正文 / 口播 / 评论话术</span>
+        </div>
+        <textarea v-model="textInput" maxlength="30000" class="vd-textarea" placeholder="粘贴需要检测的文案。系统将标记精确违规词与疑似风险词，不会把内容发送给生成模型。"></textarea>
+        <div class="vd-text-meta"><span>本次仅调用本地违规词库</span><span>{{ textInput.length }} / 30000</span></div>
+        <div class="vd-actions">
+          <button class="vd-btn-detect" :disabled="textRunning" @click="startTextCheck"><i class="fa-solid" :class="textRunning?'fa-spinner fa-spin':'fa-shield-halved'"></i> {{ textRunning ? '检测中' : '开始检测' }}</button>
+          <button class="vd-btn-clear" @click="clearTextCheck"><i class="fa-solid fa-eraser"></i> 清空</button>
+        </div>
+        <div v-if="textError" class="vd-text-error"><i class="fa-solid fa-circle-exclamation"></i>{{ textError }}</div>
+      </section>
+
+      <section class="vd-result-panel vd-text-result">
+        <div class="vd-panel-header">
+          <span class="vd-panel-title"><i class="fa-solid fa-clipboard-check"></i> 文本检测结果</span>
+          <span v-if="textResult" class="vd-panel-hint" :style="{color:(textResult.confirmed.length || textResult.suspected.length) ? '#dc5f76' : '#2f9c7d'}">
+            {{ textResult.confirmed.length }} 处精确违规 · {{ textResult.suspected.length }} 处疑似风险
+          </span>
+        </div>
+        <div v-if="!textResult" class="vd-result-empty">
+          <div class="vd-empty-illustration"><i class="fa-solid fa-file-shield" style="font-size:56px;color:#c9c1f3"></i></div>
+          <div class="vd-empty-title">等待检测文案</div>
+          <div class="vd-empty-desc">输入文本后开始检测，风险词会在原文中高亮显示</div>
+          <div class="vd-sample-badge"><span class="vd-sample-red">红色 = 精确违规</span><span class="vd-sample-orange">橙色 = 疑似风险</span></div>
+        </div>
+        <div v-else class="vd-text-result-body">
+          <div class="vd-pass-anim" v-if="!textResult.confirmed.length && !textResult.suspected.length">
+            <div class="vd-pass-check"><i class="fa-solid fa-circle-check"></i></div>
+            <div><div class="vd-pass-title">未发现违规，合规通过</div><div class="vd-pass-desc">当前文本未命中启用中的违规词库</div></div>
+          </div>
+          <div class="vd-highlight-text">
+            <template v-for="(seg, si) in buildTextSegments()" :key="si">
+              <mark v-if="seg.hit" :class="seg.type === 'confirmed' ? 'vd-conf-mark' : 'vd-susp-mark'" :title="(seg.type === 'confirmed' ? '精确违规: ' : '疑似违规: ') + seg.word">{{ seg.text }}</mark>
+              <span v-else>{{ seg.text }}</span>
+            </template>
+          </div>
+        </div>
+      </section>
+    </div>
+  </template>
 </div>
     `,
   };
 
   // ==================== 挂载 / 卸载 / 互斥钩子 ====================
   var _violationApp = null;
+
+  // 暴露组件供内容创作中心复用；保留旧路由挂载作为历史链接兼容。
+  window.ContentViolationPage = ViolationPage;
 
   function mountViolationVue() {
     if (_violationApp) return;
