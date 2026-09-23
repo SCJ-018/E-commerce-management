@@ -202,6 +202,19 @@ const ApiService = (() => {
     async getHrEmployees() { return request('/hr/employees'); },
     async createEmployee(data) { return request('/hr/employees', { method: 'POST', body: JSON.stringify(data) }); },
 
+    /** 种草监测中台：部门账号、店铺品类绑定和收录记录 */
+    async getSeedingOptions() { return request('/seeding/options'); },
+    async getSeedingRecords(department, person) {
+      const params = [];
+      if (department && department !== '全部') params.push('department=' + encodeURIComponent(department));
+      if (person && person !== '全部') params.push('person=' + encodeURIComponent(person));
+      return request('/seeding/records' + (params.length ? '?' + params.join('&') : ''));
+    },
+    async createSeedingRecord(data) { return request('/seeding/records', { method: 'POST', body: JSON.stringify(data) }); },
+    async updateSeedingRecord(id, data) { return request('/seeding/records/' + id, { method: 'PUT', body: JSON.stringify(data) }); },
+    async deleteSeedingRecord(id) { return request('/seeding/records/' + id, { method: 'DELETE' }); },
+    async saveSeedingBindings(data) { return request('/seeding/bindings', { method: 'PUT', body: JSON.stringify(data) }); },
+
     /** 人事数据中心：5 张人事表通用 CRUD */
     async getHrMeta() { return request('/hr/meta'); },
     async getHrCounts() { return request('/hr/counts'); },

@@ -57,6 +57,45 @@ CREATE TABLE IF NOT EXISTS `customers` (
 -- 插入初始示例数据
 -- ========================
 
+-- ========================
+-- 种草监测中台
+-- ========================
+CREATE TABLE IF NOT EXISTS `种草收录表` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `发布时间` DATE NOT NULL,
+  `部门` VARCHAR(50) NOT NULL DEFAULT '',
+  `产品` VARCHAR(200) NOT NULL DEFAULT '',
+  `发布平台` VARCHAR(30) NOT NULL DEFAULT '抖音',
+  `发布渠道` VARCHAR(30) NOT NULL DEFAULT '代发',
+  `笔记类型` VARCHAR(30) NOT NULL DEFAULT '种草',
+  `标题` VARCHAR(500) NOT NULL DEFAULT '',
+  `发布链接` VARCHAR(1000) NOT NULL DEFAULT '',
+  `发布账号名称` VARCHAR(100) NOT NULL DEFAULT '',
+  `发布账号ID` VARCHAR(150) NOT NULL DEFAULT '',
+  `点赞` BIGINT NOT NULL DEFAULT 0,
+  `收藏` BIGINT NOT NULL DEFAULT 0,
+  `评论` BIGINT NOT NULL DEFAULT 0,
+  `阅读量` BIGINT NOT NULL DEFAULT 0,
+  `流量分析` MEDIUMTEXT NULL,
+  `备注` VARCHAR(1000) NOT NULL DEFAULT '',
+  `创建时间` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `更新时间` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX `idx_种草收录_部门日期` (`部门`, `发布时间`),
+  INDEX `idx_种草收录_账号` (`发布账号名称`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='种草收录表';
+
+CREATE TABLE IF NOT EXISTS `种草品类绑定表` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `部门` VARCHAR(50) NOT NULL,
+  `店铺` VARCHAR(200) NOT NULL DEFAULT '',
+  `品牌` VARCHAR(200) NOT NULL DEFAULT '',
+  `品类` VARCHAR(200) NOT NULL,
+  `启用` TINYINT(1) NOT NULL DEFAULT 1,
+  `创建时间` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `uk_种草绑定_部门店铺品类` (`部门`, `店铺`, `品类`),
+  INDEX `idx_种草绑定_部门` (`部门`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='种草部门店铺品类绑定表';
+
 -- 商品初始数据
 INSERT INTO `products` (`name`, `category`, `price`, `stock`, `status`) VALUES
 ('无线蓝牙耳机 Pro', '电子产品', 299.00, 150, '在售'),

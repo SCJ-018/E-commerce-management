@@ -980,6 +980,235 @@ def success(data=None, msg='ok'):
 def fail(msg='error', code=1):
     return jsonify({'code': code, 'msg': msg, 'data': None})
 
+
+# ======================== 种草收录表 API ========================
+# 记录、品类绑定和账号选项统一由服务端提供。旧页面的 localStorage 只作为
+# 后端不可用时的临时空态，不再作为正式数据源。
+_SEEDING_DEPARTMENTS = ('一部', '二部', '三部', '四部', '五部')
+_SEEDING_RECORD_FIELDS = {
+    'date': '发布时间', 'department': '部门', 'product': '产品',
+    'platform': '发布平台', 'source': '发布渠道', 'noteType': '笔记类型',
+    'title': '标题', 'publishLink': '发布链接', 'accountName': '发布账号名称',
+    'accountId': '发布账号ID', 'likes': '点赞', 'collects': '收藏',
+    'comments': '评论', 'views': '阅读量', 'trafficImage': '流量分析',
+    'remark': '备注'
+}
+
+
+def _seeding_record_to_front(row):
+    rev = {v: k for k, v in _SEEDING_RECORD_FIELDS.items()}
+    item = {'id': row.get('id')}
+    for col, key in rev.items():
+        value = row.get(col)
+        if col == '流量分析' and value:
+            # 图片只作为按钮背后的数据传输，不在列表中展开。
+            item[key] = value
+        else:
+            item[key] = value
+    item['createdAt'] = str(row.get('创建时间') or '')
+    item['updatedAt'] = str(row.get('更新时间') or '')
+    return item
+
+
+def _ensure_seeding_tables():
+    """初始化种草收录表及部门维度的品类绑定表。"""
+    db_execute(
+        "CREATE TABLE IF NOT EXISTS `种草收录表` ("
+        "`id` INT AUTO_INCREMENT PRIMARY KEY,"
+        "`发布时间` DATE NOT NULL,"
+        "`部门` VARCHAR(50) NOT NULL DEFAULT '',"
+        "`产品` VARCHAR(200) NOT NULL DEFAULT '',"
+        "`发布平台` VARCHAR(30) NOT NULL DEFAULT '抖音',"
+        "`发布渠道` VARCHAR(30) NOT NULL DEFAULT '代发',"
+        "`笔记类型` VARCHAR(30) NOT NULL DEFAULT '种草',"
+        "`标题` VARCHAR(500) NOT NULL DEFAULT '',"
+        "`发布链接` VARCHAR(1000) NOT NULL DEFAULT '',"
+        "`发布账号名称` VARCHAR(100) NOT NULL DEFAULT '',"
+        "`发布账号ID` VARCHAR(150) NOT NULL DEFAULT '',"
+        "`点赞` BIGINT NOT NULL DEFAULT 0,"
+        "`收藏` BIGINT NOT NULL DEFAULT 0,"
+        "`评论` BIGINT NOT NULL DEFAULT 0,"
+        "`阅读量` BIGINT NOT NULL DEFAULT 0,"
+        "`流量分析` MEDIUMTEXT NULL,"
+        "`备注` VARCHAR(1000) NOT NULL DEFAULT '',"
+        "`创建时间` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "`更新时间` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+        "INDEX `idx_种草收录_部门日期` (`部门`, `发布时间`),"
+        "INDEX `idx_种草收录_账号` (`发布账号名称`)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='种草收录表'", fetch=False)
+    db_execute(
+        "CREATE TABLE IF NOT EXISTS `种草品类绑定表` ("
+        "`id` INT AUTO_INCREMENT PRIMARY KEY,"
+        "`部门` VARCHAR(50) NOT NULL,"
+        "`店铺` VARCHAR(200) NOT NULL DEFAULT '',"
+        "`品牌` VARCHAR(200) NOT NULL DEFAULT '',"
+        "`品类` VARCHAR(200) NOT NULL,"
+        "`启用` TINYINT(1) NOT NULL DEFAULT 1,"
+        "`创建时间` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "UNIQUE KEY `uk_种草绑定_部门店铺品类` (`部门`, `店铺`, `品类`),"
+        "INDEX `idx_种草绑定_部门` (`部门`)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='种草部门店铺品类绑定表'", fetch=False)
+
+
+def _seeding_store_options():
+    """从店铺账号表读取店铺/品牌，品类只取店铺自身映射，避免把其它店铺数据带入。"""
+    out = []
+    configs = (
+        ('抖店账号表', '抖音', '店铺名'),
+        ('千牛账号表', '千牛', '账号'),
+        ('京东账号表', '京东', '店铺名'),
+    )
+    for table, platform, name_col in configs:
+        try:
+            rows = db_execute('SELECT DISTINCT `%s` AS store, `品牌` AS brand FROM `%s` '
+                              'WHERE `是否运营` = 1 ORDER BY store' % (name_col, table)) or []
+        except Exception:
+            rows = []
+        for row in rows:
+            store = str(row.get('store') or '').strip()
+            if not store:
+                continue
+            out.append({'store': store, 'brand': str(row.get('brand') or '').strip(),
+                        'platform': platform, 'categories': []})
+    # 商品品类映射表本身按平台商品 ID 绑定，没有直接的店铺列；必须先
+    # 关联对应平台的单链接表，再按店铺取品类，避免把同品牌其它店铺的品类带进来。
+    mappings = []
+    joins = (
+        ('抖店单链接数据表', '抖店', '店铺名', '商品编码'),
+        ('千牛单链接数据表', '千牛', '店铺名', '商品ID'),
+        ('京东单链接数据表', '京东', '店铺名', 'SPU'),
+    )
+    for table, platform, store_col, id_col in joins:
+        try:
+            mappings.extend(db_execute(
+                'SELECT t.`%s` AS store, m.`统一品类` AS category '
+                'FROM `%s` t JOIN `商品品类映射表` m '
+                'ON m.`平台` = %%s AND m.`平台商品ID` = t.`%s` '
+                'WHERE t.`%s` IS NOT NULL AND t.`%s` <> "" '
+                'GROUP BY t.`%s`, m.`统一品类`' %
+                (store_col, table, id_col, store_col, store_col, store_col), [platform]) or [])
+        except Exception:
+            # 某个平台历史表不存在时，不能影响其它平台的账号选项。
+            continue
+    by_store = {}
+    for row in mappings:
+        store = str(row.get('store') or '').strip()
+        category = str(row.get('category') or '').strip()
+        if store and category:
+            by_store.setdefault(store, []).append(category)
+    for item in out:
+        item['categories'] = sorted(set(by_store.get(item['store'], [])))
+    return out
+
+
+@app.route('/api/seeding/options', methods=['GET'])
+def seeding_options():
+    try:
+        _ensure_seeding_tables()
+        bindings = db_execute('SELECT `部门` AS department, `店铺` AS store, `品牌` AS brand, `品类` AS category '
+                              'FROM `种草品类绑定表` WHERE `启用` = 1 ORDER BY `部门`, `店铺`, `品类`') or []
+        accounts = db_execute('SELECT id, name, account, department FROM admin_accounts '
+                              'WHERE department IS NOT NULL AND department <> "" ORDER BY department, id') or []
+        people = {dept: [] for dept in _SEEDING_DEPARTMENTS}
+        for row in accounts:
+            dept = str(row.get('department') or '')
+            name = str(row.get('name') or row.get('account') or '').strip()
+            if dept in people and name and name not in people[dept]:
+                people[dept].append(name)
+        return success({'departments': list(_SEEDING_DEPARTMENTS), 'stores': _seeding_store_options(),
+                        'bindings': bindings, 'people': people})
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/bindings', methods=['PUT'])
+def seeding_bindings():
+    try:
+        payload = request.get_json(force=True) or {}
+        department = str(payload.get('department') or '').strip()
+        if department not in _SEEDING_DEPARTMENTS:
+            return fail('请选择有效部门')
+        items = payload.get('bindings') or []
+        db_execute('DELETE FROM `种草品类绑定表` WHERE `部门` = %s', [department], fetch=False)
+        for item in items:
+            store = str(item.get('store') or '').strip()
+            category = str(item.get('category') or '').strip()
+            brand = str(item.get('brand') or '').strip()
+            if not store or not category:
+                continue
+            db_execute('INSERT INTO `种草品类绑定表` (`部门`,`店铺`,`品牌`,`品类`) VALUES (%s,%s,%s,%s)',
+                       [department, store, brand, category], fetch=False)
+        return success(None, '品类绑定已保存')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/records', methods=['GET'])
+def seeding_records():
+    try:
+        _ensure_seeding_tables()
+        conditions, params = [], []
+        department = (request.args.get('department') or '').strip()
+        person = (request.args.get('person') or '').strip()
+        if department and department != '全部':
+            conditions.append('`部门` = %s'); params.append(department)
+        if person and person != '全部':
+            conditions.append('`发布账号名称` = %s'); params.append(person)
+        where = (' WHERE ' + ' AND '.join(conditions)) if conditions else ''
+        rows = db_execute('SELECT * FROM `种草收录表`' + where + ' ORDER BY `发布时间` DESC, id DESC', params) or []
+        return success([_seeding_record_to_front(row) for row in rows])
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/records', methods=['POST'])
+def seeding_record_create():
+    return _seeding_record_write(None)
+
+
+@app.route('/api/seeding/records/<int:record_id>', methods=['PUT'])
+def seeding_record_update(record_id):
+    return _seeding_record_write(record_id)
+
+
+def _seeding_record_write(record_id):
+    try:
+        _ensure_seeding_tables()
+        data = request.get_json(force=True) or {}
+        required = ('date', 'department', 'product', 'platform', 'source', 'noteType', 'title')
+        if any(not str(data.get(key) or '').strip() for key in required):
+            return fail('发布时间、部门、产品、平台、渠道、笔记类型和标题不能为空')
+        allowed = {key: data.get(key) for key in _SEEDING_RECORD_FIELDS if key in data}
+        if 'department' not in allowed or allowed['department'] not in _SEEDING_DEPARTMENTS:
+            return fail('部门不合法')
+        if record_id is None:
+            cols = [_SEEDING_RECORD_FIELDS[key] for key in allowed]
+            vals = [allowed[key] for key in allowed]
+            new_id = db_execute_insert('INSERT INTO `种草收录表` (%s) VALUES (%s)' %
+                                       (', '.join('`%s`' % c for c in cols), ', '.join(['%s'] * len(vals))), vals)
+            return success({'id': new_id}, '已新增')
+        cols, vals = [], []
+        for key, value in allowed.items():
+            cols.append('`%s` = %%s' % _SEEDING_RECORD_FIELDS[key]); vals.append(value)
+        if not cols:
+            return fail('没有可更新字段')
+        vals.append(record_id)
+        changed = db_execute('UPDATE `种草收录表` SET %s WHERE id = %%s' % ', '.join(cols), vals, fetch=False)
+        if not changed:
+            return fail('记录不存在')
+        return success(None, '已更新')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/records/<int:record_id>', methods=['DELETE'])
+def seeding_record_delete(record_id):
+    try:
+        changed = db_execute('DELETE FROM `种草收录表` WHERE id = %s', [record_id], fetch=False)
+        return success(None, '已删除') if changed else fail('记录不存在')
+    except Exception as e:
+        return fail(str(e))
+
 # 内容创作中心：独立模块只读取服务端 CONTENT_STUDIO_API_KEY，避免把密钥暴露到浏览器。
 try:
     from content_studio_api import register_content_studio
@@ -7096,6 +7325,11 @@ _tmall_ranklist_auto_thread.start()
 _push_ensure_tables()
 # 通告发放独立配置表（独立于钉钉推送的 dingtalk_push_config）
 _announce_ensure_table()
+try:
+    _ensure_seeding_tables()
+    print('[种草收录] 表结构已就绪')
+except Exception as _seeding_table_err:
+    print('[种草收录] 表结构初始化失败（接口调用时会重试）:', _seeding_table_err)
 
 # daemon 线程：启动时校验/补齐「通告发放」配置 + 名单（页面直接读这份，无需人工同步）。
 # 名单三级兜底：内存 → announce_contacts_cache 落库 → 实时拉钉钉；
