@@ -358,3 +358,187 @@
   .srm-tabs-row .srm-person-select{margin-left:0}
   .srm-tabs-row .srm-tabs{flex-basis:100%}
 }
+/* ==========================================================================
+   顶部区 V4 —— 方案A「指挥台」融合 · 全尺寸放大 · 收留白 · 关键列常驻
+   --------------------------------------------------------------------------
+   ① 面色归一（治「大横框不融合 / 突兀 / 配色不搭」）
+      病根：一屏四张脸 —— 标题条白+双蓝晕(#d9e8ff 叠页级 #e9f1ff，两个蓝都不在本页
+            调色板)、筛选条冷灰 #f4f7fc(全页唯一灰面)、工具条微渐变白、统计卡纯白。
+      处方：全页只剩「白(卡) + 页底渐变」两种面；品牌色收敛到卡左 4px 渐变竖条；
+            标题条 + 筛选条合并成一张「指挥台」卡（顶部 3 块板 → 1 块）。
+      ★ 合并卡绝不能 overflow:hidden —— 会裁掉品类绑定弹层 .srm-pop
+        (position:absolute;top:42px，本就靠溢出卡外显示)。故竖条改内缩 :before。
+   ② 全尺寸放大（治「框太小 / 数据展示不完整」）：基准 ~1.2x，逐项见下。
+   ③ 收留白（治「页面周围空白较多」）：原单侧 24(page-section)+30(shell)=54px，
+      现 shell margin:0 -12px 吃掉一半 + padding 30→22 → 单侧 12+22=34px，省 40px 给内容。
+   ④ 关键列常驻：15 列 + 放大字号后表格宽约 1970px，1920 屏必横滚（改造前也滚 98px）。
+      故首列(发布时间)与末列(操作) sticky 常驻 —— 滚到哪都知道「这是哪条 + 能点什么」。
+   ========================================================================== */
+
+/* ---------- 0. 收留白 + 去掉页级蓝晕（面色归一的前提） ---------- */
+.srm-shell{
+  background:transparent;            /* 去掉页级 #e9f1ff 蓝晕，露出 .main-content 页底渐变 */
+  margin:0 -12px;                    /* 吃掉 .page-section 24px 内距的一半 */
+  padding:18px 22px 40px;            /* 30px -> 22px */
+}
+
+/* ---------- 1. 卡片三统一：边框 / 圆角 / 阴影 ---------- */
+.srm-shell .srm-stat-grid{gap:20px;margin-bottom:20px}
+.srm-shell .srm-stat{border:1px solid #e6eaf2;border-radius:16px;
+  box-shadow:0 1px 2px rgba(16,24,40,.04)}
+.srm-shell .srm-toolbar{background:#fff;border:1px solid #e6eaf2;border-bottom:0;
+  border-radius:18px 18px 0 0;padding:16px 22px}
+.srm-shell .srm-table-wrap{border:1px solid #e6eaf2;border-radius:0 0 18px 18px}
+
+/* ---------- 2. 方案A：标题 + 筛选 → 一张「指挥台」卡 ---------- */
+.srm-shell>.srm-console{
+  position:relative;background:#fff;border:1px solid #e6eaf2;border-radius:18px;
+  margin-bottom:20px;
+  box-shadow:0 1px 2px rgba(16,24,40,.04),0 20px 42px -30px rgba(16,24,40,.6);
+}
+/* 唯一的品牌装饰：贯穿整卡的左侧 4px 渐变竖条（内缩，不与四角圆角打架） */
+.srm-shell>.srm-console:before{
+  content:"";position:absolute;left:0;top:18px;bottom:18px;width:4px;z-index:3;
+  border-radius:0 4px 4px 0;
+  background:linear-gradient(180deg,#3b82f6 0%,#6366f1 52%,#8b5cf6 100%);
+}
+.srm-shell>.srm-console>.srm-top{
+  margin:0;border:0;border-radius:17px 17px 0 0;align-items:center;
+  padding:23px 28px 21px 32px;                       /* 17/20/15/23 -> 23/28/21/32 */
+  background:radial-gradient(620px 210px at 100% -38px,rgba(37,99,235,.05),rgba(37,99,235,0) 72%),#fff;
+  box-shadow:none;
+}
+.srm-shell>.srm-console>.srm-top:after{display:none}   /* 竖条已上移到整卡，不再画在标题条上 */
+.srm-shell>.srm-console>.srm-tabs-row{
+  margin:0;border:0;border-top:1px solid #eef2f8;border-radius:0 0 17px 17px;background:#fff;
+  box-shadow:none;padding:14px 28px 14px 32px;gap:16px;   /* 10/20/10/23 -> 14/28/14/32 */
+}
+/* 分段控件：白卡上要有一条浅灰轨道才看得出「分段」 */
+.srm-shell>.srm-console .srm-tabs{background:#f2f5fa;box-shadow:inset 0 0 0 1px #e7ecf5}
+.srm-shell>.srm-console .srm-tab:hover{background:#e9efff}
+.srm-shell>.srm-console .srm-person-select{border-color:#e6eaf2}
+
+/* ---------- 3. 放大：标题区 ---------- */
+.srm-shell .srm-mark{width:56px;height:56px;flex:0 0 56px;border-radius:17px;font-size:23px}
+.srm-shell .srm-top .srm-title{font-size:31px}                    /* 26 -> 31 */
+.srm-shell .srm-top .srm-subtitle{font-size:13.5px;margin-top:10px}   /* 12.5 -> 13.5 */
+.srm-shell .srm-live{height:27px;padding:0 12px;font-size:12.5px;gap:7px}  /* h23 -> 27 */
+.srm-shell .srm-live i{width:7px;height:7px}
+.srm-shell .srm-top .srm-btn-lg{height:46px;padding:0 20px;border-radius:12px;font-size:14px}  /* h40 -> 46 */
+
+/* ---------- 4. 放大：筛选条控件 ---------- */
+.srm-shell .srm-tabs-row>.srm-range{height:46px;font-size:13.5px;gap:10px}   /* h38 -> 46 */
+.srm-shell .srm-tabs-row>.srm-range b{font-size:14.5px}
+.srm-shell .srm-tabs-row>.srm-range i{font-size:14px}
+.srm-shell .srm-tabs-row>.srm-range:after{height:22px}
+.srm-shell .srm-tabs-row .srm-tabs{padding:5px;gap:5px;border-radius:13px}
+.srm-shell .srm-tabs-row .srm-tab{height:42px;padding:0 24px;font-size:14.5px;border-radius:10px}  /* h32 -> 42 */
+.srm-shell .srm-tabs-row .srm-person-select{height:46px;padding:0 16px;border-radius:12px;font-size:14px;gap:9px}
+.srm-shell .srm-tabs-row .srm-person-select select{font-size:14px}
+
+/* ---------- 5. 放大：统计卡（核心） ---------- */
+.srm-shell .srm-stat{padding:22px 24px 20px}                 /* 16/17/14 -> 22/24/20 */
+.srm-shell .srm-stat:before{height:4px}                      /* 3 -> 4 */
+.srm-shell .srm-stat-head{font-size:14.5px;gap:13px}         /* 13 -> 14.5 */
+.srm-shell .srm-stat-icon{width:48px;height:48px;flex:0 0 48px;border-radius:15px;font-size:20px}  /* 40 -> 48 */
+.srm-shell .srm-stat-value{font-size:40px;margin:18px 0 14px}      /* 31 -> 40 */
+.srm-shell .srm-stat-value small{font-size:14px}
+.srm-shell .srm-stat-foot{font-size:13px;padding-top:13px}         /* 11.5 -> 13 */
+.srm-shell .srm-stat-sub i{font-size:12px}                         /* 10 -> 12 */
+.srm-shell .srm-stat-tag{height:25px;padding:0 11px;font-size:12.5px}   /* h21 -> 25 */
+
+/* ---------- 6. 放大：表头工具条 ---------- */
+.srm-shell .srm-filter-context{font-size:14px}                     /* 12.5 -> 14 */
+.srm-shell .srm-filter-context em{min-width:28px;height:24px;font-size:13px;padding:0 10px}
+.srm-shell .srm-toolbar-tip{font-size:13px}                        /* 11.5 -> 13 */
+
+/* ---------- 7. 放大：收录表 ---------- */
+.srm-shell .srm-table{font-size:13.5px}                            /* 12 -> 13.5 */
+.srm-shell .srm-entry-table{min-width:1660px}                      /* 1690 -> 1660：不人为撑宽 */
+.srm-shell .srm-entry-table thead tr.srm-g th{height:46px;font-size:12.5px;letter-spacing:2px}  /* h32 -> 46 */
+.srm-shell .srm-entry-table thead tr.srm-h th{height:48px;font-size:13px}                       /* h38 -> 48 */
+.srm-shell .srm-entry-table td{height:60px;padding:0 12px}         /* h52 -> 60；内距保持线上 12 */
+.srm-shell .srm-entry-table .srm-metric{font-size:14.5px}
+.srm-shell .srm-entry-table td select,.srm-shell .srm-entry-table td input{
+  height:38px;font-size:13.5px;max-width:190px}                    /* h30 -> 38 */
+/* 语义胶囊：四列四种造型同步放大（胶囊内 select 走 height:100%，由 .srm-chip 控高） */
+.srm-shell .srm-entry-table td .srm-chip{height:34px;padding:0 13px;font-size:13.5px;gap:7px}  /* h28 -> 34 */
+.srm-shell .srm-entry-table td .srm-chip>select{font-size:13.5px}
+.srm-shell .srm-entry-table td .srm-chip i{width:7px;height:7px}
+.srm-shell .srm-entry-table td .srm-chip-prod{width:124px}         /* 110 -> 124 */
+.srm-shell .srm-entry-table td .srm-chip-plat{width:108px}         /* 94 -> 108 */
+.srm-shell .srm-entry-table td .srm-chip-src{width:96px}           /* 82 -> 96 */
+.srm-shell .srm-entry-table td .srm-chip-type{width:100px}         /* 84 -> 100 */
+/* 日期轨道 */
+.srm-shell .srm-entry-table td.srm-date-cell{min-width:158px;padding:0 18px!important}  /* 132 -> 158 */
+.srm-shell .srm-entry-table td.srm-date-cell:before{width:4px}
+.srm-shell .srm-entry-table td.srm-date-cell b{font-size:14px}       /* 12.5 -> 14 */
+.srm-shell .srm-entry-table td.srm-date-cell small{font-size:11.5px} /* 10.5 -> 11.5 */
+.srm-shell .srm-entry-table td.srm-date-cell .srm-grp{font-size:11.5px;padding:4px 10px;margin-top:8px}
+.srm-shell .srm-entry-table td.srm-date-cell input{max-width:130px}
+/* ★ 标题列：234 -> 336，长标题不再被省略号吃掉 */
+.srm-shell .srm-entry-table .srm-title-cell{max-width:336px}
+.srm-shell .srm-entry-table .srm-title-cell input{width:316px;max-width:316px}
+.srm-shell .srm-entry-table .srm-title-link{max-width:324px}
+/* 发布账号（名称 + 账号ID 合并列） */
+.srm-shell .srm-entry-table td.srm-acct{min-width:190px}             /* 146 -> 190 */
+.srm-shell .srm-entry-table td.srm-acct b{font-size:14px}
+.srm-shell .srm-entry-table td.srm-acct small{font-size:11.5px}
+.srm-shell .srm-entry-table td.srm-acct input{max-width:170px}
+/* 互动数据 / 阅读量 / 发布链接 */
+.srm-shell .srm-entry-table .srm-iv i{font-size:11px}                /* 10 -> 11 */
+.srm-shell .srm-entry-table .srm-view-val{font-size:14px}            /* 12.5 -> 14 */
+.srm-shell .srm-entry-table .srm-view-bar{width:70px}                /* 62 -> 70 */
+.srm-shell .srm-entry-table .srm-heat{font-size:11px}                /* 10 -> 11 */
+.srm-shell .srm-entry-table .srm-link-state{padding:8px 14px;font-size:12.5px}   /* 6/11 -> 8/14 */
+/* 合计行 */
+.srm-shell .srm-entry-table .srm-sum,.srm-shell .srm-entry-table tfoot td{font-size:14px}
+.srm-shell .srm-entry-table .srm-sum b{font-size:15px}
+.srm-shell .srm-entry-table .srm-empty{padding:60px!important;font-size:14px!important}
+
+/* ---------- 8. ★ 关键列常驻：只吸左（发布时间时间轴锚点） ----------
+   ★★ 左列必须认 .srm-date-cell 类，不能写 tbody td:first-child：
+      日期格是按日期分组 rowspan 渲染的（v-if="showDate"），同一天的第 2+ 行没有该格，
+      写 :first-child 会把那些行的「产品」格吸到左边（设计稿阶段曾实测踩到）。
+   ★★ 表头只认 thead 第一行的 th：表头是双层结构，「发布时间 / 流量分析 / 备注 / 操作」
+      是 rowspan=2 挂在第一行的；若写 thead th:first-child / :last-child，
+      会连第二行的「产品」「阅读量」一起命中 → 两列被吸到两侧错位。 */
+.srm-shell .srm-entry-table thead tr:first-child th:first-child,
+.srm-shell .srm-entry-table tbody td.srm-date-cell{
+  position:sticky;left:0;z-index:2;
+  box-shadow:14px 0 18px -16px rgba(16,24,40,.5);
+}
+.srm-shell .srm-entry-table thead tr:first-child th:first-child{z-index:4}
+/* ★★ 末列(操作)「不」吸右 —— 实测（本地 1920 探针）：「吸右」会在默认滚动位置
+   盖住它左边的列，被盖住的宽度恒等于横向溢出量（本地 47px；线上带 220px 侧边栏约 260px，
+   会把「备注」「流量分析」整整两列压住）。文字被截成半截（"已通知补图" -> "已通知"），
+   读起来像数据坏了 —— 与「数据展示要完整」的诉求正好相反。
+   故右侧改为：只给 1px 分隔线 + 12px 彩色滚动条做提示，绝不遮挡任何内容。 */
+.srm-shell .srm-entry-table thead tr:first-child th:last-child,
+.srm-shell .srm-entry-table tbody td:last-child:not([colspan]){
+  border-left:1px solid #edf1f7;
+}
+.srm-shell .srm-entry-table tbody tr:hover td.srm-date-cell{
+  background:linear-gradient(180deg,#e8f0ff,#f4f9ff)!important}
+
+/* ---------- 9. 可滚动提示：横向滚动条加粗到 12px，一眼看出右边还有内容 ---------- */
+.srm-shell .srm-table-wrap::-webkit-scrollbar{height:12px}
+.srm-shell .srm-table-wrap::-webkit-scrollbar-track{background:#f8fafc}
+.srm-shell .srm-table-wrap::-webkit-scrollbar-thumb{
+  background:#cbd5e1;border-radius:99px;border:3px solid #f8fafc}
+.srm-shell .srm-table-wrap::-webkit-scrollbar-thumb:hover{background:#94a3b8}
+
+/* ---------- 10. 窄屏回落（V4 的负边距 / 大内距在窄屏必须收回） ---------- */
+@media(max-width:1100px){
+  .srm-shell{margin:0;padding:18px 16px 32px}
+  .srm-shell>.srm-console>.srm-top{padding:20px 20px 18px 26px}
+  .srm-shell>.srm-console>.srm-tabs-row{padding:12px 20px 12px 26px;gap:12px}
+  .srm-shell .srm-stat{padding:18px 18px 16px}
+  .srm-shell .srm-stat-value{font-size:34px;margin:15px 0 12px}
+}
+@media(max-width:560px){
+  .srm-shell{margin:0;padding:16px 12px 28px}
+  .srm-shell>.srm-console>.srm-top{padding:18px 16px 16px 22px}
+  .srm-shell>.srm-console>.srm-tabs-row{padding:10px 14px 10px 22px}
+  .srm-shell .srm-stat{padding:16px 16px 14px}
+}
