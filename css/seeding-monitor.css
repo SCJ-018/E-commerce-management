@@ -710,3 +710,203 @@
   .srm-shell > .srm-table-box > .srm-tabs-row{padding:10px 12px 10px 18px}
   .srm-shell > .srm-table-box > .srm-toolbar{padding:10px 12px 8px 18px}
 }
+
+/* ==========================================================================
+   布局 V6 —— 自定义下拉面板 · 数据不可选 · 批量删除 · 发布链接跳转 · 大图换图
+   --------------------------------------------------------------------------
+   用户原话 → 落成规则
+   ①「产品/发布平台/发布渠道/笔记类型下拉框展开的列表样式太丑了」
+        原生 <option> 列表几乎不可控（Windows 上改不了圆角/间距/悬停/勾选态）
+        → 四列全部换成自绘浮层 .srm-dd-panel（teleport 到 body，脱离表格裁剪）
+   ②「发布链接点击已输入是出现输入框而不是跳转作品页 仅标题的超链接跳转」
+        .srm-link-state.done 直接 window.open；不再 prompt 输入；标题 <a> 保持超链接
+   ③「流量分析的图片如果已插入 点开眼睛出现的图片大图要有重新上传图片的按钮」
+        大图弹窗底部加 .srm-traffic-foot + 「重新上传图片」按钮
+   ④「所有的数据信息鼠标悬浮上去不要为文本可选的样式 双击有时候会全选当前文本」
+        数据区（非编辑态）user-select:none，光标回默认箭头
+   ⑤「新增记录后面增加一个批量删除功能」
+        表头加全选列 + 行首勾选框 + 工具条 .srm-btn.danger「批量删除」带计数
+   --------------------------------------------------------------------------
+   ★ 结构性约束（别踩）
+   · .srm-console / .srm-table-box 仍然不能 overflow:hidden（.srm-pop 靠溢出卡外显示）
+   · 浮层用 position:fixed + teleport 到 body → 不受 .srm-table-wrap{overflow:auto} 裁剪
+   · 只吸左、不吸右（吸右会按横向溢出量遮挡备注/流量分析）
+   ========================================================================== */
+
+/* ---------- ④ 数据信息：不可选中、不出现文本光标 ---------- */
+.srm-shell .srm-entry-table tbody td,
+.srm-shell .srm-entry-table tfoot td{
+  -webkit-user-select:none;-moz-user-select:none;user-select:none;cursor:default;
+}
+/* 真正需要选中/输入的地方放行 */
+.srm-shell .srm-entry-table tbody td input,
+.srm-shell .srm-entry-table tbody td textarea,
+.srm-shell .srm-entry-table .srm-title-link{-webkit-user-select:text;-moz-user-select:text;user-select:text}
+.srm-shell .srm-entry-table tbody td input{cursor:text}
+/* 标题超链接：可点、可拖选 */
+.srm-shell .srm-entry-table .srm-title-link{cursor:pointer}
+/* 胶囊触发器也不要文本光标 */
+.srm-shell .srm-entry-table .srm-chip,
+.srm-shell .srm-entry-table .srm-dd-trigger,
+.srm-shell .srm-entry-table .srm-link-state,
+.srm-shell .srm-entry-table .srm-icon-btn{cursor:pointer}
+.srm-shell .srm-entry-table .srm-chip:disabled,
+.srm-shell .srm-entry-table .srm-dd-trigger:disabled{cursor:not-allowed}
+/* 统计卡 / 标题区 / 工具条同样不要文本选择（它们是信息展示，不是可复制文本） */
+.srm-shell .srm-stat{-webkit-user-select:none;-moz-user-select:none;user-select:none}
+.srm-shell .srm-title,.srm-shell .srm-subtitle,.srm-shell .srm-live{-webkit-user-select:none;-moz-user-select:none;user-select:none}
+.srm-shell .srm-filter-context,.srm-shell .srm-toolbar-tip{-webkit-user-select:none;-moz-user-select:none;user-select:none}
+
+/* ---------- ① 胶囊改为「触发器按钮」：去掉 select 后给按钮补形态 ---------- */
+.srm-shell .srm-entry-table td .srm-dd-trigger{
+  position:relative;display:inline-flex;align-items:center;gap:6px;
+  border:0;font:inherit;font-weight:600;line-height:1;text-align:left;
+  justify-content:flex-start;
+}
+.srm-shell .srm-entry-table td .srm-dd-trigger .srm-dd-text{
+  flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.srm-shell .srm-entry-table td .srm-dd-trigger .srm-dd-caret{
+  font-size:8px;opacity:.45;transition:transform .18s ease,opacity .18s ease;flex:0 0 auto;
+}
+.srm-shell .srm-entry-table td .srm-dd-trigger:hover{border-color:transparent;filter:brightness(.97)}
+.srm-shell .srm-entry-table td .srm-dd-trigger:hover .srm-dd-caret{opacity:.8}
+.srm-shell .srm-entry-table td .srm-dd-trigger.open{box-shadow:0 0 0 2px rgba(59,130,246,.28)}
+.srm-shell .srm-entry-table td .srm-dd-trigger.open .srm-dd-caret{transform:rotate(180deg);opacity:.9}
+.srm-shell .srm-entry-table td .srm-chip-plat .srm-dd-trigger i:first-child{width:6px;height:6px;border-radius:50%}
+
+/* ---------- ① 自定义下拉浮层（teleport 到 body，fixed 定位） ---------- */
+.srm-dd-mask{position:fixed;inset:0;z-index:9998;background:transparent}
+.srm-dd-panel{
+  position:fixed;z-index:9999;min-width:150px;padding:7px;
+  background:#fff;border:1px solid #e3e9f3;border-radius:13px;
+  box-shadow:0 12px 28px -8px rgba(16,24,40,.22),0 2px 6px rgba(16,24,40,.06);
+  animation:srmDdIn .14s ease-out;
+  -webkit-user-select:none;-moz-user-select:none;user-select:none;
+}
+.srm-dd-panel.srm-dd-up{transform:translateY(-100%) translateY(-12px)}
+@keyframes srmDdIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+.srm-dd-panel.srm-dd-up{animation:srmDdInUp .14s ease-out}
+@keyframes srmDdInUp{from{opacity:0}to{opacity:1}}
+.srm-dd-head{
+  display:flex;align-items:center;gap:6px;padding:4px 8px 8px;
+  font-size:10.5px;font-weight:700;letter-spacing:.4px;color:#9aa6ba;
+  border-bottom:1px solid #f0f3f9;margin-bottom:5px;
+}
+.srm-dd-head i{font-size:9px;opacity:.7}
+.srm-dd-list{display:flex;flex-direction:column;gap:1px;max-height:280px;overflow:auto}
+.srm-dd-list::-webkit-scrollbar{width:8px}
+.srm-dd-list::-webkit-scrollbar-thumb{background:#dbe3ef;border-radius:4px;border:2px solid #fff}
+.srm-dd-item{
+  display:flex;align-items:center;gap:9px;width:100%;flex:0 0 auto;
+  height:32px;min-height:32px;padding:0 9px;border:0;border-radius:8px;background:transparent;
+  font:inherit;font-size:12.5px;font-weight:600;line-height:1;color:#31405a;text-align:left;cursor:pointer;
+  transition:background .12s ease,color .12s ease;
+}
+.srm-dd-item .srm-dd-dot{
+  width:7px;height:7px;border-radius:50%;flex:0 0 7px;background:currentColor;opacity:.55;
+}
+.srm-dd-item .srm-dd-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.srm-dd-item .srm-dd-check{font-size:10px;opacity:0;transform:scale(.7);transition:.14s ease}
+.srm-dd-item:hover{background:#f4f7fd}
+.srm-dd-item.on{background:#eef4ff;color:#2563eb}
+.srm-dd-item.on .srm-dd-check{opacity:1;transform:scale(1)}
+/* 各字段继承胶囊语义色（圆点 + 悬停底） */
+.srm-dd-item.p-jiaodian,.srm-dd-item.p-zuodian,.srm-dd-item.p-xiangxun,.srm-dd-item.p-quyoumo,
+.srm-dd-item.p-toushen,.srm-dd-item.p-yaokao,.srm-dd-item.p-cheyi,.srm-dd-item.p-tidao,
+.srm-dd-item.p-palouji,.srm-dd-item.p-yaoshuang,.srm-dd-item.p-huyao,
+.srm-dd-item.p-ceping,.srm-dd-item.p-zhongcao,.srm-dd-item.p-ganhuo,.srm-dd-item.p-yinliu,
+.srm-dd-item.p-shipai,.srm-dd-item.p-kouce,.srm-dd-item.p-douyin,.srm-dd-item.p-xhs,
+.srm-dd-item.p-daifa,.srm-dd-item.p-zifa,.srm-dd-item.p-default{color:#41506b}
+.srm-dd-item.on.p-jiaodian,.srm-dd-item.on.p-zuodian,.srm-dd-item.on.p-xiangxun,.srm-dd-item.on.p-quyoumo,
+.srm-dd-item.on.p-toushen,.srm-dd-item.on.p-yaokao,.srm-dd-item.on.p-cheyi,.srm-dd-item.on.p-tidao,
+.srm-dd-item.on.p-palouji,.srm-dd-item.on.p-yaoshuang,.srm-dd-item.on.p-huyao,
+.srm-dd-item.on.p-ceping,.srm-dd-item.on.p-zhongcao,.srm-dd-item.on.p-ganhuo,.srm-dd-item.on.p-yinliu,
+.srm-dd-item.on.p-shipai,.srm-dd-item.on.p-kouce{background:#eef4ff;color:#2563eb}
+
+/* ---------- ⑤ 批量删除：表头全选 / 行勾选 / 工具条按钮 ---------- */
+/* ★ V6 新增了 46px 勾选列 → 四列胶囊各收 10px（共省 40px）抵回来，避免总宽溢出 */
+.srm-shell .srm-entry-table td .srm-chip-prod.srm-dd-trigger{width:108px}
+.srm-shell .srm-entry-table td .srm-chip-plat.srm-dd-trigger{width:94px}
+.srm-shell .srm-entry-table td .srm-chip-src.srm-dd-trigger{width:82px}
+.srm-shell .srm-entry-table td .srm-chip-type.srm-dd-trigger{width:86px}
+.srm-shell .srm-entry-table{min-width:1546px}
+.srm-shell .srm-entry-table th.srm-g-check,
+.srm-shell .srm-entry-table td.srm-check-cell{
+  width:46px;min-width:46px;max-width:46px;padding:0 6px!important;text-align:center!important;
+  position:sticky;left:0;z-index:3;background:#fff;
+}
+.srm-shell .srm-entry-table thead tr.srm-g th.srm-g-check{background:#f5f8ff;z-index:5}
+.srm-shell .srm-entry-table tbody tr:hover td.srm-check-cell{background:#eef6ff}
+.srm-shell .srm-entry-table tbody tr:nth-child(even) td.srm-check-cell{background:#fcfdff}
+.srm-shell .srm-entry-table tbody tr:nth-child(even):hover td.srm-check-cell{background:#eef6ff}
+.srm-shell .srm-check-all,
+.srm-shell .srm-check-row{display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+.srm-shell .srm-check-all input,
+.srm-shell .srm-check-row input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.srm-shell .srm-check-all span,
+.srm-shell .srm-check-row span{
+  width:17px;height:17px;border-radius:5px;border:1.5px solid #cbd6e6;background:#fff;
+  display:grid;place-items:center;transition:.14s ease;position:relative;
+}
+.srm-shell .srm-check-all span:after,
+.srm-shell .srm-check-row span:after{
+  content:"";width:9px;height:5px;border-left:2px solid #fff;border-bottom:2px solid #fff;
+  transform:rotate(-45deg) scale(.4);opacity:0;transition:.14s ease;margin-top:-2px;
+}
+.srm-shell .srm-check-all:hover span,
+.srm-shell .srm-check-row:hover span{border-color:#93b4e8}
+.srm-shell .srm-check-all input:checked+span,
+.srm-shell .srm-check-row input:checked+span{
+  background:linear-gradient(135deg,#4f46e5,#7c3aed);border-color:transparent;
+  box-shadow:0 2px 6px -1px rgba(79,70,229,.45);
+}
+.srm-shell .srm-check-all input:checked+span:after,
+.srm-shell .srm-check-row input:checked+span:after{opacity:1;transform:rotate(-45deg) scale(1)}
+.srm-shell .srm-check-row input:disabled+span,
+.srm-shell .srm-check-all input:disabled+span{background:#f2f5fa;border-color:#e2e8f2;cursor:not-allowed}
+/* 工具条「批量删除」 */
+.srm-shell .srm-toolbar .srm-btn.danger{
+  color:#b42318;border-color:#f3c9c4;background:#fff;
+}
+.srm-shell .srm-toolbar .srm-btn.danger:hover:not(:disabled){background:#fef3f2;border-color:#eaa9a1}
+.srm-shell .srm-toolbar .srm-btn.danger:disabled{color:#b8c2d0;border-color:#e5eaf2;background:#fbfcfe;cursor:not-allowed}
+.srm-shell .srm-toolbar .srm-btn.danger:not(:disabled){background:#fff5f4}
+.srm-shell .srm-toolbar .srm-batch-num{
+  min-width:17px;height:17px;padding:0 5px;margin-left:1px;border-radius:99px;
+  background:linear-gradient(135deg,#e11d48,#f43f5e);color:#fff;
+  font-size:10.5px;font-weight:800;display:inline-flex;align-items:center;justify-content:center;
+}
+
+/* 左 sticky 让位：勾选列占了 left:0，日期列顺移到它右边 */
+.srm-shell .srm-entry-table thead tr:first-child th.srm-g-plain.srm-g-div:nth-child(2),
+.srm-shell .srm-entry-table td.srm-date-cell{left:46px!important}
+
+/* ---------- ② 发布链接：已输入=跳转（不再是输入框观感） ---------- */
+.srm-shell .srm-entry-table .srm-link-state.done{
+  background:#eef4ff;color:#1d4ed8;box-shadow:inset 0 0 0 1px #cbdefc;border:0;
+}
+.srm-shell .srm-entry-table .srm-link-state.done:hover{background:#e2ecfe;box-shadow:inset 0 0 0 1px #a9c9f8}
+.srm-shell .srm-entry-table .srm-link-state.todo{
+  background:#fbfcfe;color:#9aa6ba;box-shadow:inset 0 0 0 1px #e6ebf3;border:1px dashed #d8e0ec;
+  cursor:not-allowed;
+}
+
+/* ---------- ③ 流量大图：底部「重新上传图片」 ---------- */
+.srm-traffic-body{display:flex;align-items:center;justify-content:center;background:
+  linear-gradient(45deg,#f4f6fa 25%,transparent 25%,transparent 75%,#f4f6fa 75%),
+  linear-gradient(45deg,#f4f6fa 25%,transparent 25%,transparent 75%,#f4f6fa 75%);
+  background-size:18px 18px;background-position:0 0,9px 9px;border-radius:12px;padding:14px}
+.srm-traffic-preview{border-radius:8px;box-shadow:0 6px 20px -8px rgba(16,24,40,.25);background:#fff}
+.srm-traffic-foot{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.srm-traffic-hint{font-size:11.5px;color:#9aa6ba;display:inline-flex;align-items:center;gap:6px}
+.srm-traffic-hint i{font-size:11px;opacity:.75}
+
+/* ---------- 窄屏回落 ---------- */
+@media(max-width:1100px){
+  .srm-shell .srm-entry-table th.srm-g-check,
+  .srm-shell .srm-entry-table td.srm-check-cell{width:40px;min-width:40px;max-width:40px}
+  .srm-shell .srm-entry-table thead tr:first-child th.srm-g-plain.srm-g-div:nth-child(2),
+  .srm-shell .srm-entry-table td.srm-date-cell{left:40px!important}
+  .srm-traffic-foot{flex-direction:column;align-items:stretch}
+}
