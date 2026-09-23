@@ -1060,22 +1060,18 @@ def _seeding_store_options():
     )
     for table, platform, name_col in configs:
         try:
-            rows = db_execute('SELECT DISTINCT `%s` AS store FROM `%s` '
-                              'WHERE `是否运营` = 1 ORDER BY store' % (name_col, table)) or []
+            cols = {r.get('Field') for r in (db_execute('SHOW COLUMNS FROM `%s`' % table) or [])}
+            brand_sql = ', `品牌` AS brand' if '品牌' in cols else ''
+            rows = db_execute('SELECT DISTINCT `%s` AS store%s FROM `%s` '
+                              'WHERE `是否运营` = 1 ORDER BY store' %
+                              (name_col, brand_sql, table)) or []
         except Exception:
             rows = []
         for row in rows:
             store = str(row.get('store') or '').strip()
             if not store:
                 continue
-            brand = ''
-            try:
-                brand_rows = db_execute('SELECT `品牌` AS brand FROM `%s` WHERE `%s` = %%s '
-                                        'ORDER BY id DESC LIMIT 1' % (table, name_col), [store]) or []
-                brand = str(brand_rows[0].get('brand') or '').strip() if brand_rows else ''
-            except Exception:
-                # 老账号表可能还没有品牌列，店铺仍然要展示并可绑定品类。
-                pass
+            brand = str(row.get('brand') or '').strip()
             out.append({'store': store, 'brand': brand,
                         'platform': platform, 'categories': []})
     # 商品品类映射表本身按平台商品 ID 绑定，没有直接的店铺列；必须先

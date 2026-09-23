@@ -34,7 +34,7 @@
       function canEdit(row) { return isSupervisor.value || !currentUser.value || row.accountName === currentUser.value; }
       function startEdit(row, key) { if (canEdit(row)) state.inlineEdit = { id: row.id, key: key }; }
       function isEditing(row, key) { return !!state.inlineEdit && state.inlineEdit.id === row.id && state.inlineEdit.key === key; }
-      function finishEdit(row) { if (!state.inlineEdit || state.inlineEdit.id !== row.id) return; state.inlineEdit = null; persistRow(row); }
+      function finishEdit(row) { if (state.inlineEdit && state.inlineEdit.id === row.id) state.inlineEdit = null; persistRow(row); }
       function showDate(row, index) { return index === 0 || filteredRows.value[index - 1].date !== row.date; }
       function dateSpan(row, index) { if (!showDate(row, index)) return 0; var n = 1; while (filteredRows.value[index + n] && filteredRows.value[index + n].date === row.date) n++; return n; }
       function linkLabel(row) { return row.publishLink ? '已输入' : '输入链接'; }
@@ -54,7 +54,10 @@
       function loadOptions() { if (!api || !api.getSeedingOptions) { state.syncState = '本地演示数据'; return; } api.getSeedingOptions().then(function (data) { if (!data) { state.syncState = '本地演示数据'; return; } state.apiReady = true; state.syncState = '已同步网站账号和店铺品类'; state.stores = data.stores || []; state.bindings = data.bindings || []; state.people = data.people || {}; }); }
       function loadRows() { if (!api || !api.getSeedingRecords) return; api.getSeedingRecords(state.selectedDept, state.selectedPerson).then(function (rows) { if (Array.isArray(rows)) { state.rows = rows.map(normalize); state.apiReady = true; state.syncState = '已连接数据服务'; } }); }
       function exportRows() { var headers = ['发布时间', '部门', '产品', '发布平台', '发布渠道', '笔记类型', '标题', '发布链接', '发布账号名称', '发布账号ID', '点赞', '收藏', '评论', '阅读量', '备注']; var body = filteredRows.value.map(function (r) { return [r.date, r.department, r.product, r.platform, r.source, r.noteType, r.title, r.publishLink, r.accountName, r.accountId, r.likes, r.collects, r.comments, r.views, r.remark]; }); var csv = [headers].concat(body).map(function (line) { return line.map(function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }).join(','); }).join('\n'); var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })); a.download = '种草收录-' + currentDate() + '.csv'; a.click(); }
-      Vue.onMounted(function () { loadOptions(); loadRows(); });
+      var optionTimer = null;
+      function refreshOptionsOnReturn() { if (location.hash === '#seeding-monitor') loadOptions(); }
+      Vue.onMounted(function () { loadOptions(); loadRows(); window.addEventListener('hashchange', refreshOptionsOnReturn); optionTimer = window.setInterval(loadOptions, 60000); });
+      Vue.onBeforeUnmount(function () { window.removeEventListener('hashchange', refreshOptionsOnReturn); if (optionTimer) window.clearInterval(optionTimer); });
       Vue.watch(function () { return [state.selectedDept, state.selectedPerson]; }, loadRows);
       return { state: state, departments: departments, platforms: platforms, sources: sources, noteTypes: noteTypes, selectedPeople: selectedPeople, filteredRows: filteredRows, productOptions: productOptions, stats: stats, formatNumber: formatNumber, formatCompact: formatCompact, selectDept: selectDept, canEdit: canEdit, startEdit: startEdit, isEditing: isEditing, finishEdit: finishEdit, showDate: showDate, dateSpan: dateSpan, linkLabel: linkLabel, openLink: openLink, openTraffic: openTraffic, triggerTraffic: triggerTraffic, onImageChange: onImageChange, openCreate: openCreate, openEdit: openEdit, saveRecord: saveRecord, removeRow: removeRow, toggleBinding: toggleBinding, isBound: isBound, exportRows: exportRows };
     },
