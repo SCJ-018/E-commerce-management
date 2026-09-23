@@ -1060,7 +1060,7 @@ def _seeding_store_options():
     )
     for table, platform, name_col in configs:
         try:
-            rows = db_execute('SELECT DISTINCT `%s` AS store, `品牌` AS brand FROM `%s` '
+            rows = db_execute('SELECT DISTINCT `%s` AS store FROM `%s` '
                               'WHERE `是否运营` = 1 ORDER BY store' % (name_col, table)) or []
         except Exception:
             rows = []
@@ -1068,7 +1068,15 @@ def _seeding_store_options():
             store = str(row.get('store') or '').strip()
             if not store:
                 continue
-            out.append({'store': store, 'brand': str(row.get('brand') or '').strip(),
+            brand = ''
+            try:
+                brand_rows = db_execute('SELECT `品牌` AS brand FROM `%s` WHERE `%s` = %%s '
+                                        'ORDER BY id DESC LIMIT 1' % (table, name_col), [store]) or []
+                brand = str(brand_rows[0].get('brand') or '').strip() if brand_rows else ''
+            except Exception:
+                # 老账号表可能还没有品牌列，店铺仍然要展示并可绑定品类。
+                pass
+            out.append({'store': store, 'brand': brand,
                         'platform': platform, 'categories': []})
     # 商品品类映射表本身按平台商品 ID 绑定，没有直接的店铺列；必须先
     # 关联对应平台的单链接表，再按店铺取品类，避免把同品牌其它店铺的品类带进来。
