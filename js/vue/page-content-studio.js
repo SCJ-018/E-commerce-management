@@ -23,7 +23,7 @@
     return fetch('/api/content-studio/' + path, options)
       .then(function (response) {
         if (response.status === 401) {
-          var authError=new Error('登录已过期，请重新登录'); authError.apiError=true; throw authError;
+          var authError=new Error('登录已过期，请重新登录'); authError.apiError=true; authError.httpStatus=401; throw authError;
         }
         return response.json().then(function (body) {
           if (!response.ok || !body || body.code !== 0) {
