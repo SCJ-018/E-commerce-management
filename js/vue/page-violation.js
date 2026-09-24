@@ -439,7 +439,7 @@
       <div class="vd-stat-body"><span class="vd-stat-num">{{ state.images.length }}</span><span class="vd-stat-label">已上传</span></div>
     </div>
     <div class="vd-stat-card">
-      <div class="vd-stat-icon" style="background:#fef3c7;color:#f59e0b"><i class="fa-solid fa-spinner"></i></div>
+      <div class="vd-stat-icon" style="background:#fef3c7;color:#f59e0b"><i class="fa-solid" :class="state.running ? 'fa-spinner fa-spin' : 'fa-spinner'"></i></div>
       <div class="vd-stat-body"><span class="vd-stat-num">{{ state.processingLeft }}</span><span class="vd-stat-label">检测中</span></div>
     </div>
     <div class="vd-stat-card">

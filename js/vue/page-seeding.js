@@ -265,7 +265,7 @@
         }).finally(function () { state.loadingMore = false; });
       }
       function exportRows() { var headers = ['发布时间', '部门', '产品', '发布平台', '发布渠道', '笔记类型', '标题', '发布链接', '发布账号名称', '发布账号ID', '点赞', '收藏', '评论', '阅读量', '备注']; var body = filteredRows.value.map(function (r) { return [r.date, r.department, r.product, r.platform, r.source, r.noteType, r.title, r.publishLink, r.accountName, r.accountId, r.likes, r.collects, r.comments, r.views, r.remark]; }); var csv = [headers].concat(body).map(function (line) { return line.map(function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }).join(','); }).join('\n'); var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })); a.download = '种草收录-' + currentDate() + '.csv'; a.click(); }
-      var scrollLoadHandler = null, tableScrollHandler = null;
+      var scrollLoadHandler = null, tableScrollHandler = null, sheetTabsWheelHandler = null;
       Vue.onMounted(function () {
         loadOptions().then(function () { loadDatePages(); }); loadCategoryViews(); loadSummary();
         scrollLoadHandler = function () {
@@ -277,6 +277,19 @@
           if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 500) loadMoreRows();
         };
         window.addEventListener('scroll', scrollLoadHandler, { passive: true });
+        var tabsRow = document.querySelector('#page-seeding-monitor-vue .srm-tabs-row');
+        if (tabsRow) {
+          // Sheet 标签不显示横向滚动条，滚轮在标签区域内改为左右滚动。
+          sheetTabsWheelHandler = function (event) {
+            var sheetTabs = event.target && event.target.closest ? event.target.closest('.srm-sheet-tabs') : null;
+            if (!sheetTabs || sheetTabs.scrollWidth <= sheetTabs.clientWidth) return;
+            var delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+            if (!delta) return;
+            event.preventDefault();
+            sheetTabs.scrollLeft += delta;
+          };
+          tabsRow.addEventListener('wheel', sheetTabsWheelHandler, { passive: false });
+        }
         var tableWrap = document.querySelector('#page-seeding-monitor-vue .srm-table-wrap');
         if (tableWrap) {
           tableScrollHandler = function () {
@@ -286,7 +299,7 @@
           tableWrap.addEventListener('scroll', tableScrollHandler, { passive: true });
         }
       });
-      Vue.onBeforeUnmount(function () { if (rowTimer) clearTimeout(rowTimer); if (scrollLoadHandler) window.removeEventListener('scroll', scrollLoadHandler); var tableWrap = document.querySelector('#page-seeding-monitor-vue .srm-table-wrap'); if (tableWrap && tableScrollHandler) tableWrap.removeEventListener('scroll', tableScrollHandler); rowRequest++; });
+      Vue.onBeforeUnmount(function () { if (rowTimer) clearTimeout(rowTimer); if (scrollLoadHandler) window.removeEventListener('scroll', scrollLoadHandler); var tabsRow = document.querySelector('#page-seeding-monitor-vue .srm-tabs-row'); if (tabsRow && sheetTabsWheelHandler) tabsRow.removeEventListener('wheel', sheetTabsWheelHandler); var tableWrap = document.querySelector('#page-seeding-monitor-vue .srm-table-wrap'); if (tableWrap && tableScrollHandler) tableWrap.removeEventListener('scroll', tableScrollHandler); rowRequest++; });
       Vue.watch(function () { return [state.selectedDept, state.selectedSheet]; }, loadDatePages);
       Vue.watch(function () { return state.datePageIndex; }, function () { state.virtualStart = 0; loadRows(); });
       Vue.watch(function () { return state.selectedDept; }, function () { loadSummary(); });
@@ -310,8 +323,8 @@
     var mount = document.getElementById('page-seeding-monitor-vue');
     if (!mount || mount.__vue_app__) return;
     // 日期翻页和虚拟窗口注入到现有模板，复用已有按钮样式，不改 CSS 文件。
-    app.template = app.template
-      .replace('<div class="srm-table-wrap">', '<div class="srm-toolbar-right"><button class="srm-btn" :disabled="state.datePageIndex<=0" @click="state.datePageIndex=Math.max(0,state.datePageIndex-1)"><i class="fa-solid fa-chevron-left"></i>上一日</button><select class="srm-btn" v-model.number="state.datePageIndex"><option v-for="(day,index) in datePages" :key="day" :value="index">{{day}} · 第 {{index+1}} / {{datePages.length}} 日</option></select><button class="srm-btn" :disabled="state.datePageIndex>=datePages.length-1" @click="state.datePageIndex=Math.min(datePages.length-1,state.datePageIndex+1)">下一日<i class="fa-solid fa-chevron-right"></i></button></div><div class="srm-table-wrap">')
+      app.template = app.template
+      .replace('<div class="srm-table-wrap">', '<div class="srm-toolbar-right"><button class="srm-btn" :disabled="state.datePageIndex<=0" @click="state.datePageIndex=Math.max(0,state.datePageIndex-1)"><i class="fa-solid fa-chevron-left"></i>上一日</button><select class="srm-btn" v-model.number="state.datePageIndex"><option v-for="(day,index) in datePages" :key="day" :value="index">{{day}}</option></select><button class="srm-btn" :disabled="state.datePageIndex>=datePages.length-1" @click="state.datePageIndex=Math.min(datePages.length-1,state.datePageIndex+1)">下一日<i class="fa-solid fa-chevron-right"></i></button></div><div class="srm-table-wrap">')
       .replace('<td><button class="srm-link-state"', '<td><input v-if="isEditing(row,\'publishLink\')" v-model="row.publishLink" placeholder="请输入发布链接" @blur="finishEdit(row)" @keyup.enter="finishEdit(row)"><button v-else class="srm-link-state"')
       .replace(':disabled="!linkHref(row)"', ':disabled="!canEdit(row)"')
       .replace('@click.stop="openLink(row)"', '@click.stop="startEdit(row,\'publishLink\')"')
