@@ -18,7 +18,13 @@
   ];
   function accountKey() { return 'content_studio_cards_' + (sessionStorage.getItem('admin_current_account') || 'local'); }
   function loadCards() {
-    try { var x = JSON.parse(localStorage.getItem(accountKey()) || '[]'); return Array.isArray(x) ? x.slice(0,50) : []; }
+    try {
+      var x = JSON.parse(localStorage.getItem(accountKey()) || '[]');
+      return Array.isArray(x) ? x.slice(0,50).map(function (card) {
+        if (card && !card.contentType) card.contentType=inferContentType(card.input || '');
+        return card;
+      }) : [];
+    }
     catch (e) { return []; }
   }
   function saveCards(cards) { try { localStorage.setItem(accountKey(), JSON.stringify(cards.slice(0,50))); } catch (e) {} }
@@ -28,9 +34,14 @@
       .then(function (r) { if (!r || r.code !== 0) throw new Error((r && r.msg) || '请求失败'); return r.data; });
   }
   function textVal(x) { return Array.isArray(x) ? x.join('\n') : String(x || ''); }
+  function inferContentType(raw) {
+    var text = String(raw || '').toLowerCase();
+    return /视频|口播|镜头|转写|短视频|抖音/.test(text) ? 'video' : 'image_text';
+  }
+  function contentTypeLabel(type) { return type === 'image_text' ? '图文' : '视频'; }
   function demoAnalysis(raw) {
     var title = raw.match(/(?:标题|题目)[:：]\s*([^\n]+)/);
-    return { title:(title && title[1] ? title[1].trim() : '一套脚垫用了三个月，我终于找到清洁不返味的方法'), sourceUrl:'', evidence:'演示拆解：未连接服务端 AI', breakdown:{
+    return { title:(title && title[1] ? title[1].trim() : '一套脚垫用了三个月，我终于找到清洁不返味的方法'), sourceUrl:'', contentType:inferContentType(raw), evidence:'演示拆解：未连接服务端 AI', breakdown:{
       topic:'围绕“长期使用后的真实变化”切入，面向正在比较材质、清洁成本和耐用性的车主。',
       structure:'前 3 秒抛出结果或反常识问题 → 展示使用场景 → 给出 2 至 3 个对比证据 → 总结适用人群并引导评论。',
       title:'使用时间 + 明确结果 + 具体场景；标题承诺可验证的体验，避免泛泛而谈。',
@@ -41,22 +52,29 @@
     }};
   }
   function demoGeneration(data) {
-    var n=data.productName, c=data.category, t=data.noteType, s=data.sellingPoints, brand=data.brand, style=data.stylePreference;
-    return { topics:[n+'真实使用一周后的 3 个变化',c+'怎么选：材质、适配和清洁成本',t+'视角拆解 '+n+' 的一个关键卖点', '预算有限时，先看 '+n+' 的这项细节', n+'适合哪些人，哪些人不必买'],
+    var n=data.productName, c=data.category, t=data.noteType || (data.contentType === 'image_text' ? '图文' : '视频'), s=data.sellingPoints, brand=data.brand, style=data.stylePreference;
+    var common = { contentType:data.contentType || 'video', topics:[n+'真实使用一周后的 3 个变化',c+'怎么选：材质、适配和清洁成本',t+'视角拆解 '+n+' 的一个关键卖点', '预算有限时，先看 '+n+' 的这项细节', n+'适合哪些人，哪些人不必买'],
       matrix:[{angle:'真实体验',format:'实拍',hook:'先展示使用后的结果，再回放关键细节'},{angle:'避坑对比',format:'测评',hook:'同一场景只比较一个变量'},{angle:'场景解决方案',format:'干货',hook:'从车主常见痛点给出选择顺序'}],
-      shooting:'0-3s：结果特写和一句结论；3-8s：展示安装或使用场景；8-15s：用近景呈现卖点“'+s.slice(0,40)+'”；15-22s：补充适用人群与注意事项。',
       titles:['用了 7 天，我终于知道 '+n+' 这个细节值不值','别只看价格：'+c+'先看这 3 个地方','真实体验｜'+n+'适合谁，哪些人可以跳过'],
       body:'最近在整理'+(brand ? '「'+brand+'」' : '')+' '+n+' 的使用体验，想把真实感受说清楚。先说结论：'+s+'。\n\n这次会用「'+style+'」的表达方式，按使用场景、清洁维护和适配细节逐项展示；文中只写已确认的信息，具体效果以实际测试为准。',
       comments:'1. 这个细节我之前还真没注意到，尤其是你提到的使用场景。\n2. 看完先记下了，回头我也想按这个标准对比一下。\n3. 这类产品最怕只说优点，能把限制讲清楚反而更有参考价值。\n4. 我是因为 '+(brand || '这个品牌')+' 的'+c+'进来的，想再看看长期使用后的变化。\n5. 如果后面有实拍或测试记录，想继续蹲一下。',
-      script:'【镜头 1｜0-3s】结果特写，口播：先看用了一段时间后的真实状态。\n【镜头 2｜3-8s】展示安装/清洁过程，口播：这里重点看 '+s.slice(0,32)+'。\n【镜头 3｜8-15s】拍细节和局部对比，口播：只描述看得见、测得到的变化。\n【镜头 4｜15-22s】正面总结，口播：适合……；如果你更在意……，请先核验。',
       checks:'发布前核对车型适配、价格和测试条件；删除无法证明的“全网最好”“绝对不返味”等表述；补齐实拍画面与必要的对比依据。'};
+    if (data.contentType === 'image_text') {
+      common.imagePlan='第 1 张｜结果/痛点对比，叠加一句结论\n第 2 张｜产品整体与使用场景，标注适用对象\n第 3 张｜材质、结构或细节特写，配合真实参数\n第 4 张｜前后变化或选择清单，写清待核验项';
+      common.shooting=''; common.script='';
+    } else {
+      common.imagePlan='';
+      common.shooting='0-3s：结果特写和一句结论；3-8s：展示安装或使用场景；8-15s：用近景呈现卖点“'+s.slice(0,40)+'”；15-22s：补充适用人群与注意事项。';
+      common.script='【镜头 1｜0-3s】结果特写，口播：先看用了一段时间后的真实状态。\n【镜头 2｜3-8s】展示安装/清洁过程，口播：这里重点看 '+s.slice(0,32)+'。\n【镜头 3｜8-15s】拍细节和局部对比，口播：只描述看得见、测得到的变化。\n【镜头 4｜15-22s】正面总结，口播：适合……；如果你更在意……，请先核验。';
+    }
+    return common;
   }
 
   var FLOW_META = [
     ['投喂爆文素材','抖音链接、口播文案或镜头摘要'],
     ['爆文拆解','7 维结构化分析并落卡'],
     ['选择参考母本','可选：只借鉴方法，不照抄原句'],
-    ['生成配置','品类 · 类型 · 品牌 · 风格 · 真实卖点'],
+    ['生成配置','品类 · 内容形态 · 品牌 · 风格 · 真实卖点'],
     ['AI 生成内容','选题 → 脚本，共 8 段产出'],
     ['人工核验发布','核对适配、价格与测试条件']
   ];
@@ -71,7 +89,7 @@
       workspaceTab:'creative',
       activeTab:'breakdown', input:'', analysisFocus:'', status:'', statusError:false, busy:false, cards:loadCards(), selectedId:null,
       category:'', noteType:'测评', brand:'', stylePreference:'素人感型', styleOpen:false, imitate:false, referenceId:null, productName:'', sellingPoints:'', audience:'', scene:'',
-      output:null, productionBusy:false, productionStatus:'', productionError:false, aiDegraded:false,
+      output:null, productionBusy:false, productionStatus:'', productionError:false, aiDegraded:false, imitationOpen:false,
       profileDone:false,
       noteTypes:noteTypes, stylePreferences:stylePreferences,
       userName:sessionStorage.getItem('admin_current_user') || '当前用户', userRole:sessionStorage.getItem('admin_current_role') || '团队成员', avatar:''
@@ -149,6 +167,8 @@
       navigate:function (page) { window.location.hash=page; if (window.App && App.navigateTo) App.navigateTo(page); },
       selectCard:function (id) { this.selectedId=id; },
       selectStyle:function (name) { this.stylePreference=name; this.styleOpen=false; },
+      typeLabel:function (card) { return contentTypeLabel(card && card.contentType); },
+      typeIcon:function (card) { return card && card.contentType === 'image_text' ? 'fa-images' : 'fa-video'; },
       draftBadge:function (card) {
         var keys = (card && card.breakdown) ? Object.keys(card.breakdown) : [];
         if (!keys.length) return { cls:'amber', text:'待核验' };
@@ -157,8 +177,9 @@
       },
       goProduction:function (card) {
         if (!card) return;
-        this.referenceId=card.id; this.imitate=true; this.activeTab='production';
+        this.referenceId=card.id; this.imitate=true; this.imitationOpen=true; this.productionStatus=''; this.productionError=false;
       },
+      closeImitation:function () { if (!this.productionBusy) this.imitationOpen=false; },
       clearInput:function () { this.input=''; this.analysisFocus=''; },
       removeCard:function () {
         var id = this.selectedId;
@@ -183,7 +204,7 @@
             this.status='服务端 AI 暂不可用，已生成演示拆解卡；配置 CONTENT_STUDIO_API_KEY 后可切换真实结果';
           }
           var card={id:Date.now(), createdAt:new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}), input:raw,
-            title:d.title || '未命名爆文', sourceUrl:d.sourceUrl || '', evidence:d.evidence || '', breakdown:d.breakdown || {}};
+            title:d.title || '未命名爆文', sourceUrl:d.sourceUrl || '', contentType:d.contentType || inferContentType(raw), evidence:d.evidence || '', breakdown:d.breakdown || {}};
           this.cards.unshift(card); this.cards=this.cards.slice(0,50); saveCards(this.cards); this.selectedId=card.id;
           if (!this.status || this.status.indexOf('演示') < 0) this.status='拆解完成，已保存到本机爆文卡片'; this.statusError=false; this.input=''; this.analysisFocus='';
         } catch (e) { this.status=e.message || '拆解失败'; this.statusError=true; }
@@ -196,10 +217,15 @@
         if (!this.productName.trim() || !this.sellingPoints.trim()) {
           this.productionStatus='请填写产品名称与真实卖点，避免 AI 编造产品信息'; this.productionError=true; return;
         }
+        if (this.imitate && !this.brand.trim()) {
+          this.productionStatus='一键仿写需要填写品牌，便于 AI 区分产品资料'; this.productionError=true; return;
+        }
         if (this.imitate && !this.referenceCard) { this.productionStatus='开启仿写前，请选择一张已拆解的爆文卡片'; this.productionError=true; return; }
+        var contentType = this.imitate && this.referenceCard ? (this.referenceCard.contentType || 'video') : '';
+        if (this.imitate) { this.imitationOpen=false; this.activeTab='production'; }
         this.productionBusy=true; this.productionStatus=this.imitate ? '正在按参考母本仿写，请稍候…' : '正在根据笔记类型与风格偏好原创，请稍候…'; this.productionError=false;
         try {
-          var payload={category:this.category.trim(),noteType:this.noteType,brand:this.brand.trim(),stylePreference:this.stylePreference,productName:this.productName.trim(),sellingPoints:this.sellingPoints.trim(),audience:this.audience.trim(),scene:this.scene.trim(),imitate:this.imitate,reference:this.imitate && this.referenceCard ? {title:this.referenceCard.title,breakdown:this.referenceCard.breakdown} : null};
+          var payload={category:this.category.trim(),noteType:this.noteType,contentType:contentType,brand:this.brand.trim(),stylePreference:this.stylePreference,productName:this.productName.trim(),sellingPoints:this.sellingPoints.trim(),audience:this.audience.trim(),scene:this.scene.trim(),imitate:this.imitate,reference:this.imitate && this.referenceCard ? {title:this.referenceCard.title,contentType:contentType,breakdown:this.referenceCard.breakdown} : null};
           try { this.output=await post('generate',payload); this.productionStatus='已生成，可逐段复制并进行人工审核'; }
           catch (apiError) {
             if ((apiError.message || '').indexOf('登录已过期') >= 0) throw apiError;
@@ -369,10 +395,10 @@
                     </div>
                     <div v-if="cards.length" class="cs-fuse-items-list">
                       <button v-for="card in cards" :key="card.id" type="button" class="cs-pick" :class="{on:selectedId===card.id}" @click="selectCard(card.id)">
-                        <span class="tile"><i class="fa-brands fa-tiktok"></i></span>
-                        <span class="body">
-                          <span class="h">{{ card.title }}</span>
-                          <span class="m">{{ card.createdAt }} · {{ card.evidence || '用户提供素材' }}</span>
+                         <span class="tile"><i class="fa-solid" :class="typeIcon(card)"></i></span>
+                         <span class="body">
+                           <span class="h">{{ card.title }}</span>
+                           <span class="m"><b class="cs-type-tag" :class="card.contentType === 'image_text' ? 'image' : 'video'">{{ typeLabel(card) }}</b>{{ card.createdAt }} · {{ card.evidence || '用户提供素材' }}</span>
                         </span>
                       </button>
                     </div>
@@ -405,7 +431,7 @@
                         <div class="cs-blk"><h4><i class="fa-solid fa-circle-info"></i> 分析依据</h4><p>{{ selectedCard.evidence || '用户提供素材' }}</p></div>
                       </div>
                       <div class="cs-fuse-foot">
-                        <button type="button" class="cs-btn mint wide" @click="goProduction(selectedCard)"><i class="fa-solid fa-arrow-right"></i> 参考这张卡片去生产</button>
+                        <button type="button" class="cs-btn mint wide" @click="goProduction(selectedCard)"><i class="fa-solid fa-wand-magic-sparkles"></i> 一键仿写</button>
                         <div class="cs-row-actions" style="margin-top:9px">
                           <span class="cs-hint">只借鉴方法，不照抄原句与画面编排</span>
                           <button type="button" class="cs-btn ghost" @click="removeCard"><i class="fa-solid fa-trash-can"></i> 删除卡片</button>
@@ -425,7 +451,7 @@
                   <div class="col">
                     <div class="cs-kicker">GENERATION WORKFLOW</div>
                     <h1>从真实卖点到可拍摄脚本</h1>
-                    <p>配置品类、笔记类型与产品信息，需要时挂上一张拆解卡片做结构参考，一次生成 8 段可直接使用的产出。</p>
+                    <p>{{ imitate ? '已识别原爆文的图文/视频形态，补充产品资料后生成对应仿写结果。' : '配置品类、笔记类型与产品信息，需要时挂上一张拆解卡片做结构参考，一次生成可直接使用的产出。' }}</p>
                   </div>
                   <div class="cs-hero-art"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
                 </div>
@@ -446,7 +472,7 @@
                 </div>
                 <div class="cs-pad">
                   <div class="cs-divider">
-                    <div class="cs-block-label">01 · 输入品类 <em>必填</em></div>
+                  <div class="cs-block-label">01 · 输入品类 <em>必填</em></div>
                     <div class="cs-category-input" :class="{filled:!!category.trim()}">
                       <span class="cs-category-icon"><i class="fa-solid fa-shapes"></i></span>
                       <label class="cs-category-body" for="csCategoryInput">
@@ -460,12 +486,16 @@
                     </div>
                     <div class="cs-category-hint"><i class="fa-solid fa-circle-info"></i> 建议填写具体品类名称，AI 会据此匹配更准确的选题、场景与表达。</div>
                   </div>
-                  <div class="cs-divider">
+                  <div v-if="!imitate" class="cs-divider">
                     <div class="cs-block-label">02 · 笔记类型</div>
                     <div class="cs-chips">
                       <button v-for="type in noteTypes" :key="type" type="button" class="cs-ch" :class="{on:noteType===type}" @click="noteType=type">{{ type }}</button>
                     </div>
                     <div class="cs-hint" style="margin-top:9px">「扣测」按对比测试处理，仍需提供真实测试依据。</div>
+                  </div>
+                  <div v-else class="cs-divider cs-recognized-type">
+                    <div class="cs-block-label">02 · 已识别内容形态</div>
+                    <div class="cs-recognized-type-value"><i class="fa-solid" :class="referenceCard && referenceCard.contentType === 'image_text' ? 'fa-images' : 'fa-video'"></i><b>{{ referenceCard && referenceCard.contentType === 'image_text' ? '图文' : '视频' }}</b><span>仿写将按原爆文的内容形态生成对应结果</span></div>
                   </div>
                   <div class="cs-divider">
                     <div class="cs-block-label">03 · 产品信息 <em>必填项用 * 标记</em></div>
@@ -508,7 +538,7 @@
               <div class="cs-card">
                 <div class="cs-head">
                   <div class="cs-chip mint"><i class="fa-solid fa-sparkles"></i></div>
-                  <div class="grow"><div class="cs-title">AI 生成结果</div><div class="cs-sub">从选题到拍摄与评论区，一套内容完整交付</div></div>
+                  <div class="grow"><div class="cs-title">AI 生成结果</div><div class="cs-sub">{{ output && output.contentType === 'image_text' ? '图文配图与正文一套交付' : '从选题到拍摄与评论区，一套内容完整交付' }}</div></div>
                   <span class="cs-badge" :class="output?'mint':'gray'">{{ output ? '可编辑参考稿' : '等待生成' }}</span>
                 </div>
                 <div v-if="output" class="cs-pad">
@@ -522,10 +552,14 @@
                       <div v-for="(x,i) in output.matrix || []" :key="i" class="cs-mx-item"><b>{{ x.angle }}</b><span>{{ x.format }} · {{ x.hook }}</span></div>
                     </div>
                   </div>
-                  <div class="cs-out-sec">
-                    <div class="cs-out-head"><span class="n"><i class="fa-solid fa-video"></i> 拍摄建议</span><button type="button" class="cs-copy" @click="copy(output.shooting)"><i class="fa-solid fa-copy"></i> 复制</button></div>
-                    <div class="cs-out-body">{{ display(output.shooting) }}</div>
-                  </div>
+                   <div v-if="output.contentType === 'image_text'" class="cs-out-sec">
+                     <div class="cs-out-head"><span class="n"><i class="fa-solid fa-images"></i> 配图方案</span><button type="button" class="cs-copy" @click="copy(output.imagePlan)"><i class="fa-solid fa-copy"></i> 复制</button></div>
+                     <div class="cs-out-body">{{ display(output.imagePlan) }}</div>
+                   </div>
+                   <div v-if="output.contentType !== 'image_text'" class="cs-out-sec">
+                     <div class="cs-out-head"><span class="n"><i class="fa-solid fa-video"></i> 拍摄建议</span><button type="button" class="cs-copy" @click="copy(output.shooting)"><i class="fa-solid fa-copy"></i> 复制</button></div>
+                     <div class="cs-out-body">{{ display(output.shooting) }}</div>
+                   </div>
                   <div class="cs-out-sec">
                     <div class="cs-out-head"><span class="n"><i class="fa-solid fa-heading"></i> 多版本标题</span><button type="button" class="cs-copy" @click="copy(output.titles)"><i class="fa-solid fa-copy"></i> 复制</button></div>
                     <div class="cs-out-body">{{ display(output.titles) }}</div>
@@ -538,8 +572,8 @@
                     <div class="cs-out-head"><span class="n"><i class="fa-solid fa-comments"></i> 原作品评论文案</span><button type="button" class="cs-copy" @click="copy(output.comments)"><i class="fa-solid fa-copy"></i> 复制</button></div>
                     <div class="cs-out-body">{{ display(output.comments) }}</div>
                   </div>
-                  <div class="cs-out-sec">
-                    <div class="cs-out-head"><span class="n"><i class="fa-solid fa-film"></i> 短视频脚本</span><button type="button" class="cs-copy" @click="copy(output.script)"><i class="fa-solid fa-copy"></i> 复制</button></div>
+                   <div v-if="output.contentType !== 'image_text'" class="cs-out-sec">
+                     <div class="cs-out-head"><span class="n"><i class="fa-solid fa-film"></i> 短视频脚本</span><button type="button" class="cs-copy" @click="copy(output.script)"><i class="fa-solid fa-copy"></i> 复制</button></div>
                     <div class="cs-out-body">{{ display(output.script) }}</div>
                   </div>
                   <div class="cs-out-sec">
@@ -611,6 +645,38 @@
           <div class="cs-violation-shield"><i class="fa-solid fa-shield-halved"></i></div>
         </div>
         <content-violation-page></content-violation-page>
+      </div>
+
+      <div v-if="imitationOpen" class="cs-modal-backdrop" @click.self="closeImitation">
+        <form class="cs-modal" @submit.prevent="generate">
+          <div class="cs-modal-head">
+            <div class="cs-chip mint"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
+            <div class="grow"><div class="cs-title">一键仿写</div><div class="cs-sub">已根据拆解素材识别内容形态，补充产品资料后生成对应 AI 结果</div></div>
+            <button type="button" class="cs-modal-close" aria-label="关闭" @click="closeImitation"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+          <div class="cs-modal-source" v-if="referenceCard">
+            <i class="fa-solid" :class="referenceCard.contentType === 'image_text' ? 'fa-images' : 'fa-video'"></i>
+            <span><b>{{ referenceCard.contentType === 'image_text' ? '图文仿写' : '视频仿写' }}</b><small>{{ referenceCard.title }}</small></span>
+          </div>
+          <div class="cs-modal-grid">
+            <label class="cs-modal-field"><span>产品名称 <em>*</em></span><input v-model="productName" maxlength="120" required placeholder="例如：三层防水汽车脚垫"></label>
+            <label class="cs-modal-field"><span>产品品类 <em>*</em></span><input v-model="category" maxlength="60" required placeholder="例如：汽车脚垫"></label>
+            <label class="cs-modal-field"><span>品牌 <em>*</em></span><input v-model="brand" maxlength="80" required placeholder="请输入品牌名称"></label>
+            <div class="cs-modal-field cs-modal-style"><span>风格偏好 <em>*</em></span>
+              <div class="cs-style-select" :class="{open:styleOpen}" @click.stop>
+                <button type="button" class="cs-style-trigger" :aria-expanded="styleOpen" aria-haspopup="listbox" @click="styleOpen=!styleOpen">
+                  <span class="cs-style-trigger-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></span><span class="cs-style-trigger-copy"><b>{{ stylePreference }}</b></span><i class="cs-style-chevron fa-solid fa-chevron-down"></i>
+                </button>
+                <div v-if="styleOpen" class="cs-style-menu" role="listbox" aria-label="风格偏好">
+                  <button v-for="(style,i) in stylePreferences" :key="style.name" type="button" role="option" class="cs-style-option" :class="{on:stylePreference===style.name}" :aria-selected="stylePreference===style.name" @click="selectStyle(style.name)"><span class="cs-style-index">{{ i + 1 }}</span><span class="cs-style-option-copy"><b>{{ style.name }}</b><small>{{ style.sub }}</small></span><i v-if="stylePreference===style.name" class="fa-solid fa-check"></i></button>
+                </div>
+              </div>
+            </div>
+            <label class="cs-modal-field cs-modal-selling"><span>真实卖点 / 参数 / 测试结论 <em>*</em></span><textarea v-model="sellingPoints" maxlength="3000" required placeholder="请填写已确认的卖点、参数或测试结论，AI 不会替你编造事实"></textarea></label>
+          </div>
+          <div v-if="productionStatus" class="cs-status show" :class="{error:productionError}">{{ productionStatus }}</div>
+          <div class="cs-modal-actions"><button type="button" class="cs-btn ghost" @click="closeImitation">取消</button><button type="submit" class="cs-btn mint" :disabled="productionBusy"><i class="fa-solid" :class="productionBusy?'fa-spinner':'fa-wand-magic-sparkles'"></i>{{ productionBusy ? '正在仿写' : '开始一键仿写' }}</button></div>
+        </form>
       </div>
     </div>`
   });

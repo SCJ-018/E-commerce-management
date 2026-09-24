@@ -308,6 +308,40 @@
 .cs-style-option-copy small { margin-top:2px; color:var(--ink-4); font-size:9px; }
 .cs-style-option > i { flex:none; color:var(--violet-ink); font-size:10px; }
 
+/* 一键仿写：从拆解卡直接打开的轻量悬浮窗 */
+.cs-modal-backdrop { position:fixed; z-index:1200; inset:0; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(39,29,74,.32); backdrop-filter:blur(5px); }
+.cs-modal { width:min(620px,100%); max-height:min(720px,calc(100vh - 40px)); overflow:auto; padding:20px; border:1px solid rgba(255,255,255,.8); border-radius:22px; background:#fff; box-shadow:0 24px 70px rgba(43,28,100,.25); }
+.cs-modal-head { display:flex; align-items:flex-start; gap:11px; padding-bottom:15px; border-bottom:1px solid var(--line-2); }
+.cs-modal-head .cs-title { color:var(--ink-strong); font-size:16px; font-weight:800; }
+.cs-modal-head .cs-sub { margin-top:4px; color:var(--ink-3); font-size:10.5px; line-height:1.55; }
+.cs-modal-close { flex:none; width:28px; height:28px; border:0; border-radius:9px; background:var(--soft); color:var(--ink-3); cursor:pointer; }
+.cs-modal-close:hover { background:var(--pink-bg); color:var(--pink-ink); }
+.cs-modal-source { display:flex; align-items:center; gap:9px; margin:14px 0 16px; padding:10px 12px; border:1px solid var(--mint-line); border-radius:12px; background:var(--mint-bg); color:var(--mint-ink); }
+.cs-modal-source > i { width:28px; height:28px; display:flex; align-items:center; justify-content:center; border-radius:9px; background:#fff; }
+.cs-modal-source span,.cs-modal-source b,.cs-modal-source small { display:block; }
+.cs-modal-source b { font-size:11px; }
+.cs-modal-source small { max-width:480px; margin-top:2px; overflow:hidden; color:var(--ink-3); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+.cs-modal-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 12px; }
+.cs-modal-field { display:block; min-width:0; }
+.cs-modal-field > span { display:block; margin-bottom:6px; color:var(--ink-2); font-size:11px; font-weight:750; }
+.cs-modal-field > span em { color:var(--pink-ink); font-style:normal; }
+.cs-modal-field input,.cs-modal-field textarea { display:block; width:100%; box-sizing:border-box; padding:10px 11px; outline:0; border:1px solid var(--line); border-radius:10px; background:#fffdfd; color:var(--ink); font:11px/1.6 inherit; transition:border-color .16s,box-shadow .16s; }
+.cs-modal-field input:focus,.cs-modal-field textarea:focus { border-color:var(--violet-2); box-shadow:0 0 0 3px rgba(139,122,232,.1); }
+.cs-modal-field textarea { min-height:110px; resize:vertical; }
+.cs-modal-selling { grid-column:1/-1; }
+.cs-modal-style { position:relative; }
+.cs-modal-style .cs-style-trigger { min-height:39px; }
+.cs-modal-style .cs-style-trigger-copy b { font-size:11px; }
+.cs-modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:17px; padding-top:14px; border-top:1px solid var(--line-2); }
+.cs-modal-actions .cs-btn { min-height:36px; }
+.cs-type-tag { display:inline-flex; align-items:center; padding:2px 6px; margin-right:5px; border-radius:99px; font-size:9px; font-weight:750; }
+.cs-type-tag.image { background:var(--pink-bg); color:var(--pink-ink); }
+.cs-type-tag.video { background:var(--violet-bg); color:var(--violet-ink); }
+.cs-recognized-type-value { display:flex; align-items:center; gap:8px; padding:10px 11px; border:1px solid var(--violet-line); border-radius:10px; background:var(--violet-bg); color:var(--violet-ink); }
+.cs-recognized-type-value i { font-size:14px; }
+.cs-recognized-type-value b { font-size:12px; }
+.cs-recognized-type-value span { color:var(--ink-3); font-size:10px; }
+
 /* 类型 chips */
 .cs-chips { display:flex; flex-wrap:wrap; gap:6px; }
 .cs-ch { cursor:pointer; border:1px solid var(--line); border-radius:99px; padding:6px 11px; background:#fff; color:var(--ink-2); font:700 11px/1 inherit; }
@@ -530,4 +564,8 @@
   .cs-head { padding-left:13px; padding-right:13px; }
   .cs-pad { padding-left:13px; padding-right:13px; }
   .cs-status { flex-direction:column; }
+  .cs-modal-backdrop { align-items:flex-end; padding:10px; }
+  .cs-modal { max-height:calc(100vh - 20px); padding:16px; border-radius:18px; }
+  .cs-modal-grid { grid-template-columns:minmax(0,1fr); }
+  .cs-modal-selling { grid-column:auto; }
 }
