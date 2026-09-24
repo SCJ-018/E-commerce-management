@@ -1360,10 +1360,13 @@ def seeding_category_views():
 
 @app.route('/api/seeding/summary', methods=['GET'])
 def seeding_summary():
-    """返回昨日收录指标及前一日环比，供中台四张卡片使用。"""
+    """返回本月收录指标及上月环比，供中台统计卡片使用。"""
     try:
-        yesterday = date.today() - timedelta(days=1)
-        previous = yesterday - timedelta(days=1)
+        today = date.today()
+        month_start = today.replace(day=1)
+        previous_month_end = month_start - timedelta(days=1)
+        previous_month_start = previous_month_end.replace(day=1)
+        yesterday = today - timedelta(days=1)
         department = (request.args.get('department') or '').strip()
         conditions = ''
         params = []
@@ -1371,12 +1374,12 @@ def seeding_summary():
             conditions = ' AND `部门` = %s'
             params.append(department)
 
-        def record_stats(target):
+        def record_stats(start_date, end_date):
             rows = db_execute(
                 'SELECT COUNT(*) AS count, COALESCE(SUM(`阅读量`), 0) AS views, '
                 'COALESCE(SUM(CASE WHEN `阅读量` >= 10000 THEN 1 ELSE 0 END), 0) AS hot '
-                'FROM `种草收录表` WHERE `发布时间` = %s' + conditions,
-                [target] + params,
+                'FROM `种草收录表` WHERE `发布时间` >= %s AND `发布时间` <= %s' + conditions,
+                [start_date, end_date] + params,
             ) or [{}]
             item = rows[0]
             return {'count': int(item.get('count') or 0), 'views': int(float(item.get('views') or 0)), 'hot': int(item.get('hot') or 0)}
@@ -1390,8 +1393,10 @@ def seeding_summary():
             category_current_value = sum(category_current.values())
             category_previous_value = sum(category_previous.values())
         return success({
-            'date': str(yesterday), 'previousDate': str(previous),
-            'current': record_stats(yesterday), 'previous': record_stats(previous),
+            'date': str(today), 'period': '本月',
+            'previousDate': str(previous_month_end), 'previousPeriod': '上月',
+            'current': record_stats(month_start, today),
+            'previous': record_stats(previous_month_start, previous_month_end),
             'categoryCurrent': category_current_value,
             'categoryPrevious': category_previous_value,
         })

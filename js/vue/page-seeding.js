@@ -26,7 +26,7 @@
       var categoryViewValue = Vue.computed(function () { return state.selectedDept === '全部' ? departments.reduce(function (n, d) { return n + Number(state.categoryViews[d] || 0); }, 0) : Number(state.categoryViews[state.selectedDept] || 0); });
       var categoryViewTooltip = Vue.computed(function () { var list = state.selectedDept === '全部' ? departments : [state.selectedDept]; return '品类浏览量口径：抖店取商品点击人数，京东和千牛取商品访客数；' + list.map(function (d) { var r = state.categoryRules[d]; return r ? d + '：' + (r.store ? '店铺名含“' + r.store + '”，' : '') + '标题含' + r.keywords.join('、') : ''; }).filter(Boolean).join('；'); });
       function trend(current, previous) { current = Number(current || 0); previous = Number(previous || 0); if (!previous && !current) return { text: '—', className: 'srm-trend' }; if (!previous) return { text: '新增', className: 'srm-up' }; var pct = Math.round((current - previous) / previous * 100); return { text: (pct >= 0 ? '↑ ' : '↓ ') + Math.abs(pct) + '%', className: pct >= 0 ? 'srm-up' : 'srm-down' }; }
-      var stats = Vue.computed(function () { var current = state.summary.current || {}, previous = state.summary.previous || {}; return [{ label: '昨日笔记总量', value: current.count, unit: '篇', icon: 'fa-note-sticky', tone: 'blue', subIcon: 'fa-heart', subLabel: '较前一日', subValue: trend(current.count, previous.count).text, trendClass: trend(current.count, previous.count).className, tag: '昨日' }, { label: '昨日浏览量', value: current.views, unit: '', icon: 'fa-chart-line', tone: 'violet', subIcon: 'fa-comments', subLabel: '较前一日', subValue: trend(current.views, previous.views).text, trendClass: trend(current.views, previous.views).className, tag: '昨日' }, { label: '昨日爆文量', value: current.hot, unit: '篇', icon: 'fa-fire', tone: 'rose', subIcon: 'fa-percent', subLabel: '较前一日', subValue: trend(current.hot, previous.hot).text, trendClass: trend(current.hot, previous.hot).className, tag: '≥1万阅读' }, { label: '昨日品类浏览量', value: state.summary.categoryCurrent, unit: '', icon: 'fa-link', tone: 'green', subIcon: 'fa-store', subLabel: '较前一日', subValue: trend(state.summary.categoryCurrent, state.summary.categoryPrevious).text, trendClass: trend(state.summary.categoryCurrent, state.summary.categoryPrevious).className, tag: '悬浮查看口径' }]; });
+      var stats = Vue.computed(function () { var current = state.summary.current || {}, previous = state.summary.previous || {}; return [{ label: '本月笔记总量', value: current.count, unit: '篇', icon: 'fa-note-sticky', tone: 'blue', subIcon: 'fa-heart', subLabel: '较上月', subValue: trend(current.count, previous.count).text, trendClass: trend(current.count, previous.count).className, tag: '本月' }, { label: '本月浏览量', value: current.views, unit: '', icon: 'fa-chart-line', tone: 'violet', subIcon: 'fa-comments', subLabel: '较上月', subValue: trend(current.views, previous.views).text, trendClass: trend(current.views, previous.views).className, tag: '本月' }, { label: '本月爆文量', value: current.hot, unit: '篇', icon: 'fa-fire', tone: 'rose', subIcon: 'fa-percent', subLabel: '较上月', subValue: trend(current.hot, previous.hot).text, trendClass: trend(current.hot, previous.hot).className, tag: '≥1万阅读' }, { label: '昨日品类浏览量', value: state.summary.categoryCurrent, unit: '', icon: 'fa-link', tone: 'green', subIcon: 'fa-store', subLabel: '较前一日', subValue: trend(state.summary.categoryCurrent, state.summary.categoryPrevious).text, trendClass: trend(state.summary.categoryCurrent, state.summary.categoryPrevious).className, tag: '悬浮查看口径' }]; });
       function formatNumber(v) { return Number(v || 0).toLocaleString('zh-CN'); }
       function formatCompact(v) { v = Number(v || 0); return v >= 100000000 ? (v / 100000000).toFixed(1).replace('.0', '') + '亿' : v >= 10000 ? (v / 10000).toFixed(1).replace('.0', '') + '万' : formatNumber(v); }
       /* ---- 收录表 V2：彩色语义胶囊 + 热度分级（纯展示层，不动数据） ---- */
@@ -223,7 +223,7 @@
       }
       function loadMoreRows() {
         var key = state.selectedDept + '|' + state.selectedSheet;
-        if (state.loadingMore || !rowHasMore[key] || state.rows.length >= 500 || !api || !api.getSeedingRecords) return;
+        if (state.loadingMore || !rowHasMore[key] || state.rows.length >= 1000 || !api || !api.getSeedingRecords) return;
         var token = rowRequest, offset = rowOffsets[key] || state.rows.length, pageSize = 100;
         state.loadingMore = true;
         api.getSeedingRecords(state.selectedDept, '全部', state.selectedSheet === '全部数据' ? '全部' : state.selectedSheet, pageSize, offset).then(function (rows) {
@@ -232,17 +232,24 @@
           state.rows = state.rows.concat(page);
           rowCache[key] = state.rows.slice();
           rowOffsets[key] = offset + page.length;
-          // 当前界面最多保留两批（200 行），防止大表持续膨胀导致浏览器无响应。
-          rowHasMore[key] = false;
+          // 按滚动位置逐页加载，最多保留 1000 行，避免大表持续膨胀导致浏览器无响应。
+          rowHasMore[key] = page.length === pageSize && state.rows.length < 1000;
           state.hasMoreRows = false;
-          state.syncState = '已加载前 ' + state.rows.length + ' 条，已停止自动扩展';
+          state.syncState = rowHasMore[key] ? '已加载前 ' + state.rows.length + ' 条，继续下滚加载' : '已加载前 ' + state.rows.length + ' 条';
         }).catch(function () {
           if (token === rowRequest) state.syncState = '首屏已加载，更多数据加载失败';
         }).finally(function () { state.loadingMore = false; });
       }
       function exportRows() { var headers = ['发布时间', '部门', '产品', '发布平台', '发布渠道', '笔记类型', '标题', '发布链接', '发布账号名称', '发布账号ID', '点赞', '收藏', '评论', '阅读量', '备注']; var body = filteredRows.value.map(function (r) { return [r.date, r.department, r.product, r.platform, r.source, r.noteType, r.title, r.publishLink, r.accountName, r.accountId, r.likes, r.collects, r.comments, r.views, r.remark]; }); var csv = [headers].concat(body).map(function (line) { return line.map(function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }).join(','); }).join('\n'); var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })); a.download = '种草收录-' + currentDate() + '.csv'; a.click(); }
-      Vue.onMounted(function () { loadOptions().then(function () { loadRows(); }); loadCategoryViews(); loadSummary(); });
-      Vue.onBeforeUnmount(function () { if (rowTimer) clearTimeout(rowTimer); rowRequest++; });
+      var scrollLoadHandler = null;
+      Vue.onMounted(function () {
+        loadOptions().then(function () { loadRows(); }); loadCategoryViews(); loadSummary();
+        scrollLoadHandler = function () {
+          if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 500) loadMoreRows();
+        };
+        window.addEventListener('scroll', scrollLoadHandler, { passive: true });
+      });
+      Vue.onBeforeUnmount(function () { if (rowTimer) clearTimeout(rowTimer); if (scrollLoadHandler) window.removeEventListener('scroll', scrollLoadHandler); rowRequest++; });
       Vue.watch(function () { return [state.selectedDept, state.selectedSheet]; }, loadRows);
       Vue.watch(function () { return state.selectedDept; }, function () { loadSummary(); });
       return { state: state, departments: departments, platforms: platforms, sources: sources, noteTypes: noteTypes, sheetNames: sheetNames, filteredRows: filteredRows, productOptions: productOptions, stats: stats, categoryViewTooltip: categoryViewTooltip, formatNumber: formatNumber, formatCompact: formatCompact, selectDept: selectDept, selectSheet: selectSheet, addSheet: addSheet, renameSheet: renameSheet, formatDateInput: formatDateInput, dateTone: dateTone, canEdit: canEdit, isDropdown: isDropdown, toggleDropdown: toggleDropdown, closeDropdown: closeDropdown, pickDropdown: pickDropdown, dropdownList: dropdownList, dropdownTone: dropdownTone, dropdownField: dropdownField, dropdownRow: dropdownRow, dropdownItems: dropdownItems, dropdownPick: dropdownPick, toggleSelect: toggleSelect, isSelected: isSelected, allSelected: allSelected, toggleSelectAll: toggleSelectAll, clearSelection: clearSelection, startBatchMode: startBatchMode, exitBatchMode: exitBatchMode, batchRemove: batchRemove, retryTraffic: retryTraffic, onRetryImage: onRetryImage, startEdit: startEdit, isEditing: isEditing, finishEdit: finishEdit, showDate: showDate, dateSpan: dateSpan, productTone: productTone, platformTone: platformTone, sourceTone: sourceTone, noteTone: noteTone, likesTone: likesTone, collectsTone: collectsTone, commentsTone: commentsTone, viewTier: viewTier, viewBar: viewBar, dateGroupLabel: dateGroupLabel, totals: totals, linkLabel: linkLabel, openLink: openLink, isUrl: isUrl, linkHref: linkHref, openTraffic: openTraffic, triggerTraffic: triggerTraffic, onImageChange: onImageChange, openCreate: openCreate, openEdit: openEdit, saveRecord: saveRecord, removeRow: removeRow, exportRows: exportRows };
