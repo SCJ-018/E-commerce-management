@@ -256,6 +256,7 @@ def _ask_ai(api_url, system, user, max_tokens):
         headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'},
         json={'model': _content_studio_setting('CONTENT_STUDIO_MODEL', 'deepseek-flash'),
               'messages': [{'role':'system','content':system}, {'role':'user','content':user}],
+              'thinking': {'type':'disabled'}, 'reasoning_effort':'none',
               'temperature':0.45, 'max_tokens':max_tokens,
               'response_format':{'type':'json_object'}})
     if response.status_code != 200:
