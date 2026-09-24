@@ -180,6 +180,21 @@
         try {
           var cards=await post('cards', null, 'GET');
           this.cards=Array.isArray(cards) ? cards : [];
+          // 从旧版本浏览器缓存做一次性迁移；迁移成功后不再把 localStorage 当作正式数据源。
+          if (!this.cards.length) {
+            var legacyKey='content_studio_cards_' + (sessionStorage.getItem('admin_current_account') || 'local');
+            var legacy=[];
+            try { var rawLegacy=JSON.parse(localStorage.getItem(legacyKey) || '[]'); legacy=Array.isArray(rawLegacy) ? rawLegacy.slice(0,50) : []; } catch (ignore) {}
+            if (legacy.length) {
+              var migrated=[];
+              for (var i=legacy.length-1;i>=0;i--) {
+                try { migrated.unshift(await post('cards', legacy[i])); } catch (migrationError) { migrated=[]; break; }
+              }
+              if (migrated.length === legacy.length) {
+                this.cards=migrated; try { localStorage.removeItem(legacyKey); } catch (ignoreRemove) {}
+              }
+            }
+          }
           if (!this.selectedId && this.cards.length) this.selectedId=this.cards[0].id;
           this.cardsDone=true;
         } catch (e) {
