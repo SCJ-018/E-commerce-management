@@ -16,20 +16,11 @@
     { name:'沉浸体验型', sub:'感官描写｜声音、触感、气味与温度' },
     { name:'冷静吐槽型', sub:'反向种草｜缺点前置与条件式推荐' }
   ];
-  function accountKey() { return 'content_studio_cards_' + (sessionStorage.getItem('admin_current_account') || 'local'); }
-  function loadCards() {
-    try {
-      var x = JSON.parse(localStorage.getItem(accountKey()) || '[]');
-      return Array.isArray(x) ? x.slice(0,50).map(function (card) {
-        if (card && !card.contentType) card.contentType=inferContentType(card.input || '');
-        return card;
-      }) : [];
-    }
-    catch (e) { return []; }
-  }
-  function saveCards(cards) { try { localStorage.setItem(accountKey(), JSON.stringify(cards.slice(0,50))); } catch (e) {} }
-  function post(path, payload) {
-    return fetch('/api/content-studio/' + path, { method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
+  function post(path, payload, method) {
+    method=method || 'POST';
+    var options={method:method, credentials:'same-origin', headers:{'Content-Type':'application/json'}};
+    if (method !== 'GET') options.body=JSON.stringify(payload || {});
+    return fetch('/api/content-studio/' + path, options)
       .then(function (response) {
         if (response.status === 401) {
           var authError=new Error('登录已过期，请重新登录'); authError.apiError=true; throw authError;
@@ -101,10 +92,10 @@
     components: { 'content-violation-page': window.ContentViolationPage },
     data: function () { return {
       workspaceTab:'creative',
-      activeTab:'breakdown', input:'', analysisFocus:'', status:'', statusError:false, busy:false, cards:loadCards(), selectedId:null,
-      category:'', noteType:'测评', brand:'', stylePreference:'素人感型', styleOpen:false, imitate:false, referenceId:null, productName:'', sellingPoints:'', audience:'', scene:'',
+      activeTab:'breakdown', input:'', analysisFocus:'', status:'', statusError:false, busy:false, cards:[], selectedId:null,
+      category:'', categoryOptions:[], categoryOpen:false, noteType:'测评', brand:'', stylePreference:'素人感型', styleOpen:false, imitate:false, referenceId:null, productName:'', sellingPoints:'', audience:'', scene:'',
       output:null, productionBusy:false, productionStatus:'', productionError:false, aiDegraded:false, imitationOpen:false,
-      profileDone:false,
+      profileDone:false, cardsDone:false, categoriesDone:false,
       noteTypes:noteTypes, stylePreferences:stylePreferences,
       userName:sessionStorage.getItem('admin_current_user') || '当前用户', userRole:sessionStorage.getItem('admin_current_role') || '团队成员', avatar:''
     }; },
@@ -159,12 +150,16 @@
       // 所以每次页面被切到前台时补取一次（成功后不再重复请求）。
       try {
         var obs = new MutationObserver(function () {
-          if (!mount.classList.contains('hidden') && !self.profileDone) self.loadProfile();
+           if (!mount.classList.contains('hidden')) {
+             if (!self.profileDone) self.loadProfile();
+             if (!self.cardsDone) self.loadCards();
+             if (!self.categoriesDone) self.loadCategories();
+           }
         });
         obs.observe(mount, { attributes:true, attributeFilter:['class', 'style'] });
       } catch (e) {}
-      window.addEventListener('hashchange', function () { if (!self.profileDone) self.loadProfile(); });
-      window.addEventListener('click', function () { self.styleOpen=false; });
+      window.addEventListener('hashchange', function () { if (!self.profileDone) self.loadProfile(); if (!self.cardsDone) self.loadCards(); if (!self.categoriesDone) self.loadCategories(); });
+      window.addEventListener('click', function () { self.styleOpen=false; self.categoryOpen=false; });
     },
     methods: {
       loadProfile:function () {
@@ -175,10 +170,32 @@
           self.userName=r.data.name || self.userName;
           self.userRole=r.data.role || self.userRole;
           self.avatar=r.data.avatar || '';
-          self.profileDone=true;
+           self.profileDone=true;
+           self.loadCards(); self.loadCategories();
         }).catch(function () {});
       },
       navigate:function (page) { window.location.hash=page; if (window.App && App.navigateTo) App.navigateTo(page); },
+      loadCards:async function () {
+        if (this.cardsDone) return;
+        try {
+          var cards=await post('cards', null, 'GET');
+          this.cards=Array.isArray(cards) ? cards : [];
+          if (!this.selectedId && this.cards.length) this.selectedId=this.cards[0].id;
+          this.cardsDone=true;
+        } catch (e) {
+          if (e.httpStatus !== 401) { this.status=e.message || '拆解卡片读取失败'; this.statusError=true; }
+        }
+      },
+      loadCategories:async function () {
+        if (this.categoriesDone) return;
+        try {
+          var categories=await post('categories', null, 'GET');
+          this.categoryOptions=Array.isArray(categories) ? categories : [];
+          this.categoriesDone=true;
+        } catch (e) { if (e.httpStatus !== 401) this.categoryOptions=[]; }
+      },
+      selectCategory:function (category) { this.category=category; this.categoryOpen=false; },
+      toggleCategory:function () { this.categoryOpen=!this.categoryOpen; },
       selectCard:function (id) { this.selectedId=id; },
       selectStyle:function (name) { this.stylePreference=name; this.styleOpen=false; },
       typeLabel:function (card) { return contentTypeLabel(card && card.contentType); },
@@ -195,13 +212,16 @@
       },
       closeImitation:function () { if (!this.productionBusy) this.imitationOpen=false; },
       clearInput:function () { this.input=''; this.analysisFocus=''; },
-      removeCard:function () {
-        var id = this.selectedId;
-        if (!id) return;
-        this.cards=this.cards.filter(function (x) { return x.id !== id; });
-        if (this.referenceId === id) this.referenceId=null;
-        this.selectedId=this.cards.length ? this.cards[0].id : null;
-        saveCards(this.cards);
+      removeCard:async function (card) {
+        var target=card || this.selectedCard;
+        if (!target || !target.id) return;
+        try {
+          await post('cards/' + encodeURIComponent(target.id), null, 'DELETE');
+          this.cards=this.cards.filter(function (x) { return x.id !== target.id; });
+          if (this.referenceId === target.id) this.referenceId=null;
+          this.selectedId=this.cards.length ? this.cards[0].id : null;
+          this.status='拆解卡片已删除'; this.statusError=false;
+        } catch (e) { this.status=e.message || '拆解卡片删除失败'; this.statusError=true; }
       },
       analyze:async function () {
         var raw=this.input.trim();
@@ -217,9 +237,10 @@
             d=demoAnalysis(raw); this.aiDegraded=true;
             this.status='服务端暂时无法连接，已生成演示拆解卡；请检查后端服务或网络后重试';
           }
-          var card={id:Date.now(), createdAt:new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}), input:raw,
+          var card={input:raw,
             title:d.title || '未命名爆文', sourceUrl:d.sourceUrl || '', contentType:d.contentType || inferContentType(raw), evidence:d.evidence || '', breakdown:d.breakdown || {}};
-          this.cards.unshift(card); this.cards=this.cards.slice(0,50); saveCards(this.cards); this.selectedId=card.id;
+          var savedCard=await post('cards', card);
+          this.cards.unshift(savedCard); this.cards=this.cards.slice(0,50); this.selectedId=savedCard.id;
           if (!this.status || this.status.indexOf('演示') < 0) this.status='拆解完成，已保存到本机爆文卡片'; this.statusError=false; this.input=''; this.analysisFocus='';
         } catch (e) { this.status=e.message || '拆解失败'; this.statusError=true; }
         finally { this.busy=false; }
@@ -298,7 +319,7 @@
                 <div class="cs-user-copy">
                   <div class="cs-user-name">{{ userName }}</div>
                   <div class="cs-user-role">{{ userRole }}</div>
-                  <div class="cs-user-tag"><span class="cs-badge mint"><i class="fa-solid fa-floppy-disk"></i> 草稿本机同步</span></div>
+                  <div class="cs-user-tag"><span class="cs-badge mint"><i class="fa-solid fa-cloud"></i> 草稿账号同步</span></div>
                 </div>
               </div>
             </div>
@@ -316,14 +337,15 @@
 
             <div class="cs-card">
               <div class="cs-head">
-                <div class="grow"><div class="cs-title">拆解卡片</div><div class="cs-sub">本机当前账号保留最近 50 张</div></div>
+                <div class="grow"><div class="cs-title">拆解卡片</div><div class="cs-sub">当前账号服务端保留最近 50 张</div></div>
                 <span class="cs-badge">{{ cards.length }}</span>
               </div>
               <div v-if="cards.length" class="cs-list scroll">
-                <button v-for="card in cards" :key="card.id" type="button" class="cs-draft" :class="{on:selectedId===card.id}" @click="selectCard(card.id)">
-                  <span class="copy"><span class="nm">{{ card.title }}</span><span class="mt">{{ card.createdAt }}</span></span>
-                  <span class="cs-badge" :class="draftBadge(card).cls" style="flex:none">{{ draftBadge(card).text }}</span>
-                </button>
+                <div v-for="card in cards" :key="card.id" class="cs-draft" :class="{on:selectedId===card.id}" role="button" tabindex="0" @click="selectCard(card.id)">
+                   <span class="copy"><span class="nm">{{ card.title }}</span><span class="mt">{{ card.createdAt }}</span></span>
+                   <span class="cs-badge" :class="draftBadge(card).cls" style="flex:none">{{ draftBadge(card).text }}</span>
+                   <button type="button" class="cs-card-delete" title="删除拆解卡片" aria-label="删除拆解卡片" @click.stop="removeCard(card)"><i class="fa-solid fa-trash-can"></i></button>
+                </div>
               </div>
               <div v-else class="cs-empty"><i class="fa-solid fa-layer-group"></i>还没有拆解卡，先投喂一条素材。</div>
             </div>
@@ -408,13 +430,14 @@
                       <span class="cs-badge gray">共 {{ cards.length }} 张</span>
                     </div>
                     <div v-if="cards.length" class="cs-fuse-items-list">
-                      <button v-for="card in cards" :key="card.id" type="button" class="cs-pick" :class="{on:selectedId===card.id}" @click="selectCard(card.id)">
+                       <div v-for="card in cards" :key="card.id" class="cs-pick" :class="{on:selectedId===card.id}" role="button" tabindex="0" @click="selectCard(card.id)">
                          <span class="tile"><i class="fa-solid" :class="typeIcon(card)"></i></span>
                          <span class="body">
                            <span class="h">{{ card.title }}</span>
                            <span class="m"><b class="cs-type-tag" :class="card.contentType === 'image_text' ? 'image' : 'video'">{{ typeLabel(card) }}</b>{{ card.createdAt }} · {{ card.evidence || '用户提供素材' }}</span>
-                        </span>
-                      </button>
+                         </span>
+                         <button type="button" class="cs-card-delete" title="删除拆解卡片" aria-label="删除拆解卡片" @click.stop="removeCard(card)"><i class="fa-solid fa-trash-can"></i></button>
+                       </div>
                     </div>
                     <div v-else class="cs-empty"><i class="fa-solid fa-inbox"></i>还没有拆解卡。<br>先在上方投喂一条素材开始。</div>
                   </div>
@@ -487,18 +510,21 @@
                 <div class="cs-pad">
                   <div class="cs-divider">
                   <div class="cs-block-label">01 · 输入品类 <em>必填</em></div>
-                    <div class="cs-category-input" :class="{filled:!!category.trim()}">
-                      <span class="cs-category-icon"><i class="fa-solid fa-shapes"></i></span>
-                      <label class="cs-category-body" for="csCategoryInput">
-                        <span>产品所属品类</span>
-                        <input id="csCategoryInput" v-model="category" type="text" maxlength="60" autocomplete="off" placeholder="例如：汽车脚垫、车载香薰、露营收纳">
-                      </label>
-                      <span class="cs-category-count">{{ category.length }}/60</span>
+                    <div class="cs-category-picker" :class="{open:categoryOpen,filled:!!category.trim()}" @click.stop>
+                      <button type="button" class="cs-category-trigger" :aria-expanded="categoryOpen" aria-haspopup="listbox" @click="toggleCategory">
+                        <span class="cs-category-icon"><i class="fa-solid fa-shapes"></i></span>
+                        <span class="cs-category-body"><small>产品所属品类</small><b>{{ category || '请选择品类' }}</b></span>
+                        <i class="cs-category-chevron fa-solid fa-chevron-down"></i>
+                      </button>
+                      <div v-if="categoryOpen" class="cs-category-menu" role="listbox" aria-label="产品所属品类">
+                        <button v-for="item in categoryOptions" :key="item" type="button" role="option" class="cs-category-option" :class="{on:category===item}" :aria-selected="category===item" @click="selectCategory(item)"><span>{{ item }}</span><i v-if="category===item" class="fa-solid fa-check"></i></button>
+                        <div v-if="!categoryOptions.length" class="cs-category-empty">暂无品类数据，请先在品类营销数据中完成品类映射。</div>
+                      </div>
                       <button v-if="category" type="button" class="cs-category-clear" aria-label="清空品类" title="清空品类" @click="category=''">
                         <i class="fa-solid fa-xmark"></i>
                       </button>
                     </div>
-                    <div class="cs-category-hint"><i class="fa-solid fa-circle-info"></i> 建议填写具体品类名称，AI 会据此匹配更准确的选题、场景与表达。</div>
+                    <div class="cs-category-hint"><i class="fa-solid fa-circle-info"></i> 品类来自“品类营销数据”的统一品类列表，避免同一品类多种写法。</div>
                   </div>
                   <div v-if="!imitate" class="cs-divider">
                     <div class="cs-block-label">02 · 笔记类型</div>
@@ -628,7 +654,7 @@
                 <span class="cs-badge" :class="statusClass">{{ statusText }}</span>
               </div>
               <div class="cs-state" :class="aiDegraded?'':'mint'">
-                <div class="cs-state-line"><i class="fa-solid fa-check"></i> {{ cards.length ? '已拆解 ' + cards.length + ' 张卡片，本机保留最近 50 张' : '还没有拆解卡片，先从左侧投喂素材' }}</div>
+                <div class="cs-state-line"><i class="fa-solid fa-check"></i> {{ cards.length ? '已拆解 ' + cards.length + ' 张卡片，当前账号保留最近 50 张' : '还没有拆解卡片，先从左侧投喂素材' }}</div>
                 <div class="cs-state-line"><i class="fa-solid fa-check"></i> {{ output ? '已生成 8 段内容产出，可逐段复制并人工核验' : '生成结果会逐段展示，可单独复制' }}</div>
               </div>
               <div class="cs-state">
@@ -666,7 +692,16 @@
           </div>
           <div class="cs-modal-grid">
             <label class="cs-modal-field"><span>产品名称 <em>*</em></span><input v-model="productName" maxlength="120" required placeholder="例如：三层防水汽车脚垫"></label>
-            <label class="cs-modal-field"><span>产品品类 <em>*</em></span><input v-model="category" maxlength="60" required placeholder="例如：汽车脚垫"></label>
+            <div class="cs-modal-field cs-modal-category"><span>产品品类 <em>*</em></span>
+              <div class="cs-category-picker" :class="{open:categoryOpen,filled:!!category.trim()}" @click.stop>
+                <button type="button" class="cs-category-trigger" :aria-expanded="categoryOpen" aria-haspopup="listbox" @click="toggleCategory"><span class="cs-category-icon"><i class="fa-solid fa-shapes"></i></span><span class="cs-category-body"><b>{{ category || '请选择品类' }}</b></span><i class="cs-category-chevron fa-solid fa-chevron-down"></i></button>
+                <div v-if="categoryOpen" class="cs-category-menu" role="listbox" aria-label="产品品类">
+                  <button v-for="item in categoryOptions" :key="item" type="button" role="option" class="cs-category-option" :class="{on:category===item}" :aria-selected="category===item" @click="selectCategory(item)"><span>{{ item }}</span><i v-if="category===item" class="fa-solid fa-check"></i></button>
+                  <div v-if="!categoryOptions.length" class="cs-category-empty">暂无品类数据</div>
+                </div>
+                <button v-if="category" type="button" class="cs-category-clear" aria-label="清空品类" title="清空品类" @click="category=''"><i class="fa-solid fa-xmark"></i></button>
+              </div>
+            </div>
             <label class="cs-modal-field"><span>品牌 <em>*</em></span><input v-model="brand" maxlength="80" required placeholder="请输入品牌名称"></label>
             <div class="cs-modal-field cs-modal-style"><span>风格偏好 <em>*</em></span>
               <div class="cs-style-select" :class="{open:styleOpen}" @click.stop>

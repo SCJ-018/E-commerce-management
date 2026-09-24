@@ -1566,7 +1566,10 @@ def seeding_record_delete(record_id):
 # 内容创作中心：独立模块只读取服务端 CONTENT_STUDIO_API_KEY，避免把密钥暴露到浏览器。
 try:
     from content_studio_api import register_content_studio
-    register_content_studio(app, success, fail, DEEPSEEK_API_URL)
+    register_content_studio(app, success, fail, DEEPSEEK_API_URL,
+                            db_execute=db_execute,
+                            db_execute_insert=db_execute_insert,
+                            current_session=lambda: globals().get('_current_session', lambda: {})())
     print('[内容工坊] AI 接口已注册: /api/content-studio/analyze, /api/content-studio/generate')
 except Exception as _content_studio_err:
     print('[内容工坊] AI 接口注册失败:', _content_studio_err)
