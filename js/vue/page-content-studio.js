@@ -520,15 +520,7 @@
                         </div>
                         <input v-model="audience" class="cs-ta line" maxlength="300" placeholder="目标人群（可选）">
                         <input v-model="scene" class="cs-ta line" style="margin-top:8px" maxlength="300" placeholder="使用场景（可选）">
-                        <div class="cs-switch-row" style="margin-top:12px">
-                          <div class="cs-switch-label">参考爆文结构<small>{{ imitate ? '按已拆解母本仿写，不照抄原句' : '关闭后按笔记类型与风格偏好原创' }}</small></div>
-                          <button type="button" class="cs-switch" :class="{on:imitate}" :aria-pressed="imitate" @click="imitate=!imitate"><span></span></button>
-                        </div>
                       </div>
-                    </div>
-                    <div v-if="imitate" class="cs-refs">
-                      <label v-for="card in cards" :key="card.id" class="cs-ref"><input type="radio" :value="card.id" v-model="referenceId"><span>{{ card.title }}</span></label>
-                      <div v-if="!cards.length" class="cs-hint">暂无可选卡片，请先完成爆文拆解。</div>
                     </div>
                   </div>
                   <div class="cs-status" :class="{show:!!productionStatus, error:productionError}">{{ productionStatus }}</div>
