@@ -30,8 +30,22 @@
   function saveCards(cards) { try { localStorage.setItem(accountKey(), JSON.stringify(cards.slice(0,50))); } catch (e) {} }
   function post(path, payload) {
     return fetch('/api/content-studio/' + path, { method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
-      .then(function (r) { if (r.status === 401) throw new Error('登录已过期，请重新登录'); return r.json(); })
-      .then(function (r) { if (!r || r.code !== 0) throw new Error((r && r.msg) || '请求失败'); return r.data; });
+      .then(function (response) {
+        if (response.status === 401) {
+          var authError=new Error('登录已过期，请重新登录'); authError.apiError=true; throw authError;
+        }
+        return response.json().then(function (body) {
+          if (!response.ok || !body || body.code !== 0) {
+            var apiError=new Error((body && body.msg) || ('请求失败（HTTP '+response.status+'）'));
+            apiError.apiError=true; apiError.httpStatus=response.status; throw apiError;
+          }
+          return body.data;
+        });
+      })
+      .catch(function (error) {
+        if (!error.apiError) error.networkError=true;
+        throw error;
+      });
   }
   function textVal(x) { return Array.isArray(x) ? x.join('\n') : String(x || ''); }
   function inferContentType(raw) {
@@ -199,9 +213,9 @@
           var payload = focus ? (raw + '\n\n【本次分析重点】\n' + focus) : raw;
           try { d=await post('analyze',{input:payload}); }
           catch (apiError) {
-            if ((apiError.message || '').indexOf('登录已过期') >= 0) throw apiError;
+            if (apiError.apiError) throw apiError;
             d=demoAnalysis(raw); this.aiDegraded=true;
-            this.status='服务端 AI 暂不可用，已生成演示拆解卡；配置 CONTENT_STUDIO_API_KEY 后可切换真实结果';
+            this.status='服务端暂时无法连接，已生成演示拆解卡；请检查后端服务或网络后重试';
           }
           var card={id:Date.now(), createdAt:new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}), input:raw,
             title:d.title || '未命名爆文', sourceUrl:d.sourceUrl || '', contentType:d.contentType || inferContentType(raw), evidence:d.evidence || '', breakdown:d.breakdown || {}};
@@ -228,9 +242,9 @@
           var payload={category:this.category.trim(),noteType:this.noteType,contentType:contentType,brand:this.brand.trim(),stylePreference:this.stylePreference,productName:this.productName.trim(),sellingPoints:this.sellingPoints.trim(),audience:this.audience.trim(),scene:this.scene.trim(),imitate:this.imitate,reference:this.imitate && this.referenceCard ? {title:this.referenceCard.title,contentType:contentType,breakdown:this.referenceCard.breakdown} : null};
           try { this.output=await post('generate',payload); this.productionStatus='已生成，可逐段复制并进行人工审核'; }
           catch (apiError) {
-            if ((apiError.message || '').indexOf('登录已过期') >= 0) throw apiError;
+            if (apiError.apiError) throw apiError;
             this.output=demoGeneration(payload); this.aiDegraded=true;
-            this.productionStatus='服务端 AI 暂不可用，已生成演示内容；配置 CONTENT_STUDIO_API_KEY 后可切换真实结果';
+            this.productionStatus='服务端暂时无法连接，已生成演示内容；请检查后端服务或网络后重试';
           }
           this.productionError=false;
         } catch (e) { this.productionStatus=e.message || '生成失败'; this.productionError=true; }
