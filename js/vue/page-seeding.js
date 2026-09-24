@@ -307,6 +307,7 @@
       .replace('<div class="srm-table-wrap">', '<div class="srm-toolbar-right"><button class="srm-btn" :disabled="state.datePageIndex<=0" @click="state.datePageIndex=Math.max(0,state.datePageIndex-1)"><i class="fa-solid fa-chevron-left"></i>上一日</button><select class="srm-btn" v-model.number="state.datePageIndex"><option v-for="(day,index) in datePages" :key="day" :value="index">{{day}} · 第 {{index+1}} / {{datePages.length}} 日</option></select><button class="srm-btn" :disabled="state.datePageIndex>=datePages.length-1" @click="state.datePageIndex=Math.min(datePages.length-1,state.datePageIndex+1)">下一日<i class="fa-solid fa-chevron-right"></i></button></div><div class="srm-table-wrap">')
       .replace('<tbody>', '<tbody><tr v-if="virtualTopSpace"><td colspan="17" :height="virtualTopSpace"></td></tr>')
       .replace('v-for="(row,index) in filteredRows"', 'v-for="(row,index) in visibleRows"')
+      .replace('{{index+1}}', '{{state.virtualStart+index+1}}')
       .replace('<tr v-if="!filteredRows.length">', '<tr v-if="virtualBottomSpace"><td colspan="17" :height="virtualBottomSpace"></td></tr><tr v-if="!filteredRows.length">');
     Vue.createApp(app).mount(mount);
   };
