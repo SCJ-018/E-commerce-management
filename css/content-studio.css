@@ -269,6 +269,45 @@
 .cs-category-hint { display:flex; align-items:flex-start; gap:6px; margin-top:7px; color:var(--ink-4); font-size:10px; line-height:1.55; }
 .cs-category-hint i { margin-top:2px; color:#a99dde; }
 
+/* 风格偏好：自绘下拉，避免浏览器原生 select 的样式割裂 */
+.cs-style-select { position:relative; z-index:10; }
+.cs-style-select.open { z-index:40; }
+.cs-card:has(.cs-style-select.open) { overflow:visible; }
+.cs-style-trigger {
+  display:flex; align-items:center; gap:9px; width:100%; min-height:52px; padding:7px 10px;
+  border:1px solid var(--line); border-radius:12px; background:linear-gradient(135deg,#fff 0%,#fcfaff 100%);
+  color:var(--ink); cursor:pointer; text-align:left; font:inherit; transition:border-color .16s,box-shadow .16s,background .16s;
+}
+.cs-style-trigger:hover,.cs-style-select.open .cs-style-trigger { border-color:var(--violet-2); background:#fff; box-shadow:0 0 0 3px rgba(139,122,232,.08); }
+.cs-style-trigger-icon {
+  flex:none; width:31px; height:31px; border-radius:10px; display:flex; align-items:center; justify-content:center;
+  color:var(--violet-ink); background:var(--violet-bg); border:1px solid var(--violet-line); font-size:11px;
+}
+.cs-style-trigger-copy { flex:1; min-width:0; }
+.cs-style-trigger-copy small,.cs-style-trigger-copy b { display:block; }
+.cs-style-trigger-copy small { margin-bottom:3px; color:var(--ink-3); font-size:9px; font-weight:700; }
+.cs-style-trigger-copy b { overflow:hidden; color:var(--ink-strong); font-size:12px; font-weight:750; text-overflow:ellipsis; white-space:nowrap; }
+.cs-style-chevron { flex:none; color:var(--ink-4); font-size:10px; transition:transform .16s,color .16s; }
+.cs-style-select.open .cs-style-chevron { color:var(--violet-ink); transform:rotate(180deg); }
+.cs-style-menu {
+  position:absolute; left:0; right:0; top:calc(100% + 7px); max-height:268px; overflow:auto; padding:6px;
+  border:1px solid var(--violet-line); border-radius:14px; background:rgba(255,255,255,.98);
+  box-shadow:0 16px 35px rgba(70,52,145,.16),0 2px 8px rgba(70,52,145,.08); backdrop-filter:blur(16px);
+}
+.cs-style-option {
+  display:flex; align-items:center; gap:8px; width:100%; min-height:43px; padding:7px 8px; border:1px solid transparent;
+  border-radius:10px; background:transparent; color:var(--ink-2); cursor:pointer; text-align:left; font:inherit; transition:background .14s,border-color .14s,color .14s;
+}
+.cs-style-option:hover { background:var(--soft); border-color:var(--line-2); color:var(--ink); }
+.cs-style-option.on { background:var(--violet-bg); border-color:var(--violet-line); color:var(--violet-ink); }
+.cs-style-index { flex:none; width:20px; height:20px; border-radius:7px; display:flex; align-items:center; justify-content:center; background:#f5f2fc; color:var(--ink-4); font-size:9px; font-weight:800; }
+.cs-style-option.on .cs-style-index { background:#fff; color:var(--violet-ink); }
+.cs-style-option-copy { flex:1; min-width:0; }
+.cs-style-option-copy b,.cs-style-option-copy small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cs-style-option-copy b { color:inherit; font-size:10.5px; font-weight:750; }
+.cs-style-option-copy small { margin-top:2px; color:var(--ink-4); font-size:9px; }
+.cs-style-option > i { flex:none; color:var(--violet-ink); font-size:10px; }
+
 /* 类型 chips */
 .cs-chips { display:flex; flex-wrap:wrap; gap:6px; }
 .cs-ch { cursor:pointer; border:1px solid var(--line); border-radius:99px; padding:6px 11px; background:#fff; color:var(--ink-2); font:700 11px/1 inherit; }

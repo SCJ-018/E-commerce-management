@@ -4,6 +4,18 @@
   if (!mount || !window.Vue) return;
 
   var noteTypes = ['测评','种草','干货','引流','实拍','扣测'];
+  var stylePreferences = [
+    { name:'幽默打趣型', sub:'段子手｜夸张比喻，笑点落回卖点' },
+    { name:'专业话术型', sub:'成分党／参数党｜数据、标准与机制解释' },
+    { name:'素人感型', sub:'真实记录｜时间线、犹豫和可验证细节' },
+    { name:'情绪共鸣型', sub:'故事先行｜场景痛点与情绪转折' },
+    { name:'干货清单型', sub:'收藏向｜编号、公式与避坑清单' },
+    { name:'闺蜜私聊型', sub:'亲密安利｜第二人称与使用小技巧' },
+    { name:'高级冷淡型', sub:'审美输出｜短句、留白与材质工艺' },
+    { name:'反焦虑型', sub:'理性劝退｜谁不该买与单次成本' },
+    { name:'沉浸体验型', sub:'感官描写｜声音、触感、气味与温度' },
+    { name:'冷静吐槽型', sub:'反向种草｜缺点前置与条件式推荐' }
+  ];
   function accountKey() { return 'content_studio_cards_' + (sessionStorage.getItem('admin_current_account') || 'local'); }
   function loadCards() {
     try { var x = JSON.parse(localStorage.getItem(accountKey()) || '[]'); return Array.isArray(x) ? x.slice(0,50) : []; }
@@ -29,13 +41,13 @@
     }};
   }
   function demoGeneration(data) {
-    var n=data.productName, c=data.category, t=data.noteType, s=data.sellingPoints;
+    var n=data.productName, c=data.category, t=data.noteType, s=data.sellingPoints, brand=data.brand, style=data.stylePreference;
     return { topics:[n+'真实使用一周后的 3 个变化',c+'怎么选：材质、适配和清洁成本',t+'视角拆解 '+n+' 的一个关键卖点', '预算有限时，先看 '+n+' 的这项细节', n+'适合哪些人，哪些人不必买'],
       matrix:[{angle:'真实体验',format:'实拍',hook:'先展示使用后的结果，再回放关键细节'},{angle:'避坑对比',format:'测评',hook:'同一场景只比较一个变量'},{angle:'场景解决方案',format:'干货',hook:'从车主常见痛点给出选择顺序'}],
       shooting:'0-3s：结果特写和一句结论；3-8s：展示安装或使用场景；8-15s：用近景呈现卖点“'+s.slice(0,40)+'”；15-22s：补充适用人群与注意事项。',
       titles:['用了 7 天，我终于知道 '+n+' 这个细节值不值','别只看价格：'+c+'先看这 3 个地方','真实体验｜'+n+'适合谁，哪些人可以跳过'],
-      body:'最近在整理车内使用体验，想把 '+n+' 的真实感受说清楚。先说结论：'+s+'。\n\n我会按使用场景、清洁维护和适配细节逐项展示，大家可以根据自己的车型和需求判断。文中只写已确认的信息，具体效果以实际测试为准。\n\n如果你也在选 '+c+'，留言告诉我你的车型和最在意的点。',
-      comments:'1. 你更在意耐脏、好清洁还是贴合度？\n2. 想看哪种车型的适配实拍，可以留言。\n3. 如果你的使用场景不同，建议先按自己的条件核验。',
+      body:'最近在整理'+(brand ? '「'+brand+'」' : '')+' '+n+' 的使用体验，想把真实感受说清楚。先说结论：'+s+'。\n\n这次会用「'+style+'」的表达方式，按使用场景、清洁维护和适配细节逐项展示；文中只写已确认的信息，具体效果以实际测试为准。',
+      comments:'1. 这个细节我之前还真没注意到，尤其是你提到的使用场景。\n2. 看完先记下了，回头我也想按这个标准对比一下。\n3. 这类产品最怕只说优点，能把限制讲清楚反而更有参考价值。\n4. 我是因为 '+(brand || '这个品牌')+' 的'+c+'进来的，想再看看长期使用后的变化。\n5. 如果后面有实拍或测试记录，想继续蹲一下。',
       script:'【镜头 1｜0-3s】结果特写，口播：先看用了一段时间后的真实状态。\n【镜头 2｜3-8s】展示安装/清洁过程，口播：这里重点看 '+s.slice(0,32)+'。\n【镜头 3｜8-15s】拍细节和局部对比，口播：只描述看得见、测得到的变化。\n【镜头 4｜15-22s】正面总结，口播：适合……；如果你更在意……，请先核验。',
       checks:'发布前核对车型适配、价格和测试条件；删除无法证明的“全网最好”“绝对不返味”等表述；补齐实拍画面与必要的对比依据。'};
   }
@@ -44,7 +56,7 @@
     ['投喂爆文素材','抖音链接、口播文案或镜头摘要'],
     ['爆文拆解','7 维结构化分析并落卡'],
     ['选择参考母本','可选：只借鉴方法，不照抄原句'],
-    ['生成配置','品类 · 类型 · 真实卖点'],
+    ['生成配置','品类 · 类型 · 品牌 · 风格 · 真实卖点'],
     ['AI 生成内容','选题 → 脚本，共 8 段产出'],
     ['人工核验发布','核对适配、价格与测试条件']
   ];
@@ -58,10 +70,10 @@
     data: function () { return {
       workspaceTab:'creative',
       activeTab:'breakdown', input:'', analysisFocus:'', status:'', statusError:false, busy:false, cards:loadCards(), selectedId:null,
-      category:'', noteType:'测评', imitate:false, referenceId:null, productName:'', sellingPoints:'', audience:'', scene:'',
+      category:'', noteType:'测评', brand:'', stylePreference:'素人感型', styleOpen:false, imitate:false, referenceId:null, productName:'', sellingPoints:'', audience:'', scene:'',
       output:null, productionBusy:false, productionStatus:'', productionError:false, aiDegraded:false,
       profileDone:false,
-      noteTypes:noteTypes,
+      noteTypes:noteTypes, stylePreferences:stylePreferences,
       userName:sessionStorage.getItem('admin_current_user') || '当前用户', userRole:sessionStorage.getItem('admin_current_role') || '团队成员', avatar:''
     }; },
     computed: {
@@ -120,6 +132,7 @@
         obs.observe(mount, { attributes:true, attributeFilter:['class', 'style'] });
       } catch (e) {}
       window.addEventListener('hashchange', function () { if (!self.profileDone) self.loadProfile(); });
+      window.addEventListener('click', function () { self.styleOpen=false; });
     },
     methods: {
       loadProfile:function () {
@@ -135,6 +148,7 @@
       },
       navigate:function (page) { window.location.hash=page; if (window.App && App.navigateTo) App.navigateTo(page); },
       selectCard:function (id) { this.selectedId=id; },
+      selectStyle:function (name) { this.stylePreference=name; this.styleOpen=false; },
       draftBadge:function (card) {
         var keys = (card && card.breakdown) ? Object.keys(card.breakdown) : [];
         if (!keys.length) return { cls:'amber', text:'待核验' };
@@ -183,9 +197,9 @@
           this.productionStatus='请填写产品名称与真实卖点，避免 AI 编造产品信息'; this.productionError=true; return;
         }
         if (this.imitate && !this.referenceCard) { this.productionStatus='开启仿写前，请选择一张已拆解的爆文卡片'; this.productionError=true; return; }
-        this.productionBusy=true; this.productionStatus='正在生成原创内容，请稍候…'; this.productionError=false;
+        this.productionBusy=true; this.productionStatus=this.imitate ? '正在按参考母本仿写，请稍候…' : '正在根据笔记类型与风格偏好原创，请稍候…'; this.productionError=false;
         try {
-          var payload={category:this.category.trim(),noteType:this.noteType,productName:this.productName.trim(),sellingPoints:this.sellingPoints.trim(),audience:this.audience.trim(),scene:this.scene.trim(),imitate:this.imitate,reference:this.imitate && this.referenceCard ? {title:this.referenceCard.title,breakdown:this.referenceCard.breakdown} : null};
+          var payload={category:this.category.trim(),noteType:this.noteType,brand:this.brand.trim(),stylePreference:this.stylePreference,productName:this.productName.trim(),sellingPoints:this.sellingPoints.trim(),audience:this.audience.trim(),scene:this.scene.trim(),imitate:this.imitate,reference:this.imitate && this.referenceCard ? {title:this.referenceCard.title,breakdown:this.referenceCard.breakdown} : null};
           try { this.output=await post('generate',payload); this.productionStatus='已生成，可逐段复制并进行人工审核'; }
           catch (apiError) {
             if ((apiError.message || '').indexOf('登录已过期') >= 0) throw apiError;
@@ -458,13 +472,26 @@
                     <div class="cs-grid2">
                       <div class="cs-field">
                         <input v-model="productName" class="cs-ta line" maxlength="120" placeholder="产品名称 *">
+                        <input v-model="brand" class="cs-ta line" style="margin-top:8px" maxlength="80" placeholder="品牌（可选）">
                         <textarea v-model="sellingPoints" class="cs-ta" style="min-height:122px;margin-top:8px" maxlength="3000" placeholder="真实卖点 / 参数 / 测试结论 *"></textarea>
                       </div>
                       <div class="cs-field">
+                        <div class="cs-style-select" :class="{open:styleOpen}" @click.stop>
+                          <button type="button" class="cs-style-trigger" :aria-expanded="styleOpen" aria-haspopup="listbox" @click="styleOpen=!styleOpen">
+                            <span class="cs-style-trigger-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></span>
+                            <span class="cs-style-trigger-copy"><small>风格偏好</small><b>{{ stylePreference }}</b></span>
+                            <i class="cs-style-chevron fa-solid fa-chevron-down"></i>
+                          </button>
+                          <div v-if="styleOpen" class="cs-style-menu" role="listbox" aria-label="风格偏好">
+                            <button v-for="(style,i) in stylePreferences" :key="style.name" type="button" role="option" class="cs-style-option" :class="{on:stylePreference===style.name}" :aria-selected="stylePreference===style.name" @click="selectStyle(style.name)">
+                              <span class="cs-style-index">{{ i + 1 }}</span><span class="cs-style-option-copy"><b>{{ style.name }}</b><small>{{ style.sub }}</small></span><i v-if="stylePreference===style.name" class="fa-solid fa-check"></i>
+                            </button>
+                          </div>
+                        </div>
                         <input v-model="audience" class="cs-ta line" maxlength="300" placeholder="目标人群（可选）">
                         <input v-model="scene" class="cs-ta line" style="margin-top:8px" maxlength="300" placeholder="使用场景（可选）">
                         <div class="cs-switch-row" style="margin-top:12px">
-                          <div class="cs-switch-label">参考爆文结构<small>只借鉴方法，不照抄原句</small></div>
+                          <div class="cs-switch-label">参考爆文结构<small>{{ imitate ? '按已拆解母本仿写，不照抄原句' : '关闭后按笔记类型与风格偏好原创' }}</small></div>
                           <button type="button" class="cs-switch" :class="{on:imitate}" :aria-pressed="imitate" @click="imitate=!imitate"><span></span></button>
                         </div>
                       </div>
@@ -508,7 +535,7 @@
                     <div class="cs-out-body">{{ display(output.body) }}</div>
                   </div>
                   <div class="cs-out-sec">
-                    <div class="cs-out-head"><span class="n"><i class="fa-solid fa-comments"></i> 评论区话术</span><button type="button" class="cs-copy" @click="copy(output.comments)"><i class="fa-solid fa-copy"></i> 复制</button></div>
+                    <div class="cs-out-head"><span class="n"><i class="fa-solid fa-comments"></i> 原作品评论文案</span><button type="button" class="cs-copy" @click="copy(output.comments)"><i class="fa-solid fa-copy"></i> 复制</button></div>
                     <div class="cs-out-body">{{ display(output.comments) }}</div>
                   </div>
                   <div class="cs-out-sec">
