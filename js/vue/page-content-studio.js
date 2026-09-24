@@ -3,12 +3,6 @@
   var mount = document.getElementById('page-content-studio');
   if (!mount || !window.Vue) return;
 
-  var categories = [
-    { name:'汽车脚垫', icon:'fa-car-side', sub:'座舱场景与使用体验' },
-    { name:'汽车座垫', icon:'fa-chair', sub:'舒适度与材质对比' },
-    { name:'后备箱垫', icon:'fa-box-open', sub:'收纳、防护与适配' },
-    { name:'车载配件', icon:'fa-gauge-high', sub:'实用功能与细节' }
-  ];
   var noteTypes = ['测评','种草','干货','引流','实拍','扣测'];
   function accountKey() { return 'content_studio_cards_' + (sessionStorage.getItem('admin_current_account') || 'local'); }
   function loadCards() {
@@ -64,10 +58,10 @@
     data: function () { return {
       workspaceTab:'creative',
       activeTab:'breakdown', input:'', analysisFocus:'', status:'', statusError:false, busy:false, cards:loadCards(), selectedId:null,
-      category:'汽车脚垫', noteType:'测评', imitate:false, referenceId:null, productName:'', sellingPoints:'', audience:'', scene:'',
+      category:'', noteType:'测评', imitate:false, referenceId:null, productName:'', sellingPoints:'', audience:'', scene:'',
       output:null, productionBusy:false, productionStatus:'', productionError:false, aiDegraded:false,
       profileDone:false,
-      categories:categories, noteTypes:noteTypes,
+      noteTypes:noteTypes,
       userName:sessionStorage.getItem('admin_current_user') || '当前用户', userRole:sessionStorage.getItem('admin_current_role') || '团队成员', avatar:''
     }; },
     computed: {
@@ -79,7 +73,7 @@
           hasCards || !!this.input.trim(),
           hasCards,
           !!this.referenceId,
-          !!(this.productName.trim() && this.sellingPoints.trim()),
+          !!(this.category.trim() && this.productName.trim() && this.sellingPoints.trim()),
           !!this.output,
           !!this.output
         ];
@@ -182,13 +176,16 @@
         finally { this.busy=false; }
       },
       generate:async function () {
+        if (!this.category.trim()) {
+          this.productionStatus='请填写产品品类，便于 AI 准确理解内容方向'; this.productionError=true; return;
+        }
         if (!this.productName.trim() || !this.sellingPoints.trim()) {
           this.productionStatus='请填写产品名称与真实卖点，避免 AI 编造产品信息'; this.productionError=true; return;
         }
         if (this.imitate && !this.referenceCard) { this.productionStatus='开启仿写前，请选择一张已拆解的爆文卡片'; this.productionError=true; return; }
         this.productionBusy=true; this.productionStatus='正在生成原创内容，请稍候…'; this.productionError=false;
         try {
-          var payload={category:this.category,noteType:this.noteType,productName:this.productName.trim(),sellingPoints:this.sellingPoints.trim(),audience:this.audience.trim(),scene:this.scene.trim(),imitate:this.imitate,reference:this.imitate && this.referenceCard ? {title:this.referenceCard.title,breakdown:this.referenceCard.breakdown} : null};
+          var payload={category:this.category.trim(),noteType:this.noteType,productName:this.productName.trim(),sellingPoints:this.sellingPoints.trim(),audience:this.audience.trim(),scene:this.scene.trim(),imitate:this.imitate,reference:this.imitate && this.referenceCard ? {title:this.referenceCard.title,breakdown:this.referenceCard.breakdown} : null};
           try { this.output=await post('generate',payload); this.productionStatus='已生成，可逐段复制并进行人工审核'; }
           catch (apiError) {
             if ((apiError.message || '').indexOf('登录已过期') >= 0) throw apiError;
@@ -435,13 +432,19 @@
                 </div>
                 <div class="cs-pad">
                   <div class="cs-divider">
-                    <div class="cs-block-label">01 · 选择品类</div>
-                    <div class="cs-opts">
-                      <button v-for="item in categories" :key="item.name" type="button" class="cs-opt" :class="{on:category===item.name}" @click="category=item.name">
-                        <span class="tile"><i class="fa-solid" :class="item.icon"></i></span>
-                        <span><b>{{ item.name }}</b><small>{{ item.sub }}</small></span>
+                    <div class="cs-block-label">01 · 输入品类 <em>必填</em></div>
+                    <div class="cs-category-input" :class="{filled:!!category.trim()}">
+                      <span class="cs-category-icon"><i class="fa-solid fa-shapes"></i></span>
+                      <label class="cs-category-body" for="csCategoryInput">
+                        <span>产品所属品类</span>
+                        <input id="csCategoryInput" v-model="category" type="text" maxlength="60" autocomplete="off" placeholder="例如：汽车脚垫、车载香薰、露营收纳">
+                      </label>
+                      <span class="cs-category-count">{{ category.length }}/60</span>
+                      <button v-if="category" type="button" class="cs-category-clear" aria-label="清空品类" title="清空品类" @click="category=''">
+                        <i class="fa-solid fa-xmark"></i>
                       </button>
                     </div>
+                    <div class="cs-category-hint"><i class="fa-solid fa-circle-info"></i> 建议填写具体品类名称，AI 会据此匹配更准确的选题、场景与表达。</div>
                   </div>
                   <div class="cs-divider">
                     <div class="cs-block-label">02 · 笔记类型</div>
