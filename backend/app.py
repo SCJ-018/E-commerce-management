@@ -5451,6 +5451,10 @@ import cv2
 _paddle_ocr = None
 _ocr_lock = threading.Lock()
 _ocr_executor = ThreadPoolExecutor(max_workers=1)
+# Paddle/PIR 与 oneDNN 的组合在部分版本中会触发
+# ConvertPirAttribute2RuntimeAttribute（ArrayAttribute<DoubleAttribute>）异常。
+# 记录一次自动降级，避免后续图片继续复用有问题的 OCR 实例。
+_ocr_mkldnn_disabled = False
 
 # ==================== 预处理参数 ====================
 _UPSCALE_THRESHOLD_SMALL  = 1000
@@ -5504,18 +5508,62 @@ def _get_ocr_reader():
     with _ocr_lock:
         if _paddle_ocr is not None:
             return _paddle_ocr
-        # CPU 部署默认开启 oneDNN/MKLDNN；如目标机器不兼容，可显式设置 OCR_ENABLE_MKLDNN=0 回退。
-        enable_mkldnn = os.environ.get('OCR_ENABLE_MKLDNN', '1').strip().lower() not in ('0', 'false', 'no')
+        # CPU 部署默认关闭 oneDNN/MKLDNN。Paddle 3.x 的 PIR 执行器在部分
+        # PaddlePaddle/oneDNN 版本组合下会因 ArrayAttribute<DoubleAttribute>
+        # 转换不兼容而导致整张图片识别失败；如已验证运行时兼容，可显式设置
+        # OCR_ENABLE_MKLDNN=1 开启。发生兼容性异常时会在 predict 层自动降级。
+        requested_mkldnn = os.environ.get('OCR_ENABLE_MKLDNN', '0').strip().lower() not in ('0', 'false', 'no')
+        enable_mkldnn = requested_mkldnn and not _ocr_mkldnn_disabled
         os.environ['FLAGS_use_mkldnn'] = '1' if enable_mkldnn else '0'
         from paddleocr import PaddleOCR
         print('[PaddleOCR] 正在加载模型...')
         _paddle_ocr = PaddleOCR(
             lang='ch',
+            # 商品图通常是平面正向素材，不需要文档方向分类或透视矫正；
+            # 关闭这两步可减少每张图的额外模型推理和图像变换耗时。
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
             use_textline_orientation=False,  # 关闭方向分类，显著提速（商品图文字基本为正方向）
             enable_mkldnn=enable_mkldnn,
         )
         print(f'[PaddleOCR] 模型加载完成，MKLDNN={enable_mkldnn}')
     return _paddle_ocr
+
+
+def _is_mkldnn_compatibility_error(exc: Exception) -> bool:
+    """判断是否为可通过关闭 oneDNN 规避的 Paddle PIR/oneDNN 异常。"""
+    message = str(exc)
+    markers = (
+        'ConvertPirAttribute2RuntimeAttribute',
+        'ArrayAttribute<DoubleAttribute>',
+        'onednn_instruction.cc',
+        'oneDNN',
+        'MKLDNN',
+    )
+    return any(marker in message for marker in markers)
+
+
+def _disable_mkldnn_and_reload(reason: Exception):
+    """使当前 OCR 单例失效，并在后续调用中使用兼容的 CPU 执行路径。"""
+    global _paddle_ocr, _ocr_mkldnn_disabled
+    with _ocr_lock:
+        if not _ocr_mkldnn_disabled:
+            _ocr_mkldnn_disabled = True
+            _paddle_ocr = None
+            os.environ['FLAGS_use_mkldnn'] = '0'
+            print(f'[PaddleOCR] oneDNN 兼容性异常，自动关闭 MKLDNN 并重载模型: {reason}')
+
+
+def _ocr_predict(image):
+    """执行预测；仅对已知 oneDNN 兼容性异常自动重试一次。"""
+    reader = _get_ocr_reader()
+    try:
+        return reader.predict(image)
+    except Exception as exc:
+        if not _is_mkldnn_compatibility_error(exc):
+            raise
+        _disable_mkldnn_and_reload(exc)
+        return _get_ocr_reader().predict(image)
 
 
 # ==================== 图像预处理 ====================
@@ -5652,8 +5700,7 @@ def _do_ocr_single(img_data: str) -> dict:
     """单张图片的完整识别流程"""
     import time
     started_at = time.perf_counter()
-    reader = _get_ocr_reader()
-    if reader is None:
+    if _get_ocr_reader() is None:
         return {'text': '', 'confidence': 0, 'lines': 0, 'error': 'OCR引擎未就绪'}
 
     # 第一轮：优先使用原图（仅限制最大边），避免 CLAHE/锐化破坏小字笔画。
@@ -5661,7 +5708,7 @@ def _do_ocr_single(img_data: str) -> dict:
     img_bgr = _decode_base64_image(img_data, preprocess=False)
     decode_seconds = time.perf_counter() - decode_started
     predict_started = time.perf_counter()
-    raw_result = reader.predict(img_bgr)
+    raw_result = _ocr_predict(img_bgr)
     predict_seconds = time.perf_counter() - predict_started
     ocr_lines = _filter_ocr_results(_parse_paddle_result(raw_result))
     avg_first_conf = (sum(conf for _text, conf in ocr_lines) / len(ocr_lines)) if ocr_lines else 0
@@ -5670,13 +5717,16 @@ def _do_ocr_single(img_data: str) -> dict:
     fallback_used = False
     fallback_stage = None
 
-    # 仅在无结果或整体置信度过低时做一次增强重试，不再默认执行三轮 OCR。
+    # 默认仅在完全无结果时做一次增强重试，避免低置信度但有效的结果再次
+    # 完整推理一遍。若业务更重视召回率，可设置 OCR_RETRY_LOW_CONFIDENCE=1
+    # 恢复低置信度二次识别（代价是这类图片耗时约增加一轮推理）。
     retry_seconds = 0
-    if not ocr_lines or avg_first_conf < 0.55:
+    retry_low_confidence = os.environ.get('OCR_RETRY_LOW_CONFIDENCE', '0').strip().lower() in ('1', 'true', 'yes')
+    if not ocr_lines or (retry_low_confidence and avg_first_conf < 0.55):
         print('[OCR] 原图结果不足，使用增强图重试...')
         retry_started = time.perf_counter()
         img_enhanced = _decode_base64_image(img_data, preprocess=True)
-        enhanced_result = reader.predict(img_enhanced)
+        enhanced_result = _ocr_predict(img_enhanced)
         enhanced_lines = _filter_ocr_results(_parse_paddle_result(enhanced_result))
         enhanced_conf = (sum(conf for _text, conf in enhanced_lines) / len(enhanced_lines)) if enhanced_lines else 0
         retry_seconds = time.perf_counter() - retry_started
