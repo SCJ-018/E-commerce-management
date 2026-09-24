@@ -347,19 +347,6 @@
 .cs-ch { cursor:pointer; border:1px solid var(--line); border-radius:99px; padding:6px 11px; background:#fff; color:var(--ink-2); font:700 11px/1 inherit; }
 .cs-ch.on { border-color:var(--violet); background:var(--violet); color:#fff; box-shadow:0 5px 12px rgba(139,122,232,.22); }
 
-/* 开关 */
-.cs-switch-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
-.cs-switch-label { color:var(--ink-2); font-size:11.5px; font-weight:750; }
-.cs-switch-label small { display:block; margin-top:4px; color:var(--ink-4); font-size:9.5px; font-weight:500; }
-.cs-switch { flex:none; width:36px; height:21px; padding:2px; border:0; border-radius:99px; background:#ddd8ec; cursor:pointer; }
-.cs-switch > span { display:block; width:17px; height:17px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(60,45,110,.2); transition:transform .16s; }
-.cs-switch.on { background:linear-gradient(135deg,#8b7ae8,#a98bf0); }
-.cs-switch.on > span { transform:translateX(15px); }
-.cs-refs { display:flex; flex-direction:column; gap:6px; max-height:150px; overflow:auto; margin-top:10px; }
-.cs-ref { display:flex; align-items:center; gap:8px; padding:8px 9px; border:1px solid var(--line); border-radius:9px; background:#fff; color:var(--ink-2); font-size:10.5px; cursor:pointer; }
-.cs-ref:hover { border-color:var(--violet-line); }
-.cs-ref input { accent-color:var(--violet); }
-.cs-ref span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .cs-divider { padding-bottom:13px; margin-bottom:13px; border-bottom:1px solid var(--line-2); }
 .cs-divider:last-child { padding-bottom:0; margin-bottom:0; border-bottom:0; }
 .cs-block-label { margin-bottom:8px; color:var(--ink-2); font-size:11.5px; font-weight:750; }
