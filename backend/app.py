@@ -1385,7 +1385,7 @@ def seeding_summary():
             return {'count': int(item.get('count') or 0), 'views': int(float(item.get('views') or 0)), 'hot': int(item.get('hot') or 0)}
 
         category_current = _seeding_category_totals(yesterday)
-        category_previous = _seeding_category_totals(previous)
+        category_previous = _seeding_category_totals(yesterday - timedelta(days=1))
         if department and department != '全部':
             category_current_value = category_current.get(department, 0)
             category_previous_value = category_previous.get(department, 0)
