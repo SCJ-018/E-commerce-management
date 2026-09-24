@@ -985,7 +985,9 @@ def fail(msg='error', code=1):
 # 记录、品类绑定和账号选项统一由服务端提供。旧页面的 localStorage 只作为
 # 后端不可用时的临时空态，不再作为正式数据源。
 _SEEDING_DEPARTMENTS = ('一部', '二部', '三部', '四部', '五部')
-_SEEDING_RESPONSIBLES = ('全部', '马楠', '李世友', '李鑫雨', '刘昱岑', '黄新茹', '李喆')
+_SEEDING_DEFAULT_SHEETS = {
+    '五部': ('马楠', '李世友', '李鑫雨', '刘昱岑', '黄新茹', '李喆'),
+}
 _SEEDING_RECORD_FIELDS = {
     'date': '发布时间', 'department': '部门', 'product': '产品',
     'platform': '发布平台', 'source': '发布渠道', 'noteType': '笔记类型',
@@ -1004,6 +1006,15 @@ _SEEDING_CATEGORY_VIEW_RULES = {
     '四部': {'store': '', 'keywords': ('剃须刀', '爬楼机')},
     '五部': {'store': '', 'keywords': ('电动牙刷', '护腰坐垫', '护腰座垫')},
 }
+
+# 品类卡片会被中台首页同时请求两次（category-views + summary），且每次
+# 需要按 5 个部门 × 3 个平台 × 2 天执行查询。短 TTL 缓存避免首屏并发
+# 请求把连接池和数据库打满；日报口径按天变化，60 秒内复用结果不会影响
+# 业务准确性。
+_SEEDING_CATEGORY_CACHE = {}
+_SEEDING_CATEGORY_CACHE_LOCK = RLock()
+_SEEDING_CATEGORY_CACHE_TTL = 60
+_SEEDING_TABLES_READY = False
 
 
 def _seeding_category_view_total(rule, date_value=None):
@@ -1036,6 +1047,24 @@ def _seeding_category_view_total(rule, date_value=None):
     return total
 
 
+def _seeding_category_totals(date_value):
+    """按日期返回全部部门的品类浏览量，并复用短 TTL 缓存。"""
+    cache_key = str(date_value or '')
+    now = time.monotonic()
+    with _SEEDING_CATEGORY_CACHE_LOCK:
+        cached = _SEEDING_CATEGORY_CACHE.get(cache_key)
+        if cached and now - cached[0] < _SEEDING_CATEGORY_CACHE_TTL:
+            return dict(cached[1])
+        # 锁覆盖计算阶段，避免 category-views 与 summary 并发首屏请求
+        # 同时发现缓存未命中，重复执行整套聚合查询。
+        totals = {
+            dept: _seeding_category_view_total(rule, date_value)
+            for dept, rule in _SEEDING_CATEGORY_VIEW_RULES.items()
+        }
+        _SEEDING_CATEGORY_CACHE[cache_key] = (now, totals)
+    return dict(totals)
+
+
 def _seeding_record_to_front(row):
     rev = {v: k for k, v in _SEEDING_RECORD_FIELDS.items()}
     item = {'id': row.get('id')}
@@ -1053,6 +1082,9 @@ def _seeding_record_to_front(row):
 
 def _ensure_seeding_tables():
     """初始化种草收录表及部门维度的品类绑定表。"""
+    global _SEEDING_TABLES_READY
+    if _SEEDING_TABLES_READY:
+        return
     db_execute(
         "CREATE TABLE IF NOT EXISTS `种草收录表` ("
         "`id` INT AUTO_INCREMENT PRIMARY KEY,"
@@ -1090,6 +1122,18 @@ def _ensure_seeding_tables():
         "UNIQUE KEY `uk_种草绑定_部门店铺品类` (`部门`, `店铺`, `品类`),"
         "INDEX `idx_种草绑定_部门` (`部门`)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='种草部门店铺品类绑定表'", fetch=False)
+    db_execute(
+        "CREATE TABLE IF NOT EXISTS `种草Sheet配置` ("
+        "`id` INT AUTO_INCREMENT PRIMARY KEY,"
+        "`部门` VARCHAR(50) NOT NULL,"
+        "`名称` VARCHAR(100) NOT NULL,"
+        "`排序` INT NOT NULL DEFAULT 0,"
+        "`启用` TINYINT(1) NOT NULL DEFAULT 1,"
+        "`创建时间` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "`更新时间` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+        "UNIQUE KEY `uk_种草Sheet_部门名称` (`部门`, `名称`),"
+        "INDEX `idx_种草Sheet_部门排序` (`部门`, `排序`, `id`)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='种草监测中台部门 Sheet 配置'", fetch=False)
     try:
         cols = {r.get('Field') for r in (db_execute('SHOW COLUMNS FROM `种草收录表`') or [])}
         if '负责人' not in cols:
@@ -1097,6 +1141,47 @@ def _ensure_seeding_tables():
             db_execute("ALTER TABLE `种草收录表` ADD INDEX `idx_种草收录_负责人` (`负责人`)", fetch=False)
     except Exception:
         pass
+    _SEEDING_TABLES_READY = True
+
+
+def _seeding_sheet_options():
+    """返回按部门拆分的 Sheet 名称，并把已有负责人自动纳入配置。"""
+    for department in _SEEDING_DEPARTMENTS:
+        existing = db_execute(
+            'SELECT DISTINCT `负责人` AS name FROM `种草收录表` '
+            'WHERE `部门` = %s AND `负责人` IS NOT NULL AND `负责人` <> ""',
+            [department],
+        ) or []
+        for row in existing:
+            name = str(row.get('name') or '').strip()
+            if name:
+                db_execute(
+                    'INSERT IGNORE INTO `种草Sheet配置` (`部门`,`名称`,`排序`) '
+                    'VALUES (%s,%s,(SELECT COALESCE(MAX(x.`排序`),0)+1 FROM '
+                    '`种草Sheet配置` x WHERE x.`部门`=%s))',
+                    [department, name, department], fetch=False,
+                )
+        configured = db_execute(
+            'SELECT COUNT(*) AS total FROM `种草Sheet配置` WHERE `部门`=%s',
+            [department],
+        ) or [{}]
+        if not int(configured[0].get('total') or 0):
+            for index, name in enumerate(_SEEDING_DEFAULT_SHEETS.get(department, ()), 1):
+                db_execute(
+                    'INSERT IGNORE INTO `种草Sheet配置` (`部门`,`名称`,`排序`) VALUES (%s,%s,%s)',
+                    [department, name, index], fetch=False,
+                )
+    rows = db_execute(
+        'SELECT `部门` AS department, `名称` AS name FROM `种草Sheet配置` '
+        'WHERE `启用` = 1 ORDER BY `部门`, `排序`, id'
+    ) or []
+    result = {department: [] for department in _SEEDING_DEPARTMENTS}
+    for row in rows:
+        department = str(row.get('department') or '')
+        name = str(row.get('name') or '').strip()
+        if department in result and name and name not in result[department]:
+            result[department].append(name)
+    return result
 
 
 def _seeding_store_options():
@@ -1158,6 +1243,7 @@ def _seeding_store_options():
 def seeding_options():
     try:
         _ensure_seeding_tables()
+        sheets = _seeding_sheet_options()
         bindings = db_execute('SELECT `部门` AS department, `店铺` AS store, `品牌` AS brand, `品类` AS category '
                               'FROM `种草品类绑定表` WHERE `启用` = 1 ORDER BY `部门`, `店铺`, `品类`') or []
         accounts = db_execute('SELECT id, name, account, department FROM admin_accounts '
@@ -1168,8 +1254,82 @@ def seeding_options():
             name = str(row.get('name') or row.get('account') or '').strip()
             if dept in people and name and name not in people[dept]:
                 people[dept].append(name)
-        return success({'departments': list(_SEEDING_DEPARTMENTS), 'responsibles': list(_SEEDING_RESPONSIBLES), 'stores': _seeding_store_options(),
+        return success({'departments': list(_SEEDING_DEPARTMENTS), 'sheets': sheets, 'stores': _seeding_store_options(),
                         'bindings': bindings, 'people': people})
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/sheets', methods=['POST'])
+def seeding_sheet_create():
+    try:
+        _ensure_seeding_tables()
+        payload = request.get_json(force=True) or {}
+        department = str(payload.get('department') or '').strip()
+        name = str(payload.get('name') or '').strip()
+        if department not in _SEEDING_DEPARTMENTS:
+            return fail('请选择有效部门')
+        if not name or name in ('全部', '全部数据'):
+            return fail('Sheet 名称不能为空或使用保留名称')
+        if len(name) > 100:
+            return fail('Sheet 名称不能超过 100 个字符')
+        duplicate = db_execute(
+            'SELECT id FROM `种草Sheet配置` WHERE `部门`=%s AND `名称`=%s LIMIT 1',
+            [department, name],
+        ) or []
+        if duplicate:
+            return fail('该部门已存在同名 Sheet')
+        order_rows = db_execute(
+            'SELECT COALESCE(MAX(`排序`),0)+1 AS next_order FROM `种草Sheet配置` WHERE `部门`=%s',
+            [department],
+        ) or [{}]
+        next_order = int(order_rows[0].get('next_order') or 1)
+        sheet_id = db_execute_insert(
+            'INSERT INTO `种草Sheet配置` (`部门`,`名称`,`排序`) VALUES (%s,%s,%s)',
+            [department, name, next_order],
+        )
+        return success({'id': sheet_id, 'department': department, 'name': name}, 'Sheet 已新增')
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/sheets', methods=['PUT'])
+def seeding_sheet_rename():
+    try:
+        _ensure_seeding_tables()
+        payload = request.get_json(force=True) or {}
+        department = str(payload.get('department') or '').strip()
+        old_name = str(payload.get('oldName') or '').strip()
+        name = str(payload.get('name') or '').strip()
+        if department not in _SEEDING_DEPARTMENTS:
+            return fail('请选择有效部门')
+        if not old_name or old_name in ('全部', '全部数据'):
+            return fail('不能修改“全部数据”')
+        if not name or name in ('全部', '全部数据'):
+            return fail('Sheet 名称不能为空或使用保留名称')
+        if len(name) > 100:
+            return fail('Sheet 名称不能超过 100 个字符')
+        target = db_execute(
+            'SELECT id FROM `种草Sheet配置` WHERE `部门`=%s AND `名称`=%s LIMIT 1',
+            [department, old_name],
+        ) or []
+        if not target:
+            return fail('原 Sheet 不存在')
+        duplicate = db_execute(
+            'SELECT id FROM `种草Sheet配置` WHERE `部门`=%s AND `名称`=%s AND id<>%s LIMIT 1',
+            [department, name, target[0].get('id')],
+        ) or []
+        if duplicate:
+            return fail('该部门已存在同名 Sheet')
+        changed = db_execute(
+            'UPDATE `种草Sheet配置` SET `名称`=%s WHERE id=%s',
+            [name, target[0].get('id')], fetch=False,
+        )
+        db_execute(
+            'UPDATE `种草收录表` SET `负责人`=%s WHERE `部门`=%s AND `负责人`=%s',
+            [name, department, old_name], fetch=False,
+        )
+        return success({'department': department, 'oldName': old_name, 'name': name}, 'Sheet 名称已修改')
     except Exception as e:
         return fail(str(e))
 
@@ -1180,14 +1340,8 @@ def seeding_category_views():
     try:
         yesterday = date.today() - timedelta(days=1)
         previous = yesterday - timedelta(days=1)
-        departments = {
-            dept: _seeding_category_view_total(rule, yesterday)
-            for dept, rule in _SEEDING_CATEGORY_VIEW_RULES.items()
-        }
-        previous_departments = {
-            dept: _seeding_category_view_total(rule, previous)
-            for dept, rule in _SEEDING_CATEGORY_VIEW_RULES.items()
-        }
+        departments = _seeding_category_totals(yesterday)
+        previous_departments = _seeding_category_totals(previous)
         return success({
             'departments': departments,
             'previousDepartments': previous_departments,
@@ -1227,14 +1381,8 @@ def seeding_summary():
             item = rows[0]
             return {'count': int(item.get('count') or 0), 'views': int(float(item.get('views') or 0)), 'hot': int(item.get('hot') or 0)}
 
-        category_current = {
-            dept: _seeding_category_view_total(rule, yesterday)
-            for dept, rule in _SEEDING_CATEGORY_VIEW_RULES.items()
-        }
-        category_previous = {
-            dept: _seeding_category_view_total(rule, previous)
-            for dept, rule in _SEEDING_CATEGORY_VIEW_RULES.items()
-        }
+        category_current = _seeding_category_totals(yesterday)
+        category_previous = _seeding_category_totals(previous)
         if department and department != '全部':
             category_current_value = category_current.get(department, 0)
             category_previous_value = category_previous.get(department, 0)
@@ -1289,8 +1437,44 @@ def seeding_records():
         if responsible and responsible != '全部':
             conditions.append('`负责人` = %s'); params.append(responsible)
         where = (' WHERE ' + ' AND '.join(conditions)) if conditions else ''
-        rows = db_execute('SELECT * FROM `种草收录表`' + where + ' ORDER BY `发布时间` DESC, id DESC', params) or []
+        # 列表默认分页，避免切换部门时一次性读取全部记录和图片字段。
+        # 不带 limit 时保留旧接口行为，兼容导出等已有调用方。
+        limit_raw = (request.args.get('limit') or '').strip()
+        offset_raw = (request.args.get('offset') or '0').strip()
+        try:
+            limit = min(max(int(limit_raw), 1), 200) if limit_raw else None
+            offset = max(int(offset_raw), 0)
+        except (TypeError, ValueError):
+            return fail('分页参数不合法')
+        # 分页列表不读取 MEDIUMTEXT 图片正文，只返回占位标记；原图由详情接口按需读取。
+        # 这样切换部门时响应体不会携带几十/几百张 Base64 图片。
+        select_sql = 'SELECT *'
+        if limit is not None:
+            select_sql = (
+                'SELECT `id`,`发布时间`,`部门`,`产品`,`发布平台`,`发布渠道`,`笔记类型`,`标题`,'
+                '`发布链接`,`发布账号名称`,`发布账号ID`,`负责人`,`点赞`,`收藏`,`评论`,`阅读量`,'
+                "CASE WHEN `流量分析` IS NULL OR `流量分析` = '' THEN '' ELSE '__present__' END AS `流量分析`,"
+                '`备注`,`创建时间`,`更新时间`'
+            )
+        sql = select_sql + ' FROM `种草收录表`' + where + ' ORDER BY `发布时间` DESC, id DESC'
+        query_params = list(params)
+        if limit is not None:
+            sql += ' LIMIT %s OFFSET %s'
+            query_params.extend([limit, offset])
+        rows = db_execute(sql, query_params) or []
         return success([_seeding_record_to_front(row) for row in rows])
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/records/<int:record_id>/traffic-image', methods=['GET'])
+def seeding_record_traffic_image(record_id):
+    """按需读取单条记录的流量分析图片，避免列表接口传输大字段。"""
+    try:
+        rows = db_execute('SELECT `流量分析` FROM `种草收录表` WHERE id = %s LIMIT 1', [record_id]) or []
+        if not rows:
+            return fail('记录不存在')
+        return success({'trafficImage': rows[0].get('流量分析') or ''})
     except Exception as e:
         return fail(str(e))
 
@@ -1313,6 +1497,9 @@ def _seeding_record_write(record_id):
         if any(not str(data.get(key) or '').strip() for key in required):
             return fail('发布时间、部门、产品、平台、渠道、笔记类型和标题不能为空')
         allowed = {key: data.get(key) for key in _SEEDING_RECORD_FIELDS if key in data}
+        # 列表分页只返回图片占位标记，编辑其它字段时不能把该标记写回数据库。
+        if allowed.get('trafficImage') == '__present__':
+            allowed.pop('trafficImage', None)
         if 'department' not in allowed or allowed['department'] not in _SEEDING_DEPARTMENTS:
             return fail('部门不合法')
         if record_id is None:

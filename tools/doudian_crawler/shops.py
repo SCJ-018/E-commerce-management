@@ -16,6 +16,32 @@ import pymysql
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
+def _load_project_env():
+    """Load project-root .env for direct crawler entry points."""
+    env_path = os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), '.env')
+    if not os.path.isfile(env_path):
+        return
+    try:
+        with open(env_path, encoding='utf-8-sig') as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                key, value = line.split('=', 1)
+                key, value = key.strip(), value.strip()
+                if ((value.startswith('"') and value.endswith('"')) or
+                        (value.startswith("'") and value.endswith("'"))):
+                    value = value[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        # Keep existing system-environment behavior; get_conn() reports missing fields.
+        pass
+
+
+_load_project_env()
+
 # 服务器库（主库）—— 与千牛 shops.py 完全相同的连接规则
 SERVER_DB = {
     'host': '127.0.0.1',      # 脚本在服务器本机跑时用 127.0.0.1
@@ -36,6 +62,14 @@ def _resolve_conn():
 def get_conn():
     cfg = dict(SERVER_DB)
     cfg['host'], cfg['port'] = _resolve_conn()
+    missing = [name for name in ('user', 'password', 'database')
+               if not str(cfg.get(name, '')).strip()]
+    if missing:
+        env_names = {'user': 'FETCH_DB_USER', 'password': 'FETCH_DB_PASSWORD',
+                     'database': 'FETCH_DB_NAME'}
+        raise RuntimeError(
+            '数据库配置不完整，缺少：%s；请通过项目根目录 .env 或系统环境变量配置。' %
+            ', '.join(env_names[name] for name in missing))
     return pymysql.connect(**cfg, cursorclass=pymysql.cursors.DictCursor)
 
 

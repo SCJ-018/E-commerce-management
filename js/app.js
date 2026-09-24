@@ -205,13 +205,18 @@ const ApiService = (() => {
 
     /** 种草监测中台：部门账号、店铺品类绑定和收录记录 */
     async getSeedingOptions() { return request('/seeding/options'); },
-    async getSeedingRecords(department, person, responsible) {
+    async createSeedingSheet(data) { return request('/seeding/sheets', { method: 'POST', body: JSON.stringify(data) }); },
+    async renameSeedingSheet(data) { return request('/seeding/sheets', { method: 'PUT', body: JSON.stringify(data) }); },
+    async getSeedingRecords(department, person, responsible, limit, offset) {
       const params = [];
       if (department && department !== '全部') params.push('department=' + encodeURIComponent(department));
       if (person && person !== '全部') params.push('person=' + encodeURIComponent(person));
       if (responsible && responsible !== '全部') params.push('responsible=' + encodeURIComponent(responsible));
+      if (limit != null) params.push('limit=' + encodeURIComponent(limit));
+      if (offset != null) params.push('offset=' + encodeURIComponent(offset));
       return request('/seeding/records' + (params.length ? '?' + params.join('&') : ''));
     },
+    async getSeedingTrafficImage(id) { return request('/seeding/records/' + id + '/traffic-image'); },
     async getSeedingCategoryViews() { return request('/seeding/category-views'); },
     async getSeedingSummary(department) { return request('/seeding/summary' + (department && department !== '全部' ? '?department=' + encodeURIComponent(department) : '')); },
     async createSeedingRecord(data) { return request('/seeding/records', { method: 'POST', body: JSON.stringify(data) }); },

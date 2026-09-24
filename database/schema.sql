@@ -98,6 +98,18 @@ CREATE TABLE IF NOT EXISTS `种草品类绑定表` (
   INDEX `idx_种草绑定_部门` (`部门`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='种草部门店铺品类绑定表';
 
+CREATE TABLE IF NOT EXISTS `种草Sheet配置` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `部门` VARCHAR(50) NOT NULL,
+  `名称` VARCHAR(100) NOT NULL,
+  `排序` INT NOT NULL DEFAULT 0,
+  `启用` TINYINT(1) NOT NULL DEFAULT 1,
+  `创建时间` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `更新时间` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `uk_种草Sheet_部门名称` (`部门`, `名称`),
+  INDEX `idx_种草Sheet_部门排序` (`部门`, `排序`, `id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='种草监测中台部门 Sheet 配置';
+
 -- 商品初始数据
 INSERT INTO `products` (`name`, `category`, `price`, `stock`, `status`) VALUES
 ('无线蓝牙耳机 Pro', '电子产品', 299.00, 150, '在售'),
