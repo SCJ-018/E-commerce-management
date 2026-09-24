@@ -64,6 +64,21 @@
 .cs-main { min-width:0; display:flex; flex-direction:column; gap:14px; }
 .cs-rail > .cs-card + .cs-card { margin-top:14px; }
 
+/* ★★ 左右两栏跟随中栏下滑固定
+   吸顶基准 = 顶端导航条（68px）+ 页面内边距（22px）+ 呼吸位（8px）= 98px。
+   栅格项默认 stretch 会把 rail 拉满整行 → sticky 失效，必须 align-self:start。
+   内容比视口高时内部滚动（max-height + overflow:auto），保证底部卡片仍可达。 */
+.cs-rail-left, .cs-rail-right {
+  position:sticky; top:98px; align-self:start;
+  max-height:calc(100vh - 110px); overflow:auto; overscroll-behavior:contain;
+  padding-right:2px; scrollbar-width:thin;
+}
+.cs-rail-left::-webkit-scrollbar, .cs-rail-right::-webkit-scrollbar { width:5px; }
+.cs-rail-left::-webkit-scrollbar-thumb, .cs-rail-right::-webkit-scrollbar-thumb { background:var(--violet-line); border-radius:99px; }
+.cs-rail-left::-webkit-scrollbar-track, .cs-rail-right::-webkit-scrollbar-track { background:transparent; }
+/* 吸顶层去掉卡片阴影裁切感：滚动时边缘更干净 */
+.cs-rail-left > .cs-card, .cs-rail-right > .cs-card { flex:none; }
+
 /* ---------- 卡片 ---------- */
 .cs-card {
   position:relative; background:var(--card); border:1px solid var(--line); border-radius:var(--r-lg);
@@ -270,6 +285,70 @@
 .cs-item .h { color:var(--ink); font-size:11.5px; font-weight:700; line-height:1.45; }
 .cs-item .m { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:5px; color:var(--ink-4); font-size:10px; }
 
+/* ============================================================
+   ★★ 爆文拆解区（融合卡）
+   把原来的「已拆解的爆文卡片」+「拆解成果 · 7 维」两张并排卡片
+   合成**一个外壳**：左侧选卡列（290px，soft 底 + 细分隔线），右侧成果详情。
+   关键：外壳统一渐变头 + 一条 1px 分隔线，消除「两张卡高度不齐 → 右侧突兀」。
+   ============================================================ */
+.cs-fuse { padding:0; }
+.cs-fuse-top {
+  position:relative; display:flex; align-items:flex-start; gap:11px; padding:16px 18px;
+  background:linear-gradient(108deg,#f6f3ff 0%,#fbf6fb 46%,#f4fcf8 100%);
+  border-bottom:1px solid var(--line-2);
+}
+.cs-fuse-top:after {
+  content:''; position:absolute; right:-50px; top:-110px; width:200px; height:200px; border-radius:50%;
+  background:rgba(255,255,255,.5);
+}
+.cs-fuse-top .mark {
+  position:relative; z-index:1; flex:none; width:34px; height:34px; border-radius:12px;
+  display:flex; align-items:center; justify-content:center; color:#fff; font-size:14px;
+  background:linear-gradient(145deg,#8b7ae8,#5bc8aa); box-shadow:0 7px 16px rgba(111,93,202,.22);
+}
+.cs-fuse-top .ttl { position:relative; z-index:1; flex:1; min-width:0; }
+.cs-fuse-top .ttl b { display:block; color:var(--ink-strong); font-size:14px; font-weight:780; letter-spacing:.1px; }
+.cs-fuse-top .ttl small { display:block; margin-top:5px; color:var(--ink-3); font-size:11px; line-height:1.6; }
+.cs-fuse-top .tools { position:relative; z-index:1; flex:none; display:flex; align-items:center; gap:8px; }
+
+.cs-fuse-body { display:grid; grid-template-columns:290px minmax(0,1fr); }
+/* 左半：卡片选择列（不是独立卡片，是融合体的左半，靠右 1px 分隔线切分） */
+.cs-fuse-items { display:flex; flex-direction:column; min-width:0; background:#fbfaff; border-right:1px solid var(--line-2); }
+.cs-fuse-items-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:12px 14px 8px; }
+.cs-fuse-items-head .t { color:var(--ink-2); font-size:11.5px; font-weight:750; }
+.cs-fuse-items-list { display:flex; flex-direction:column; gap:5px; padding:0 10px 12px; max-height:600px; overflow:auto; }
+.cs-pick {
+  position:relative; display:flex; gap:9px; align-items:flex-start; width:100%; text-align:left; cursor:pointer; font:inherit;
+  padding:9px 10px 9px 12px; border:1px solid transparent; border-radius:12px; background:transparent;
+  transition:background .15s,border-color .15s,box-shadow .15s;
+}
+.cs-pick:hover { background:#fff; border-color:var(--line-2); }
+.cs-pick.on { background:#fff; border-color:#d8cffb; box-shadow:0 5px 14px rgba(122,102,190,.09); }
+.cs-pick.on:before {
+  content:''; position:absolute; left:0; top:11px; bottom:11px; width:3px; border-radius:0 3px 3px 0;
+  background:linear-gradient(180deg,#8b7ae8,#5bc8aa);
+}
+.cs-pick .tile {
+  flex:none; width:26px; height:26px; border-radius:8px; display:flex; align-items:center; justify-content:center;
+  border:1px solid var(--pink-line); background:var(--pink-bg); color:var(--pink-ink); font-size:10px;
+}
+.cs-pick .body { flex:1; min-width:0; }
+.cs-pick .h {
+  display:-webkit-box; overflow:hidden; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+  color:var(--ink); font-size:11.5px; font-weight:680; line-height:1.45;
+}
+.cs-pick .m { display:block; margin-top:4px; color:var(--ink-4); font-size:9.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* 右半：成果详情 */
+.cs-fuse-result { display:flex; flex-direction:column; min-width:0; }
+.cs-fuse-result-head { display:flex; align-items:flex-start; gap:9px; padding:14px 16px 12px; }
+.cs-fuse-result-head .grow { flex:1; min-width:0; }
+.cs-fuse-result-head .ttl { color:var(--ink-strong); font-size:13px; font-weight:750; }
+.cs-fuse-result-head .sub { margin-top:4px; color:var(--ink-3); font-size:10.5px; line-height:1.55; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cs-fuse-res { display:flex; flex-direction:column; gap:9px; padding:0 16px 14px; }
+.cs-fuse-res .cs-grid2 { gap:9px; }
+.cs-fuse-foot { padding:0 16px 15px; }
+
 /* ---------- 中栏：拆解成果 / 输出 ---------- */
 .cs-res { display:flex; flex-direction:column; gap:9px; padding:0 12px 13px; }
 .cs-blk { padding:11px 12px; border:1px solid var(--line-2); border-radius:var(--r-md); background:var(--soft); }
@@ -352,12 +431,15 @@
 @media (max-width:1400px) {
   .cs-layout { grid-template-columns:200px minmax(0,1fr) 252px; }
   .cs-hero-art { display:none; }
+  .cs-fuse-body { grid-template-columns:250px minmax(0,1fr); }
 }
 @media (max-width:1180px) {
   .cs-layout { grid-template-columns:minmax(0,1fr); }
   .cs-rail { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; align-items:start; }
   .cs-rail > .cs-card + .cs-card { margin-top:0; }
   .cs-rail-left { order:1; } .cs-main { order:2; } .cs-rail-right { order:3; }
+  /* 单列堆叠后左右栏不再吸顶，避免与小屏内容互相遮挡 */
+  .cs-rail-left, .cs-rail-right { position:static; max-height:none; overflow:visible; padding-right:0; }
   .cs-list.scroll { max-height:260px; }
 }
 @media (max-width:900px) {
@@ -367,6 +449,10 @@
   .cs-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .vd-text-grid { grid-template-columns:minmax(0,1fr); }
   .cs-workspace-note { display:none; }
+  /* 融合卡在窄屏改为上下堆叠：选卡列在上，成果在下 */
+  .cs-fuse-body { grid-template-columns:minmax(0,1fr); }
+  .cs-fuse-items { border-right:0; border-bottom:1px solid var(--line-2); }
+  .cs-fuse-items-list { max-height:none; }
 }
 @media (max-width:620px) {
   .cs-workspace-nav-inner { min-height:auto; padding:9px 10px; flex-wrap:wrap; gap:8px; }

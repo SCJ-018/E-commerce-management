@@ -109,6 +109,10 @@
     mounted:function () {
       var self = this;
       self.loadProfile();
+      // 融合拆解区：右半是「成果详情」，必须有一张选中卡片才有内容。
+      // 本地有历史卡片但 selectedId 为空（刷新/换页回来）时，默认选中最新一张，
+      // 否则左列有卡、右边却是空态，看起来像坏了。
+      if (!self.selectedId && self.cards.length) self.selectedId = self.cards[0].id;
       window.addEventListener('content-studio-tab', function (e) {
         if (e && e.detail === 'violation') self.workspaceTab = 'violation';
       });
@@ -332,55 +336,73 @@
                 </div>
               </div>
 
-              <div class="cs-grid2">
-                <div class="cs-card">
-                  <div class="cs-head">
-                    <div class="cs-chip pink"><i class="fa-solid fa-layer-group"></i></div>
-                    <div class="grow"><div class="cs-title">已拆解的爆文卡片</div><div class="cs-sub">点击卡片查看完整分析</div></div>
-                    <span class="cs-badge mint">{{ cards.length }} 张</span>
+              <div class="cs-card cs-fuse">
+                <div class="cs-fuse-top">
+                  <div class="mark"><i class="fa-solid fa-layer-group"></i></div>
+                  <div class="ttl">
+                    <b>爆文拆解区</b>
+                    <small>左列选卡 → 右侧即时查看 7 维分析；把选题、结构、标题、镜头和评论话术转成可复用的方法</small>
                   </div>
-                  <div v-if="cards.length" class="cs-list">
-                    <button v-for="card in cards" :key="card.id" type="button" class="cs-item" :class="{on:selectedId===card.id}" @click="selectCard(card.id)">
-                      <span class="tile"><i class="fa-brands fa-tiktok"></i></span>
-                      <span class="body">
-                        <span class="h">{{ card.title }}</span>
-                        <span class="m"><span><b>{{ card.createdAt }}</b></span><span>{{ card.evidence || '用户提供素材' }}</span><span class="cs-badge" :class="draftBadge(card).cls" style="padding:2px 7px">{{ draftBadge(card).text }}</span></span>
-                      </span>
-                    </button>
-                  </div>
-                  <div v-else class="cs-empty"><i class="fa-solid fa-inbox"></i>还没有拆解卡。先在上方投喂一条素材开始。</div>
-                </div>
-
-                <div class="cs-card">
-                  <div class="cs-head">
-                    <div class="cs-chip mint"><i class="fa-solid fa-bullseye"></i></div>
-                    <div class="grow"><div class="cs-title">拆解成果 · 7 维<span v-if="selectedCard"> · {{ selectedCard.title }}</span></div><div class="cs-sub">把选题、结构、标题、镜头和评论话术转成可复用的方法</div></div>
+                  <div class="tools">
+                    <span class="cs-badge pink">{{ cards.length }} 张</span>
                     <button v-if="selectedCard" type="button" class="cs-btn" @click="copyBreakdown"><i class="fa-solid fa-copy"></i> 复制全部</button>
                   </div>
-                  <template v-if="selectedCard">
-                    <div class="cs-res">
-                      <div class="cs-blk"><h4><i class="fa-solid fa-bullseye"></i> 选题与受众</h4><p>{{ display(selectedCard.breakdown.topic) }}</p></div>
-                      <div class="cs-blk"><h4><i class="fa-solid fa-list-ol"></i> 内容结构</h4><p>{{ display(selectedCard.breakdown.structure) }}</p></div>
-                      <div class="cs-grid2">
-                        <div class="cs-blk"><h4><i class="fa-solid fa-heading"></i> 标题策略</h4><p>{{ display(selectedCard.breakdown.title) }}</p></div>
-                        <div class="cs-blk"><h4><i class="fa-solid fa-video"></i> 镜头与节奏</h4><p>{{ display(selectedCard.breakdown.shots) }}</p></div>
-                      </div>
-                      <div class="cs-blk"><h4><i class="fa-solid fa-comments"></i> 评论区互动模板</h4><p>{{ display(selectedCard.breakdown.comments) }}</p></div>
-                      <div class="cs-grid2">
-                        <div class="cs-blk mint"><h4><i class="fa-solid fa-lightbulb"></i> 可借鉴点</h4><p>{{ display(selectedCard.breakdown.learn) }}</p></div>
-                        <div class="cs-blk pink"><h4><i class="fa-solid fa-triangle-exclamation"></i> 风险与验证</h4><p>{{ display(selectedCard.breakdown.risks) }}</p></div>
-                      </div>
-                      <div class="cs-blk"><h4><i class="fa-solid fa-circle-info"></i> 分析依据</h4><p>{{ selectedCard.evidence || '用户提供素材' }}</p></div>
+                </div>
+
+                <div class="cs-fuse-body">
+                  <!-- 左半：卡片选择列 -->
+                  <div class="cs-fuse-items">
+                    <div class="cs-fuse-items-head">
+                      <span class="t">已拆解卡片</span>
+                      <span class="cs-badge gray">共 {{ cards.length }} 张</span>
                     </div>
-                    <div class="cs-pad">
-                      <button type="button" class="cs-btn mint wide" @click="goProduction(selectedCard)"><i class="fa-solid fa-arrow-right"></i> 参考这张卡片去生产</button>
-                      <div class="cs-row-actions" style="margin-top:9px">
-                        <span class="cs-hint">只借鉴方法，不照抄原句与画面编排</span>
-                        <button type="button" class="cs-btn ghost" @click="removeCard"><i class="fa-solid fa-trash-can"></i> 删除卡片</button>
-                      </div>
+                    <div v-if="cards.length" class="cs-fuse-items-list">
+                      <button v-for="card in cards" :key="card.id" type="button" class="cs-pick" :class="{on:selectedId===card.id}" @click="selectCard(card.id)">
+                        <span class="tile"><i class="fa-brands fa-tiktok"></i></span>
+                        <span class="body">
+                          <span class="h">{{ card.title }}</span>
+                          <span class="m">{{ card.createdAt }} · {{ card.evidence || '用户提供素材' }}</span>
+                        </span>
+                      </button>
                     </div>
-                  </template>
-                  <div v-else class="cs-empty"><i class="fa-solid fa-layer-group"></i>拆解完成后，这里会展示每条爆文的 7 维分析结果。</div>
+                    <div v-else class="cs-empty"><i class="fa-solid fa-inbox"></i>还没有拆解卡。<br>先在上方投喂一条素材开始。</div>
+                  </div>
+
+                  <!-- 右半：成果详情 -->
+                  <div class="cs-fuse-result">
+                    <template v-if="selectedCard">
+                      <div class="cs-fuse-result-head">
+                        <div class="cs-chip mint" style="flex:none"><i class="fa-solid fa-bullseye"></i></div>
+                        <div class="grow">
+                          <div class="ttl">拆解成果 · 7 维</div>
+                          <div class="sub" :title="selectedCard.title">{{ selectedCard.title }}</div>
+                        </div>
+                        <span class="cs-badge" :class="draftBadge(selectedCard).cls">{{ draftBadge(selectedCard).text }}</span>
+                      </div>
+                      <div class="cs-fuse-res">
+                        <div class="cs-blk"><h4><i class="fa-solid fa-bullseye"></i> 选题与受众</h4><p>{{ display(selectedCard.breakdown.topic) }}</p></div>
+                        <div class="cs-blk"><h4><i class="fa-solid fa-list-ol"></i> 内容结构</h4><p>{{ display(selectedCard.breakdown.structure) }}</p></div>
+                        <div class="cs-grid2">
+                          <div class="cs-blk"><h4><i class="fa-solid fa-heading"></i> 标题策略</h4><p>{{ display(selectedCard.breakdown.title) }}</p></div>
+                          <div class="cs-blk"><h4><i class="fa-solid fa-video"></i> 镜头与节奏</h4><p>{{ display(selectedCard.breakdown.shots) }}</p></div>
+                        </div>
+                        <div class="cs-blk"><h4><i class="fa-solid fa-comments"></i> 评论区互动模板</h4><p>{{ display(selectedCard.breakdown.comments) }}</p></div>
+                        <div class="cs-grid2">
+                          <div class="cs-blk mint"><h4><i class="fa-solid fa-lightbulb"></i> 可借鉴点</h4><p>{{ display(selectedCard.breakdown.learn) }}</p></div>
+                          <div class="cs-blk pink"><h4><i class="fa-solid fa-triangle-exclamation"></i> 风险与验证</h4><p>{{ display(selectedCard.breakdown.risks) }}</p></div>
+                        </div>
+                        <div class="cs-blk"><h4><i class="fa-solid fa-circle-info"></i> 分析依据</h4><p>{{ selectedCard.evidence || '用户提供素材' }}</p></div>
+                      </div>
+                      <div class="cs-fuse-foot">
+                        <button type="button" class="cs-btn mint wide" @click="goProduction(selectedCard)"><i class="fa-solid fa-arrow-right"></i> 参考这张卡片去生产</button>
+                        <div class="cs-row-actions" style="margin-top:9px">
+                          <span class="cs-hint">只借鉴方法，不照抄原句与画面编排</span>
+                          <button type="button" class="cs-btn ghost" @click="removeCard"><i class="fa-solid fa-trash-can"></i> 删除卡片</button>
+                        </div>
+                      </div>
+                    </template>
+                    <div v-else class="cs-empty"><i class="fa-solid fa-layer-group"></i>拆解完成后，这里会展示每条爆文的 7 维分析结果。</div>
+                  </div>
                 </div>
               </div>
             </template>
