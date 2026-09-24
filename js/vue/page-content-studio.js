@@ -241,7 +241,7 @@
             title:d.title || '未命名爆文', sourceUrl:d.sourceUrl || '', contentType:d.contentType || inferContentType(raw), evidence:d.evidence || '', breakdown:d.breakdown || {}};
           var savedCard=await post('cards', card);
           this.cards.unshift(savedCard); this.cards=this.cards.slice(0,50); this.selectedId=savedCard.id;
-          if (!this.status || this.status.indexOf('演示') < 0) this.status='拆解完成，已保存到本机爆文卡片'; this.statusError=false; this.input=''; this.analysisFocus='';
+          if (!this.status || this.status.indexOf('演示') < 0) this.status='拆解完成，已保存到当前账号卡片'; this.statusError=false; this.input=''; this.analysisFocus='';
         } catch (e) { this.status=e.message || '拆解失败'; this.statusError=true; }
         finally { this.busy=false; }
       },
@@ -393,7 +393,7 @@
                     <div class="cs-field">
                       <label class="cs-label" for="csInput">素材内容 <em>公开链接可能无法提取视频正文</em></label>
                       <textarea id="csInput" v-model="input" class="cs-ta" maxlength="20000" placeholder="粘贴抖音视频链接；若希望分析结构和镜头，请一并粘贴口播文案、字幕或镜头摘要。"></textarea>
-                      <div class="cs-count"><span class="cache"><i class="fa-solid fa-check"></i> 本机自动保存</span><span>{{ input.length }} / 20000</span></div>
+                      <div class="cs-count"><span class="cache"><i class="fa-solid fa-cloud"></i> 当前账号自动保存</span><span>{{ input.length }} / 20000</span></div>
                     </div>
                     <div class="cs-field">
                       <label class="cs-label" for="csFocus">分析重点 <em>可选，留空则全维度拆解</em></label>
