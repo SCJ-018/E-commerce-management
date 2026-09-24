@@ -207,14 +207,22 @@ const ApiService = (() => {
     async getSeedingOptions() { return request('/seeding/options'); },
     async createSeedingSheet(data) { return request('/seeding/sheets', { method: 'POST', body: JSON.stringify(data) }); },
     async renameSeedingSheet(data) { return request('/seeding/sheets', { method: 'PUT', body: JSON.stringify(data) }); },
-    async getSeedingRecords(department, person, responsible, limit, offset) {
+    async getSeedingRecords(department, person, responsible, limit, offset, date) {
       const params = [];
       if (department && department !== '全部') params.push('department=' + encodeURIComponent(department));
       if (person && person !== '全部') params.push('person=' + encodeURIComponent(person));
       if (responsible && responsible !== '全部') params.push('responsible=' + encodeURIComponent(responsible));
       if (limit != null) params.push('limit=' + encodeURIComponent(limit));
       if (offset != null) params.push('offset=' + encodeURIComponent(offset));
+      if (date) params.push('date=' + encodeURIComponent(date));
       return request('/seeding/records' + (params.length ? '?' + params.join('&') : ''));
+    },
+    async getSeedingRecordDates(department, person, responsible) {
+      const params = [];
+      if (department && department !== '全部') params.push('department=' + encodeURIComponent(department));
+      if (person && person !== '全部') params.push('person=' + encodeURIComponent(person));
+      if (responsible && responsible !== '全部') params.push('responsible=' + encodeURIComponent(responsible));
+      return request('/seeding/record-dates' + (params.length ? '?' + params.join('&') : ''));
     },
     async getSeedingTrafficImage(id) { return request('/seeding/records/' + id + '/traffic-image'); },
     async getSeedingCategoryViews() { return request('/seeding/category-views'); },

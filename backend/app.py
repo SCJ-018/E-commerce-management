@@ -1435,12 +1435,15 @@ def seeding_records():
         department = (request.args.get('department') or '').strip()
         person = (request.args.get('person') or '').strip()
         responsible = (request.args.get('responsible') or '').strip()
+        record_date = (request.args.get('date') or '').strip()
         if department and department != '全部':
             conditions.append('`部门` = %s'); params.append(department)
         if person and person != '全部':
             conditions.append('`发布账号名称` = %s'); params.append(person)
         if responsible and responsible != '全部':
             conditions.append('`负责人` = %s'); params.append(responsible)
+        if record_date:
+            conditions.append('`发布时间` = %s'); params.append(record_date)
         where = (' WHERE ' + ' AND '.join(conditions)) if conditions else ''
         # 列表默认分页，避免切换部门时一次性读取全部记录和图片字段。
         # 不带 limit 时保留旧接口行为，兼容导出等已有调用方。
@@ -1468,6 +1471,31 @@ def seeding_records():
             query_params.extend([limit, offset])
         rows = db_execute(sql, query_params) or []
         return success([_seeding_record_to_front(row) for row in rows])
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.route('/api/seeding/record-dates', methods=['GET'])
+def seeding_record_dates():
+    """返回当前筛选条件下的日期页目录，日期按最新到最旧排序。"""
+    try:
+        _ensure_seeding_tables()
+        conditions, params = [], []
+        department = (request.args.get('department') or '').strip()
+        person = (request.args.get('person') or '').strip()
+        responsible = (request.args.get('responsible') or '').strip()
+        if department and department != '全部':
+            conditions.append('`部门` = %s'); params.append(department)
+        if person and person != '全部':
+            conditions.append('`发布账号名称` = %s'); params.append(person)
+        if responsible and responsible != '全部':
+            conditions.append('`负责人` = %s'); params.append(responsible)
+        where = (' WHERE ' + ' AND '.join(conditions)) if conditions else ''
+        rows = db_execute(
+            'SELECT DISTINCT `发布时间` AS `date` FROM `种草收录表`' + where +
+            ' ORDER BY `发布时间` DESC', params,
+        ) or []
+        return success([str(row.get('date') or '')[:10] for row in rows if row.get('date')])
     except Exception as e:
         return fail(str(e))
 

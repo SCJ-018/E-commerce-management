@@ -15,12 +15,17 @@
   }
   var app = {
     setup: function () {
-      var state = Vue.reactive({ selectedDept: '全部', selectedSheet: '全部数据', sheetsByDept: {}, rows: [], people: {}, stores: [], bindings: [], bindingPopup: false, categoryViews: {}, categoryRules: {}, summary: { current: { count: 0, views: 0, hot: 0 }, previous: { count: 0, views: 0, hot: 0 }, categoryCurrent: 0, categoryPrevious: 0 }, recordModal: false, trafficModal: false, trafficRow: null, selectedIds: [], batchMode: false, openDropdown: null, dropdownRect: null, trafficTarget: null, editingId: null, inlineEdit: null, apiReady: false, syncState: '正在连接腾讯云数据库', loadingMore: false, hasMoreRows: false, form: {} });
+      var state = Vue.reactive({ selectedDept: '全部', selectedSheet: '全部数据', sheetsByDept: {}, rows: [], datePages: [], datePageIndex: 0, virtualStart: 0, people: {}, stores: [], bindings: [], bindingPopup: false, categoryViews: {}, categoryRules: {}, summary: { current: { count: 0, views: 0, hot: 0 }, previous: { count: 0, views: 0, hot: 0 }, categoryCurrent: 0, categoryPrevious: 0 }, recordModal: false, trafficModal: false, trafficRow: null, selectedIds: [], batchMode: false, openDropdown: null, dropdownRect: null, trafficTarget: null, editingId: null, inlineEdit: null, apiReady: false, syncState: '正在连接腾讯云数据库', loadingMore: false, hasMoreRows: false, form: {} });
       var api = window.ApiService;
       var currentUser = Vue.computed(function () { return window.sessionStorage.getItem('admin_current_user') || window.sessionStorage.getItem('currentUser') || ''; });
       var isSupervisor = Vue.computed(function () { var role = String(window.sessionStorage.getItem('admin_current_role') || ''); return !role || /主管|管理员|开发|supervisor|admin/i.test(role); });
       var sheetNames = Vue.computed(function () { return state.selectedDept === '全部' ? [] : ['全部数据'].concat(state.sheetsByDept[state.selectedDept] || []); });
-      var filteredRows = Vue.computed(function () { return state.rows.filter(function (r) { return (state.selectedDept === '全部' || r.department === state.selectedDept) && (state.selectedSheet === '全部数据' || r.responsible === state.selectedSheet); }).sort(function (a, b) { return String(b.date).localeCompare(String(a.date)) || Number(b.id) - Number(a.id); }); });
+      var allFilteredRows = Vue.computed(function () { return state.rows.filter(function (r) { return (state.selectedDept === '全部' || r.department === state.selectedDept) && (state.selectedSheet === '全部数据' || r.responsible === state.selectedSheet); }).sort(function (a, b) { return String(b.date).localeCompare(String(a.date)) || Number(b.id) - Number(a.id); }); });
+      var datePages = Vue.computed(function () { var seen = {}; var list = []; allFilteredRows.value.forEach(function (r) { if (!seen[r.date]) { seen[r.date] = true; list.push(r.date); } }); return list; });
+      var filteredRows = Vue.computed(function () { var dates = state.datePages.length ? state.datePages : datePages.value; var selected = dates[state.datePageIndex] || dates[0]; return selected ? allFilteredRows.value.filter(function (r) { return r.date === selected; }) : []; });
+      var visibleRows = Vue.computed(function () { var rows = filteredRows.value, start = Math.max(0, Math.min(state.virtualStart, Math.max(0, rows.length - 80))); return rows.slice(start, start + 80); });
+      var virtualTopSpace = Vue.computed(function () { return Math.max(0, Math.min(state.virtualStart, Math.max(0, filteredRows.value.length - 80))) * 48; });
+      var virtualBottomSpace = Vue.computed(function () { var start = Math.max(0, Math.min(state.virtualStart, Math.max(0, filteredRows.value.length - 80))); return Math.max(0, filteredRows.value.length - start - visibleRows.value.length) * 48; });
       var currentBindings = Vue.computed(function () { return state.bindings.filter(function (b) { return b.department === state.selectedDept; }); });
       var productOptions = Vue.computed(function () { var list = currentBindings.value.map(function (b) { return b.category; }); if (!list.length && state.selectedDept !== '全部') list = state.stores.reduce(function (a, s) { return a.concat(s.categories || []); }, []); return Array.from(new Set(list.length ? list : fallbackCategories)); });
       var categoryViewValue = Vue.computed(function () { return state.selectedDept === '全部' ? departments.reduce(function (n, d) { return n + Number(state.categoryViews[d] || 0); }, 0) : Number(state.categoryViews[state.selectedDept] || 0); });
@@ -82,8 +87,8 @@
       }
       function dropdownItems() { return dropdownList(dropdownField()); }
       function dropdownPick(opt) { var row = dropdownRow(); if (row) pickDropdown(row, dropdownField(), opt); }
-      function selectDept(dept) { state.selectedDept = dept; state.selectedSheet = '全部数据'; state.bindingPopup = false; state.selectedIds = []; rowCache = {}; }
-      function selectSheet(sheet) { state.selectedSheet = sheet; state.selectedIds = []; rowCache = {}; loadRows(); }
+      function selectDept(dept) { state.selectedDept = dept; state.selectedSheet = '全部数据'; state.datePageIndex = 0; state.datePages = []; state.virtualStart = 0; state.bindingPopup = false; state.selectedIds = []; rowCache = {}; }
+      function selectSheet(sheet) { state.selectedSheet = sheet; state.datePageIndex = 0; state.datePages = []; state.virtualStart = 0; state.selectedIds = []; rowCache = {}; }
       function addSheet() {
         if (state.selectedDept === '全部' || !api || !api.createSeedingSheet) return;
         var name = window.prompt('请输入该部门的新 Sheet 名称');
@@ -193,16 +198,27 @@
       function loadOptions() { if (!api || !api.getSeedingOptions) { state.syncState = '腾讯云数据库连接失败'; return Promise.resolve(); } return api.getSeedingOptions().then(function (data) { if (!data) throw new Error('options unavailable'); state.apiReady = true; state.syncState = '已连接腾讯云数据库'; state.stores = data.stores || []; state.bindings = data.bindings || []; state.people = data.people || {}; state.sheetsByDept = data.sheets || {}; }).catch(function () { state.apiReady = false; state.syncState = '腾讯云数据库连接失败'; }); }
       function loadCategoryViews() { if (!api || !api.getSeedingCategoryViews) return Promise.resolve(); return api.getSeedingCategoryViews().then(function (data) { if (data) { state.categoryViews = data.departments || {}; state.categoryRules = data.rules || {}; } }); }
       function loadSummary() { if (!api || !api.getSeedingSummary) return Promise.resolve(); return api.getSeedingSummary(state.selectedDept).then(function (data) { if (data) state.summary = data; }); }
+      function loadDatePages() {
+        if (!api || !api.getSeedingRecordDates) return Promise.resolve();
+        return api.getSeedingRecordDates(state.selectedDept, '全部', state.selectedSheet === '全部数据' ? '全部' : state.selectedSheet).then(function (dates) {
+          state.datePages = Array.isArray(dates) ? dates : [];
+          if (state.datePageIndex >= state.datePages.length) state.datePageIndex = 0;
+          state.virtualStart = 0;
+          loadRows();
+        }).catch(function () { state.datePages = []; state.rows = []; state.syncState = '日期目录加载失败'; });
+      }
       var rowRequest = 0, rowTimer = null, rowCache = {}, rowOffsets = {}, rowHasMore = {};
       function loadRows() {
         if (!api || !api.getSeedingRecords) return;
-        var key = state.selectedDept + '|' + state.selectedSheet;
+        var selectedDate = state.datePages[state.datePageIndex] || '';
+        if (!selectedDate) { state.rows = []; state.hasMoreRows = false; return; }
+        var key = state.selectedDept + '|' + state.selectedSheet + '|' + selectedDate;
         if (Object.prototype.hasOwnProperty.call(rowCache, key)) { state.rows = rowCache[key].slice(); state.hasMoreRows = !!rowHasMore[key]; return; }
         var token = ++rowRequest, pageSize = 100;
         if (rowTimer) clearTimeout(rowTimer);
         state.rows = [];
         rowTimer = setTimeout(function () {
-          api.getSeedingRecords(state.selectedDept, '全部', state.selectedSheet === '全部数据' ? '全部' : state.selectedSheet, pageSize, 0).then(function (rows) {
+          api.getSeedingRecords(state.selectedDept, '全部', state.selectedSheet === '全部数据' ? '全部' : state.selectedSheet, pageSize, 0, selectedDate).then(function (rows) {
             if (token !== rowRequest || !Array.isArray(rows)) return;
             state.rows = rows.map(normalize);
             rowCache[key] = state.rows.slice();
@@ -222,11 +238,12 @@
         }, 60);
       }
       function loadMoreRows() {
-        var key = state.selectedDept + '|' + state.selectedSheet;
+        var selectedDate = state.datePages[state.datePageIndex] || '';
+        var key = state.selectedDept + '|' + state.selectedSheet + '|' + selectedDate;
         if (state.loadingMore || !rowHasMore[key] || state.rows.length >= 1000 || !api || !api.getSeedingRecords) return;
         var token = rowRequest, offset = rowOffsets[key] || state.rows.length, pageSize = 100;
         state.loadingMore = true;
-        api.getSeedingRecords(state.selectedDept, '全部', state.selectedSheet === '全部数据' ? '全部' : state.selectedSheet, pageSize, offset).then(function (rows) {
+        api.getSeedingRecords(state.selectedDept, '全部', state.selectedSheet === '全部数据' ? '全部' : state.selectedSheet, pageSize, offset, selectedDate).then(function (rows) {
           if (token !== rowRequest || !Array.isArray(rows)) return;
           var page = rows.map(normalize);
           state.rows = state.rows.concat(page);
@@ -241,18 +258,32 @@
         }).finally(function () { state.loadingMore = false; });
       }
       function exportRows() { var headers = ['发布时间', '部门', '产品', '发布平台', '发布渠道', '笔记类型', '标题', '发布链接', '发布账号名称', '发布账号ID', '点赞', '收藏', '评论', '阅读量', '备注']; var body = filteredRows.value.map(function (r) { return [r.date, r.department, r.product, r.platform, r.source, r.noteType, r.title, r.publishLink, r.accountName, r.accountId, r.likes, r.collects, r.comments, r.views, r.remark]; }); var csv = [headers].concat(body).map(function (line) { return line.map(function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }).join(','); }).join('\n'); var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })); a.download = '种草收录-' + currentDate() + '.csv'; a.click(); }
-      var scrollLoadHandler = null;
+      var scrollLoadHandler = null, tableScrollHandler = null;
       Vue.onMounted(function () {
-        loadOptions().then(function () { loadRows(); }); loadCategoryViews(); loadSummary();
+        loadOptions().then(function () { loadDatePages(); }); loadCategoryViews(); loadSummary();
         scrollLoadHandler = function () {
+          var tableElement = document.querySelector('#page-seeding-monitor-vue .srm-table-wrap');
+          if (tableElement) {
+            var tableTop = tableElement.getBoundingClientRect().top + window.scrollY;
+            state.virtualStart = Math.max(0, Math.floor(Math.max(0, window.scrollY - tableTop) / 48) - 20);
+          }
           if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 500) loadMoreRows();
         };
         window.addEventListener('scroll', scrollLoadHandler, { passive: true });
+        var tableWrap = document.querySelector('#page-seeding-monitor-vue .srm-table-wrap');
+        if (tableWrap) {
+          tableScrollHandler = function () {
+            state.virtualStart = Math.max(0, Math.floor(tableWrap.scrollTop / 48) - 20);
+            if (tableWrap.scrollTop + tableWrap.clientHeight >= tableWrap.scrollHeight - 500) loadMoreRows();
+          };
+          tableWrap.addEventListener('scroll', tableScrollHandler, { passive: true });
+        }
       });
-      Vue.onBeforeUnmount(function () { if (rowTimer) clearTimeout(rowTimer); if (scrollLoadHandler) window.removeEventListener('scroll', scrollLoadHandler); rowRequest++; });
-      Vue.watch(function () { return [state.selectedDept, state.selectedSheet]; }, loadRows);
+      Vue.onBeforeUnmount(function () { if (rowTimer) clearTimeout(rowTimer); if (scrollLoadHandler) window.removeEventListener('scroll', scrollLoadHandler); var tableWrap = document.querySelector('#page-seeding-monitor-vue .srm-table-wrap'); if (tableWrap && tableScrollHandler) tableWrap.removeEventListener('scroll', tableScrollHandler); rowRequest++; });
+      Vue.watch(function () { return [state.selectedDept, state.selectedSheet]; }, loadDatePages);
+      Vue.watch(function () { return state.datePageIndex; }, function () { state.virtualStart = 0; loadRows(); });
       Vue.watch(function () { return state.selectedDept; }, function () { loadSummary(); });
-      return { state: state, departments: departments, platforms: platforms, sources: sources, noteTypes: noteTypes, sheetNames: sheetNames, filteredRows: filteredRows, productOptions: productOptions, stats: stats, categoryViewTooltip: categoryViewTooltip, formatNumber: formatNumber, formatCompact: formatCompact, selectDept: selectDept, selectSheet: selectSheet, addSheet: addSheet, renameSheet: renameSheet, formatDateInput: formatDateInput, dateTone: dateTone, canEdit: canEdit, isDropdown: isDropdown, toggleDropdown: toggleDropdown, closeDropdown: closeDropdown, pickDropdown: pickDropdown, dropdownList: dropdownList, dropdownTone: dropdownTone, dropdownField: dropdownField, dropdownRow: dropdownRow, dropdownItems: dropdownItems, dropdownPick: dropdownPick, toggleSelect: toggleSelect, isSelected: isSelected, allSelected: allSelected, toggleSelectAll: toggleSelectAll, clearSelection: clearSelection, startBatchMode: startBatchMode, exitBatchMode: exitBatchMode, batchRemove: batchRemove, retryTraffic: retryTraffic, onRetryImage: onRetryImage, startEdit: startEdit, isEditing: isEditing, finishEdit: finishEdit, showDate: showDate, dateSpan: dateSpan, productTone: productTone, platformTone: platformTone, sourceTone: sourceTone, noteTone: noteTone, likesTone: likesTone, collectsTone: collectsTone, commentsTone: commentsTone, viewTier: viewTier, viewBar: viewBar, dateGroupLabel: dateGroupLabel, totals: totals, linkLabel: linkLabel, openLink: openLink, isUrl: isUrl, linkHref: linkHref, openTraffic: openTraffic, triggerTraffic: triggerTraffic, onImageChange: onImageChange, openCreate: openCreate, openEdit: openEdit, saveRecord: saveRecord, removeRow: removeRow, exportRows: exportRows };
+      return { state: state, departments: departments, platforms: platforms, sources: sources, noteTypes: noteTypes, sheetNames: sheetNames, datePages: datePages, filteredRows: filteredRows, visibleRows: visibleRows, virtualTopSpace: virtualTopSpace, virtualBottomSpace: virtualBottomSpace, productOptions: productOptions, stats: stats, categoryViewTooltip: categoryViewTooltip, formatNumber: formatNumber, formatCompact: formatCompact, selectDept: selectDept, selectSheet: selectSheet, addSheet: addSheet, renameSheet: renameSheet, formatDateInput: formatDateInput, dateTone: dateTone, canEdit: canEdit, isDropdown: isDropdown, toggleDropdown: toggleDropdown, closeDropdown: closeDropdown, pickDropdown: pickDropdown, dropdownList: dropdownList, dropdownTone: dropdownTone, dropdownField: dropdownField, dropdownRow: dropdownRow, dropdownItems: dropdownItems, dropdownPick: dropdownPick, toggleSelect: toggleSelect, isSelected: isSelected, allSelected: allSelected, toggleSelectAll: toggleSelectAll, clearSelection: clearSelection, startBatchMode: startBatchMode, exitBatchMode: exitBatchMode, batchRemove: batchRemove, retryTraffic: retryTraffic, onRetryImage: onRetryImage, startEdit: startEdit, isEditing: isEditing, finishEdit: finishEdit, showDate: showDate, dateSpan: dateSpan, productTone: productTone, platformTone: platformTone, sourceTone: sourceTone, noteTone: noteTone, likesTone: likesTone, collectsTone: collectsTone, commentsTone: commentsTone, viewTier: viewTier, viewBar: viewBar, dateGroupLabel: dateGroupLabel, totals: totals, linkLabel: linkLabel, openLink: openLink, isUrl: isUrl, linkHref: linkHref, openTraffic: openTraffic, triggerTraffic: triggerTraffic, onImageChange: onImageChange, openCreate: openCreate, openEdit: openEdit, saveRecord: saveRecord, removeRow: removeRow, exportRows: exportRows };
     },
     template: `
       <div class="srm-shell"><div class="srm-console"><header class="srm-top"><div class="srm-head"><span class="srm-mark"><i class="fa-solid fa-seedling"></i></span><div><div class="srm-title">种草监测中台<span class="srm-live" :class="{warn:state.syncState!=='已连接腾讯云数据库'}"><i></i>{{state.syncState}}</span></div><div class="srm-subtitle"><b>按部门</b><em></em><b>发布账号</b><span>管理内容收录</span></div></div></div><div class="srm-top-actions"><button class="srm-btn primary srm-btn-lg" @click="openCreate"><i class="fa-solid fa-plus"></i>新增记录</button></div></header>
@@ -268,5 +299,15 @@
       <div v-if="state.trafficModal" class="srm-mask" @click.self="state.trafficModal=false"><div class="srm-modal" style="width:min(900px,100%)"><div class="srm-modal-head"><div class="srm-modal-title">流量分析 · {{state.trafficRow&&state.trafficRow.title}}</div><button class="srm-btn icon" @click="state.trafficModal=false"><i class="fa-solid fa-xmark"></i></button></div><div class="srm-modal-body srm-traffic-body"><img class="srm-traffic-preview" :src="state.trafficRow&&state.trafficRow.trafficImage"><input :id="'traffic-re-'+(state.trafficRow&&state.trafficRow.id)" type="file" accept="image/*" hidden @change="onRetryImage($event,state.trafficRow)"></div><div class="srm-modal-foot srm-traffic-foot"><span class="srm-traffic-hint"><i class="fa-solid fa-circle-info"></i>如需更换，请选择新的流量分析图片</span><button class="srm-btn primary" @click="retryTraffic(state.trafficRow)"><i class="fa-solid fa-cloud-arrow-up"></i>重新上传图片</button></div></div></div></div>`
   };
   window.SeedingPage = app;
-  window.mountSeedingVue = function () { var mount = document.getElementById('page-seeding-monitor-vue'); if (!mount || mount.__vue_app__) return; Vue.createApp(app).mount(mount); };
+  window.mountSeedingVue = function () {
+    var mount = document.getElementById('page-seeding-monitor-vue');
+    if (!mount || mount.__vue_app__) return;
+    // 日期翻页和虚拟窗口注入到现有模板，复用已有按钮样式，不改 CSS 文件。
+    app.template = app.template
+      .replace('<div class="srm-table-wrap">', '<div class="srm-toolbar-right"><button class="srm-btn" :disabled="state.datePageIndex<=0" @click="state.datePageIndex=Math.max(0,state.datePageIndex-1)"><i class="fa-solid fa-chevron-left"></i>上一日</button><select class="srm-btn" v-model.number="state.datePageIndex"><option v-for="(day,index) in datePages" :key="day" :value="index">{{day}} · 第 {{index+1}} / {{datePages.length}} 日</option></select><button class="srm-btn" :disabled="state.datePageIndex>=datePages.length-1" @click="state.datePageIndex=Math.min(datePages.length-1,state.datePageIndex+1)">下一日<i class="fa-solid fa-chevron-right"></i></button></div><div class="srm-table-wrap">')
+      .replace('<tbody>', '<tbody><tr v-if="virtualTopSpace"><td colspan="17" :height="virtualTopSpace"></td></tr>')
+      .replace('v-for="(row,index) in filteredRows"', 'v-for="(row,index) in visibleRows"')
+      .replace('<tr v-if="!filteredRows.length">', '<tr v-if="virtualBottomSpace"><td colspan="17" :height="virtualBottomSpace"></td></tr><tr v-if="!filteredRows.length">');
+    Vue.createApp(app).mount(mount);
+  };
 })();
