@@ -261,15 +261,18 @@ def click_trade_date_if_available(page):
         if any(_is_visible(loc.nth(i)) for i in range(loc.count())):
             click_exact_natural_day(page)
             return
-        custom = page.get_by_text('自定义', exact=True)
-        # 西西猫企业店偶尔把日期按钮渲染成无可访问名称的 div，
-        # get_by_text(exact=True) 会拿到隐藏副本；补充可见文本选择器并强制点击。
-        if not custom.count():
-            custom = page.locator('text=自定义')
-        for i in range(custom.count()):
-            if _is_visible(custom.nth(i)):
-                custom.nth(i).click(force=True)
-                opened = True
+        custom_locators = [page.get_by_text('自定义', exact=True),
+                           page.locator('text=自定义'),
+                           page.locator('button').filter(has_text='自定义')]
+        # 西西猫系列店铺偶尔会同时渲染隐藏副本，精确文本定位器只拿到隐藏节点；
+        # 依次扫描通用文本和按钮定位器，命中可见节点后强制点击。
+        for custom in custom_locators:
+            for i in range(custom.count()):
+                if _is_visible(custom.nth(i)):
+                    custom.nth(i).click(force=True)
+                    opened = True
+                    break
+            if opened:
                 break
         if not opened:
             time.sleep(1)
