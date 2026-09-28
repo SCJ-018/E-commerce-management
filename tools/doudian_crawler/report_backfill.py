@@ -813,8 +813,10 @@ def main_shop_first():
                     print('    ---- 日期 %s ----' % DATE)
                     cur, result = process_shop_date(conn, page, shop, cur)
                     results.append(result)
-                    # 页面回到登录页才唤起滑块；单个日期报表失败不重新登录，
-                    # 继续同一家店的下一个日期。
+                    if result.get('status') != 'ok':
+                        print('    [SKIP SHOP] %s 当前日期失败，停止继续尝试该店，切换下一家' % name)
+                        break
+                    # 页面回到登录页才唤起滑块；成功时继续同一家店的下一个日期。
                     try:
                         body = page.inner_text('body') or ''
                         expired = '/login' in page.url or 'passport' in page.url or ('扫码登录' in body and not lf.current_shop(page))
