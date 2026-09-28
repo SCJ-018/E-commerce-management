@@ -452,7 +452,7 @@ def download_current(page, tag, menu_immediate=False):
     if menu_immediate:
         # 成交分析页是“点击按钮并在同一事件循环点菜单项”的实现。
         try:
-            with page.expect_download(timeout=120000) as di:
+            with page.expect_download(timeout=30000) as di:
                 visible[0].click()
                 cur = page.get_by_text('下载当前明细', exact=True)
                 opts = []
@@ -492,24 +492,8 @@ def download_current(page, tag, menu_immediate=False):
 
 
 def retry_trade_download(page, tag):
-    """日期控件/首屏接口异常时刷新一次，并从默认近1天入口直接下载。"""
-    try:
-        return download_current(page, tag, menu_immediate=True)
-    except Exception as first_error:
-        print('    [WARN] 成交报表首次下载未触发，刷新页面后重试：%s' % first_error)
-        page.reload(wait_until='domcontentloaded', timeout=60000)
-        time.sleep(20)
-        for label in ('近1天', '实时'):
-            loc = page.get_by_text(label, exact=True)
-            for i in range(loc.count()):
-                if _is_visible(loc.nth(i)):
-                    try:
-                        loc.nth(i).click(force=True)
-                        time.sleep(5)
-                    except Exception:
-                        pass
-                    break
-        return download_current(page, tag, menu_immediate=True)
+    """日期控件不可用时只尝试一次下载，失败立即交给换店策略。"""
+    return download_current(page, tag, menu_immediate=True)
 
 
 def product_rows(path, allow_empty=False):
