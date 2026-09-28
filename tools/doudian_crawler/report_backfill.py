@@ -579,7 +579,7 @@ def main():
             cur = lf.current_shop(page) or ''
             body = page.inner_text('body') or ''
             login_page = ('/login' in page.url or 'passport' in page.url or
-                          '发送验证码' in body or '扫码登录' in body)
+                          '发送验证码' in body or '扫码登录' in body or not cur)
             if login_page:
                 # 服务器无可见窗口：自动尝试邮箱登录；只有实际检测到拼图时才失败转人工。
                 # 本地运行仍保留原行为，可手工完成滑块。
