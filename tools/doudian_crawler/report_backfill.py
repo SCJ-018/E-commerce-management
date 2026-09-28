@@ -202,18 +202,21 @@ def click_exact_natural_day(page):
         raise RuntimeError('页面未找到自然日控件')
     time.sleep(1)
     cells = page.locator('td[title="%s"]' % DATE)
-    for i in range(cells.count()):
-        try:
-            # Aurora renders hidden duplicate calendar cells.  Calling click()
-            # on the first hidden match incurs Playwright's full 30s timeout
-            # and can make a valid report look like a failed shop.
-            if not cells.nth(i).is_visible():
-                continue
-            cells.nth(i).click()
-            time.sleep(3)
-            return
-        except Exception:
-            pass
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        for i in range(cells.count()):
+            try:
+                # Aurora renders hidden duplicate calendar cells.  Calling click()
+                # on the first hidden match incurs Playwright's full 30s timeout
+                # and can make a valid report look like a failed shop.
+                if not cells.nth(i).is_visible():
+                    continue
+                cells.nth(i).click()
+                time.sleep(3)
+                return
+            except Exception:
+                pass
+        time.sleep(1)
     raise RuntimeError('自然日控件中未找到 %s' % DATE)
 
 
@@ -223,25 +226,33 @@ def click_trade_date_if_available(page):
     不能把 URL 的 date_value 当成已生效日期：实测页面仍显示近 1 天，
     下载文件实际是次日数据。优先走自定义日历，若版本提供自然日则兼容。
     """
-    loc = page.get_by_text('自然日', exact=True)
-    if any(_is_visible(loc.nth(i)) for i in range(loc.count())):
-        click_exact_natural_day(page)
-        return
-
-    custom = page.get_by_text('自定义', exact=True)
+    deadline = time.time() + 35
     opened = False
-    for i in range(custom.count()):
-        if _is_visible(custom.nth(i)):
-            custom.nth(i).click()
-            opened = True
-            break
+    while time.time() < deadline and not opened:
+        loc = page.get_by_text('自然日', exact=True)
+        if any(_is_visible(loc.nth(i)) for i in range(loc.count())):
+            click_exact_natural_day(page)
+            return
+        custom = page.get_by_text('自定义', exact=True)
+        for i in range(custom.count()):
+            if _is_visible(custom.nth(i)):
+                custom.nth(i).click()
+                opened = True
+                break
+        if not opened:
+            time.sleep(1)
     if not opened:
         raise RuntimeError('成交分析页未找到自然日或自定义日期控件')
     time.sleep(1)
 
     # Aurora 日历通常用 td[title=YYYY-MM-DD]；区间选择需要点击起止日两次。
     cells = page.locator('td[title="%s"]' % DATE)
-    visible = [cells.nth(i) for i in range(cells.count()) if _is_visible(cells.nth(i))]
+    visible = []
+    deadline = time.time() + 30
+    while time.time() < deadline and not visible:
+        visible = [cells.nth(i) for i in range(cells.count()) if _is_visible(cells.nth(i))]
+        if not visible:
+            time.sleep(1)
     if visible:
         visible[0].click()
         time.sleep(0.4)
