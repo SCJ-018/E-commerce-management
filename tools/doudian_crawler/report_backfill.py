@@ -315,12 +315,12 @@ def click_trade_date_if_available(page, _retry=True):
         if not visible:
             time.sleep(1)
     if visible:
-        visible[0].click()
+        visible[0].click(force=True)
         time.sleep(0.4)
         cells2 = page.locator('td[title="%s"]' % DATE)
         visible2 = [cells2.nth(i) for i in range(cells2.count()) if _is_visible(cells2.nth(i))]
         if visible2:
-            visible2[-1].click()
+            visible2[-1].click(force=True)
         time.sleep(0.8)
         # 有些版本需要确认，有些点完第二次即关闭；只点可见的确认按钮。
         for label in ('确定', '完成'):
@@ -450,19 +450,20 @@ def download_current(page, tag, menu_immediate=False):
         raise RuntimeError('未找到下载明细按钮')
     direct = None
     if menu_immediate:
-        # 成交分析页是“点击按钮并在同一事件循环点菜单项”的实现。
+        # 成交分析页的菜单由悬浮触发；第一项才是“下载当前明细”。
         try:
+            visible[0].hover()
+            time.sleep(0.8)
+            cur = page.get_by_text('下载当前明细', exact=True)
+            opts = [cur.nth(i) for i in range(cur.count()) if _is_visible(cur.nth(i))]
+            if not opts:
+                visible[0].click(force=True)
+                time.sleep(0.5)
+                opts = [cur.nth(i) for i in range(cur.count()) if _is_visible(cur.nth(i))]
+            if not opts:
+                raise RuntimeError('悬浮菜单未显示下载当前明细')
             with page.expect_download(timeout=30000) as di:
-                visible[0].click()
-                cur = page.get_by_text('下载当前明细', exact=True)
-                opts = []
-                deadline = time.time() + 5
-                while time.time() < deadline and not opts:
-                    opts = [cur.nth(i) for i in range(cur.count()) if _is_visible(cur.nth(i))]
-                    if not opts:
-                        time.sleep(0.2)
-                if opts:
-                    opts[0].click()
+                opts[0].click(force=True)
             direct = di.value
         except Exception:
             direct = None
