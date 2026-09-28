@@ -13,9 +13,42 @@ import json
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
-import pymysql
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_project_env():
+    """Load project-root .env for direct crawler entry points.
+
+    Standalone Qianniu scripts are run directly, just like the Dou dian
+    scripts.  Without loading the repository .env first, a local run falls
+    back to the current Windows user with an empty password and fails with
+    MySQL 1045 before account/login-state checks can run.
+    """
+    env_path = os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), '.env')
+    if not os.path.isfile(env_path):
+        return
+    try:
+        with open(env_path, encoding='utf-8-sig') as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                key, value = line.split('=', 1)
+                key, value = key.strip(), value.strip()
+                if ((value.startswith('"') and value.endswith('"')) or
+                        (value.startswith("'") and value.endswith("'"))):
+                    value = value[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        # Keep existing system-environment behavior; get_conn() will surface
+        # any missing/invalid configuration when it is actually used.
+        pass
+
+
+_load_project_env()
+
+import pymysql
 
 # 服务器库（主库）
 SERVER_DB = {

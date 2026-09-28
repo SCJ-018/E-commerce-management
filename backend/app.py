@@ -7974,8 +7974,9 @@ _FETCH_CFG = {
     },
     'doudian': {
         'label': '抖店', 'db_platform': '抖音', 'table': '抖店账号表',
-        'cli_col': '店铺名', 'script': '/opt/pw/doudian/login_fetch_all.py',
-        'style': 'batch', 'batch_size': 4, 'timeout': 3600,
+        # 线上统一走罗盘报表下载；旧接口抓取入口已下线。
+        'cli_col': '店铺名', 'script': '/opt/pw/doudian/report_backfill.py',
+        'style': 'batch', 'batch_size': 4, 'timeout': 7200,
     },
     'jd': {
         'label': '京东', 'db_platform': '京东', 'table': '京东账号表',

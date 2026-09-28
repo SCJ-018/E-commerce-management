@@ -20,14 +20,14 @@
   │ 账号表      │ 店铺营销数据.平台 │ 抓取入口                    │
   ├────────────┼────────────────┼────────────────────────────┤
   │ 千牛账号表  │ 千牛            │ fetch_daily.py <账号> <日期>│
-  │ 抖店账号表  │ **抖音**        │ doudian/login_fetch_all.py  │
+  │ 抖店账号表  │ **抖音**        │ doudian/report_backfill.py │
   │ 京东账号表  │ 京东            │ jd/fetch_main.py --date     │
   └────────────┴────────────────┴────────────────────────────┘
   注意：抖店落库的平台值是「抖音」不是「抖店」—— 沿用早期影刀口径，勿改。
 
 【重抓粒度】
   · 千牛 per_shop：一家店一个进程（各店独立登录态）
-  · 抖店 单会话：缺失店铺**全部塞进一次** login_fetch_all.py 调用
+  · 抖店 单会话：缺失店铺**全部塞进一次** report_backfill.py 调用
     （登录态短效，多批次 = 多会话 = 后面的批次必挂）
   · 京东 whole：单店平台，全量重跑
 
@@ -98,9 +98,10 @@ PLATFORMS = [
         'key': '抖音',                      # ← 抖店在库里的平台名
         'table': '抖店账号表',
         'cli_col': '店铺名',
-        'local': ('doudian_crawler', 'login_fetch_all.py'),
-        'server': ('doudian', 'login_fetch_all.py'),
+        'local': ('doudian_crawler', 'report_backfill.py'),
+        'server': ('doudian', 'report_backfill.py'),
         'style': 'batch',
+        # 报表下载版本每家店都在同一浏览器会话中切店，并在单店失败后恢复页面继续下一家。
         # ★ 批大小反复调过两次，两个约束互相拉扯，别再随手改：
         #   ① 批次太多 → 每个批次开一个新浏览器会话、消费同一份 state，
         #      曾出现「后面批次全挂」（09:57 实测 4 批全挂）。
@@ -111,11 +112,10 @@ PLATFORMS = [
         #      （st=11001 请求过于频繁，2026-09-17 10:19 实测：连抓 7 家后
         #      第 8 家第 1 页就限流，退避 13 分钟仍不恢复，剩余 4 家全废）。
         #   → 折中：每批 1 家 + 批间冷却，把请求摊开在时间轴上。
-        'batch_size': 1,
-        # 批间冷却。2026-09-17 实测：45s 太小 —— 抖店罗盘是账号级配额，
-        # 连抓 3 家就有概率触发 st=11001（且窗口 >45 分钟），所以拉到 180s。
-        # 代价：14 家全量补抓要多花 ~40 分钟；收益：不再烂尾在最后几家。
-        'batch_cool': 180,
+        'batch_size': 4,
+        # 报表下载版本每批复用一个浏览器会话，单店异常会在脚本内恢复并继续；
+        # 批间保留冷却，避免连续下载触发罗盘账号级限流。
+        'batch_cool': 90,
         'alias': '抖店',                    # 对外展示名
     },
     {
@@ -390,7 +390,8 @@ def refetch(p, date_str, missing, log_lines):
                     '剩余 %d 家交给下一轮/对账告警' % left)
                 break
             # 兜底：连续 2 批一行数据都没取到（非限流的其他静默失败）也止损
-            got = any('第 1 页' in ln or 'OK ' in ln for ln in seg)
+            got = any('第 1 页' in ln or 'OK ' in ln or '已提交事务' in ln
+                       or '"status": "ok"' in ln for ln in seg)
             nofetch_streak = 0 if got else nofetch_streak + 1
             if nofetch_streak >= 2:
                 log_lines.append('  [stop] 连续 %d 批未取到任何数据，'

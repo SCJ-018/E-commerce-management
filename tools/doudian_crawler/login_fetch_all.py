@@ -22,8 +22,6 @@ sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 import shops  # noqa: E402
-import fetch_daily  # noqa: E402  (fetch_products / save_rows / PRODUCT_LIST_URL)
-import fetch_main  # noqa: E402  (主表 16 字段：core_index_v3 + income_expense + flow_overview)
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 LOGIN_URL = 'https://fxg.jinritemai.com/login/common?channel=zhaoshang'
@@ -138,9 +136,9 @@ def do_login(page, first_shop):
     deadline = time.time() + 30
     while time.time() < deadline and page.locator('input[name=email]').count() == 0:
         try:
-            tab = page.locator('text=邮箱登录')
+            tab = page.get_by_text('邮箱登录', exact=True)
             if tab.count() > 0:
-                tab.first.click()
+                tab.first.click(force=True)
         except Exception:
             pass
         time.sleep(2)
@@ -157,15 +155,59 @@ def do_login(page, first_shop):
     time.sleep(0.3)
     page.locator('input[name=password]').first.fill(pwd)
     time.sleep(0.3)
+    # 登录页组件升级后 checkbox 不再稳定带 auxo-checkbox-input 类名。
+    # 直接按类型定位，并用 check() 保证最终状态，避免“未同意协议”静默拦截提交。
     try:
-        agree = page.locator('input.auxo-checkbox-input')
-        if agree.count() > 0 and not agree.first.is_checked():
-            agree.first.click(force=True)
+        agrees = page.locator('input[type=checkbox]')
+        for i in range(agrees.count()):
+            agree = agrees.nth(i)
+            if not agree.is_checked():
+                agree.check(force=True)
+            if agree.is_checked():
+                print('  登录协议: 已勾选')
+                break
+        else:
+            print('  [warn] 登录页未找到协议复选框')
+    except Exception as e:
+        print('  [warn] 登录协议勾选失败:', e)
+    def click_visible_login_button():
+        # 手机/邮箱两套表单同时挂在 DOM 中，不能用 .first（首个经常是隐藏的手机按钮）。
+        def vis(loc):
+            try:
+                return loc.is_visible()
+            except Exception:
+                return False
+        candidates = page.locator('button.account-center-action-button')
+        for i in range(candidates.count()):
+            if vis(candidates.nth(i)):
+                candidates.nth(i).click(force=True)
+                return True
+        candidates = page.locator('button:has-text("登录")')
+        for i in range(candidates.count()):
+            if vis(candidates.nth(i)):
+                candidates.nth(i).click(force=True)
+                return True
+        return False
+
+    if not click_visible_login_button():
+        print('  [FAIL] 未找到可见登录按钮')
+        return False
+    time.sleep(3)
+    try:
+        print('  提交后页面:', page.url, '| 邮箱表单:', page.locator('input[name=email]').count(),
+              '| 手机表单:', page.locator('input[name=mobile]').count())
     except Exception:
         pass
-    btn = page.locator('button.account-center-action-button')
-    btn.first.click(force=True) if btn.count() > 0 else page.locator('button:has-text("登录")').first.click(force=True)
-    time.sleep(3)
+
+    # 输出页面明确返回的登录错误；仅供诊断，不包含账号密码。
+    try:
+        login_text = page.inner_text('body') or ''
+        errors = [line.strip() for line in login_text.splitlines()
+                  if any(k in line for k in ('账号或密码', '邮箱或密码', '登录失败', '请勾选', '验证失败'))]
+        if errors:
+            print('  [warn] 登录页提示:', ' | '.join(dict.fromkeys(errors))[:300])
+    except Exception:
+        pass
 
     if has_captcha(page):
         # 无人值守环境（服务器 xvfb 虚拟屏）根本没有窗口可拖 → 别等，直接失败。
@@ -186,8 +228,7 @@ def do_login(page, first_shop):
     time.sleep(2)
     if '/login' in page.url:
         try:
-            btn = page.locator('button.account-center-action-button')
-            btn.first.click(force=True) if btn.count() > 0 else page.locator('button:has-text("登录")').first.click(force=True)
+            click_visible_login_button()
             time.sleep(4)
         except Exception:
             pass
@@ -627,6 +668,10 @@ def switch_shop(page, target, cur_kw):
 
 
 def main():
+    # 旧接口抓取入口已由 report_backfill.py 取代。这个模块只保留登录、
+    # 切店和验证码处理函数供报表下载版本复用，误调用旧 CLI 时明确失败。
+    print('[FAIL] login_fetch_all.py 已下线，请使用 report_backfill.py')
+    return 2
     argv = [a for a in sys.argv[1:] if a != '--no-map']
     no_map = '--no-map' in sys.argv[1:]
     date_str = argv[0] if len(argv) > 0 else \

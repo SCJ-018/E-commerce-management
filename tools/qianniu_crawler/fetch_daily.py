@@ -25,6 +25,7 @@ import datetime
 import urllib.parse
 import subprocess
 import hashlib
+import re
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
@@ -122,6 +123,18 @@ class QianniuFetchError(RuntimeError):
     千牛接口在登录态失效时经常仍返回 HTTP 200（甚至返回一段登录页 JSON），
     因此不能只依赖 HTTP 状态码，也不能把异常接口当成空数据继续落库。
     """
+
+
+def _safe_error(exc, limit=1200):
+    """Return an error summary with request cookies removed.
+
+    Playwright includes outgoing request headers in some timeout messages.
+    Printing the raw exception would therefore copy the full Taobao session
+    cookie into crawler logs.
+    """
+    text = str(exc).replace('\r', '')
+    text = re.sub(r'(?im)^(\s*-\s*cookie:)\s*.*$', r'\1 <redacted>', text)
+    return text[:limit]
 
 
 def _body_preview(body, limit=320):
@@ -506,11 +519,12 @@ def fetch_one(account, date_str):
                 raise QianniuFetchError(
                     '生意参谋已重定向到登录页，请重新登录并上传 state')
         except QianniuFetchError as e:
-            print('  [FAIL] 生意参谋首页:', e)
-            errors.append('生意参谋首页: %s' % e)
+            msg = _safe_error(e)
+            print('  [FAIL] 生意参谋首页:', msg)
+            errors.append('生意参谋首页: %s' % msg)
         except Exception as e:
             # 首页偶发加载超时不等于登录失效；后面的 API 请求会给出最终判定。
-            print('  [warn] 生意参谋首页:', e)
+            print('  [warn] 生意参谋首页:', _safe_error(e))
 
         # ① 店铺日汇总
         try:
@@ -520,8 +534,9 @@ def fetch_one(account, date_str):
         except Exception as e:
             m = None
             result['营销'] = None
-            print('  ①店铺日汇总失败:', e)
-            errors.append('店铺日汇总: %s' % e)
+            msg = _safe_error(e)
+            print('  ①店铺日汇总失败:', msg)
+            errors.append('店铺日汇总: %s' % msg)
 
         # ② 推广总成交（万相台）
         ad_total = 0.0
@@ -533,15 +548,15 @@ def fetch_one(account, date_str):
             # 部分店铺未开通万相台/推广权限时，loginQueryService 返回 403
             # errorCode=5002004。这代表“无推广数据”，不是店铺登录失败；
             # 不能因此阻断店铺日汇总和单链接数据落库。
-            msg = str(e)
+            msg = _safe_error(e)
             if '5002004' in msg or 'loginQueryService' in msg:
                 ad_total = 0.0
                 result['推广总成交'] = 0.0
                 print('  ②推广总成交: 未开通万相台，按 0 处理（%s）' % msg[:220])
             else:
                 result['推广总成交'] = None
-                print('  ②推广总成交失败:', e)
-                errors.append('推广总成交: %s' % e)
+                print('  ②推广总成交失败:', msg)
+                errors.append('推广总成交: %s' % msg)
 
         # ③ 单链接
         link_rows = []
@@ -551,8 +566,9 @@ def fetch_one(account, date_str):
             print('  ③单链接: %d 条' % len(link_rows))
         except Exception as e:
             result['单链接数'] = 0
-            print('  ③单链接失败:', e)
-            errors.append('单链接: %s' % e)
+            msg = _safe_error(e)
+            print('  ③单链接失败:', msg)
+            errors.append('单链接: %s' % msg)
 
         # ④ 单链接推广
         promo_rows = []
@@ -562,8 +578,9 @@ def fetch_one(account, date_str):
             print('  ④单链接推广: %d 条' % len(promo_rows))
         except Exception as e:
             result['推广数'] = 0
-            print('  ④单链接推广失败:', e)
-            errors.append('单链接推广: %s' % e)
+            msg = _safe_error(e)
+            print('  ④单链接推广失败:', msg)
+            errors.append('单链接推广: %s' % msg)
 
         profile_state = None if errors else ctx.storage_state()
         ctx.close()
