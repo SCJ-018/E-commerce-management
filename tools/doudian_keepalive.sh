@@ -34,8 +34,9 @@ fi
 #   （表现为切店/取数大面积失败）。抓取不止发生在 9:00：
 #   fetch_reconcile 的定点补抓、网站上的「更新数据」按钮都会在白天任意时刻启一次，
 #   所以只靠时间窗口不够，必须按「有没有进程在跑」判断。
-#   `[l]ogin...` 是转义写法，避免 grep 匹配到自己这条 ps 管道。
-if ps -ef | grep -q '[l]ogin_fetch_all.py'; then
+#   `[r]eport...` / `[l]ogin...` 是转义写法，避免 grep 匹配到自己这条 ps 管道。
+#   新版主入口是 report_backfill.py；兼容旧进程名，防止两套会话并存。
+if ps -ef | grep -Eq '[r]eport_backfill.py|[l]ogin_fetch_all.py'; then
   exit 0
 fi
 

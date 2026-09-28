@@ -19,8 +19,15 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def _load_project_env():
     """Load project-root .env for direct crawler entry points."""
-    env_path = os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), '.env')
-    if not os.path.isfile(env_path):
+    # 本地入口位于 <project>/tools/doudian_crawler；线上入口位于
+    # /opt/pw/doudian，而数据库配置保存在 /opt/ecom/.env。
+    candidates = [
+        os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), '.env'),
+        '/opt/ecom/.env',
+        '/opt/pw/.env',
+    ]
+    env_path = next((p for p in candidates if os.path.isfile(p)), None)
+    if not env_path:
         return
     try:
         with open(env_path, encoding='utf-8-sig') as f:
@@ -38,6 +45,27 @@ def _load_project_env():
     except Exception:
         # Keep existing system-environment behavior; get_conn() reports missing fields.
         pass
+
+    # 线上后端把数据库默认配置集中在 /opt/ecom/backend/config.py，
+    # 不重复维护密码，也不把凭据写进抓取脚本；仅在 FETCH_DB_* 尚未设置时复用它。
+    cfg_path = '/opt/ecom/backend/config.py'
+    if os.path.isfile(cfg_path):
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location('_ecom_db_config', cfg_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            db = getattr(mod, 'DB_CONFIG', {})
+            mapping = {
+                'FETCH_DB_USER': 'user',
+                'FETCH_DB_PASSWORD': 'password',
+                'FETCH_DB_NAME': 'database',
+            }
+            for fetch_key, db_key in mapping.items():
+                if not os.environ.get(fetch_key) and db.get(db_key) is not None:
+                    os.environ[fetch_key] = str(db[db_key])
+        except Exception:
+            pass
 
 
 _load_project_env()
