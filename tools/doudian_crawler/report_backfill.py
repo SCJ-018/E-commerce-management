@@ -491,6 +491,27 @@ def download_current(page, tag, menu_immediate=False):
     return path
 
 
+def retry_trade_download(page, tag):
+    """日期控件/首屏接口异常时刷新一次，并从默认近1天入口直接下载。"""
+    try:
+        return download_current(page, tag, menu_immediate=True)
+    except Exception as first_error:
+        print('    [WARN] 成交报表首次下载未触发，刷新页面后重试：%s' % first_error)
+        page.reload(wait_until='domcontentloaded', timeout=60000)
+        time.sleep(20)
+        for label in ('近1天', '实时'):
+            loc = page.get_by_text(label, exact=True)
+            for i in range(loc.count()):
+                if _is_visible(loc.nth(i)):
+                    try:
+                        loc.nth(i).click(force=True)
+                        time.sleep(5)
+                    except Exception:
+                        pass
+                    break
+        return download_current(page, tag, menu_immediate=True)
+
+
 def product_rows(path, allow_empty=False):
     sheets = read_xlsx(path)
     rows = sheets.get('全部')
@@ -699,7 +720,7 @@ def process_shop_date(conn, page, shop, cur):
                 # 下载按钮仍可用时直接读取 Excel，最终以报表内日期/字段校验判定成败。
                 print('    [WARN] 成交日期控件不可用，直接下载并以 Excel 内容校验：%s' % date_error)
             stage = '下载成交报表'
-            trade = download_current(page, 'trade_' + re.sub(r'[^0-9A-Za-z\u4e00-\u9fff]+', '_', name), menu_immediate=True)
+            trade = retry_trade_download(page, 'trade_' + re.sub(r'[^0-9A-Za-z\u4e00-\u9fff]+', '_', name))
             stage = '打开商品报表'
             page.goto(PRODUCT_URL, wait_until='domcontentloaded', timeout=60000)
             time.sleep(8)
@@ -891,7 +912,7 @@ def main():
                         except Exception as date_error:
                             print('    [WARN] 成交日期控件不可用，直接下载并以 Excel 内容校验：%s' % date_error)
                         stage = '下载成交报表'
-                        trade = download_current(page, 'trade_' + re.sub(r'[^0-9A-Za-z\u4e00-\u9fff]+', '_', name), menu_immediate=True)
+                        trade = retry_trade_download(page, 'trade_' + re.sub(r'[^0-9A-Za-z\u4e00-\u9fff]+', '_', name))
                         stage = '打开商品报表'
                         page.goto(PRODUCT_URL, wait_until='domcontentloaded', timeout=60000)
                         time.sleep(8)
