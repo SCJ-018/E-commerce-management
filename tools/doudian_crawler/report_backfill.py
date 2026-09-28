@@ -692,14 +692,22 @@ def process_shop_date(conn, page, shop, cur):
             page.goto(TRADE_URL, wait_until='domcontentloaded', timeout=60000)
             time.sleep(8)
             stage = '选择成交日期'
-            click_trade_date_if_available(page)
+            try:
+                click_trade_date_if_available(page)
+            except Exception as date_error:
+                # 页面日期控件可能因主区域空白或前端接口卡住而不可操作；
+                # 下载按钮仍可用时直接读取 Excel，最终以报表内日期/字段校验判定成败。
+                print('    [WARN] 成交日期控件不可用，直接下载并以 Excel 内容校验：%s' % date_error)
             stage = '下载成交报表'
             trade = download_current(page, 'trade_' + re.sub(r'[^0-9A-Za-z\u4e00-\u9fff]+', '_', name), menu_immediate=True)
             stage = '打开商品报表'
             page.goto(PRODUCT_URL, wait_until='domcontentloaded', timeout=60000)
             time.sleep(8)
             stage = '选择商品日期'
-            click_exact_natural_day(page)
+            try:
+                click_exact_natural_day(page)
+            except Exception as date_error:
+                print('    [WARN] 商品日期控件不可用，直接下载并以 Excel 内容校验：%s' % date_error)
             stage = '配置商品指标'
             select_all_metrics(page)
             stage = '下载商品报表'
@@ -878,14 +886,20 @@ def main():
                         page.goto(TRADE_URL, wait_until='domcontentloaded', timeout=60000)
                         time.sleep(8)
                         stage = '选择成交日期'
-                        click_trade_date_if_available(page)
+                        try:
+                            click_trade_date_if_available(page)
+                        except Exception as date_error:
+                            print('    [WARN] 成交日期控件不可用，直接下载并以 Excel 内容校验：%s' % date_error)
                         stage = '下载成交报表'
                         trade = download_current(page, 'trade_' + re.sub(r'[^0-9A-Za-z\u4e00-\u9fff]+', '_', name), menu_immediate=True)
                         stage = '打开商品报表'
                         page.goto(PRODUCT_URL, wait_until='domcontentloaded', timeout=60000)
                         time.sleep(8)
                         stage = '选择商品日期'
-                        click_exact_natural_day(page)
+                        try:
+                            click_exact_natural_day(page)
+                        except Exception as date_error:
+                            print('    [WARN] 商品日期控件不可用，直接下载并以 Excel 内容校验：%s' % date_error)
                         stage = '配置商品指标'
                         select_all_metrics(page)
                         stage = '下载商品报表'
