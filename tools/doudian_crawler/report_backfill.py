@@ -14,6 +14,8 @@ import os
 import re
 import sys
 import time
+import urllib.error
+import urllib.request
 import zipfile
 from decimal import Decimal, InvalidOperation
 from xml.etree import ElementTree as ET
@@ -79,6 +81,9 @@ USE_MISSING = '--missing' in sys.argv
 DRY_RUN = '--dry-run' in sys.argv
 TARGET_ARGS = [part.strip() for x in sys.argv[2:] if not x.startswith('--')
                for part in x.split(',') if part.strip()]
+SLIDER_API_BASE = (os.environ.get('SLIDER_API_BASE') or 'https://julangkeji.site').rstrip('/')
+SLIDER_KEY = os.environ.get('SLIDER_AGENT_KEY') or 'julang-doudian-slider-2026'
+SLIDER_WAIT_SECONDS = int(os.environ.get('SLIDER_WAIT_SECONDS', '600'))
 DL_DIR = os.path.join(BASE_DIR, '_downloads')
 os.makedirs(DL_DIR, exist_ok=True)
 
@@ -301,6 +306,71 @@ def _is_visible(loc):
         return False
 
 
+def _slider_request(path, method='GET', body=None, timeout=15):
+    """通过现有滑块助手中继访问线上任务接口。"""
+    data = json.dumps(body).encode('utf-8') if body is not None else None
+    req = urllib.request.Request(SLIDER_API_BASE + path, data=data, method=method)
+    req.add_header('X-Slider-Key', SLIDER_KEY)
+    if data is not None:
+        req.add_header('Content-Type', 'application/json')
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def request_slider_and_wait():
+    """唤起本机滑块助手并等待其把新 state 写回数据库。"""
+    try:
+        r = _slider_request('/api/fetch/doudian/slider/request', 'POST', {})
+        data = (r or {}).get('data') or {}
+        task_id = data.get('taskId') or ''
+        if not task_id:
+            print('[滑块] 请求未创建任务：%s' % ((r or {}).get('msg') or '未知响应'))
+            return False
+        print('[滑块] 已唤起本机助手，任务 %s；请在前端弹出的 Chrome 中完成拼图' % task_id)
+    except Exception as e:
+        print('[滑块] 唤起助手失败：%s' % e)
+        return False
+    deadline = time.time() + SLIDER_WAIT_SECONDS
+    while time.time() < deadline:
+        try:
+            r = _slider_request('/api/fetch/doudian/slider/status', timeout=15)
+            view = (r or {}).get('data') or {}
+            status = view.get('status') or ''
+            print('[滑块] status=%s step=%s' % (status, view.get('step') or ''))
+            if view.get('taskId') == task_id and status == 'done':
+                print('[滑块] 本机已完成登录态更新，继续服务器补抓')
+                return True
+            if view.get('taskId') == task_id and status in ('fail', 'timeout'):
+                print('[滑块] 本机滑块任务结束：%s' % (view.get('message') or status))
+                return False
+        except Exception as e:
+            print('[滑块] 查询助手状态失败：%s' % e)
+        time.sleep(5)
+    print('[滑块] 等待超过 %ds，暂停本次日期' % SLIDER_WAIT_SECONDS)
+    return False
+
+
+def _write_account_state(state_path):
+    fresh = shops.get_email_account() or {}
+    state = fresh.get('state')
+    if not state:
+        return fresh, False
+    with open(state_path, 'w', encoding='utf-8') as f:
+        json.dump(state, f, ensure_ascii=False)
+    return fresh, True
+
+
+def _launch_report_browser(playwright, state_path):
+    browser = playwright.chromium.launch(
+        channel='chrome', headless=False,
+        args=['--disable-blink-features=AutomationControlled', '--no-sandbox'])
+    ctx = browser.new_context(
+        storage_state=state_path, locale='zh-CN', timezone_id='Asia/Shanghai',
+        viewport={'width': 1600, 'height': 950}, accept_downloads=True)
+    ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+    return browser, ctx, ctx.new_page()
+
+
 def download_current(page, tag, menu_immediate=False):
     btn = page.get_by_text('下载明细', exact=True)
     visible = [btn.nth(i) for i in range(btn.count()) if _is_visible(btn.nth(i))]
@@ -503,12 +573,7 @@ def main():
     conn = shops.get_conn()
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(channel='chrome', headless=False,
-                                        args=['--disable-blink-features=AutomationControlled', '--no-sandbox'])
-            ctx = browser.new_context(storage_state=state_path, locale='zh-CN', timezone_id='Asia/Shanghai',
-                                      viewport={'width': 1600, 'height': 950}, accept_downloads=True)
-            ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
-            page = ctx.new_page()
+            browser, ctx, page = _launch_report_browser(p, state_path)
             page.goto(lf.WORKBENCH, wait_until='domcontentloaded', timeout=60000)
             time.sleep(10)
             cur = lf.current_shop(page) or ''
@@ -523,9 +588,24 @@ def main():
                 first_shop = targets[0]['店铺名']
                 print('登录态已过期，尝试自动登录（先检测滑块）...')
                 if not lf.do_login(page, first_shop):
-                    print('[FAIL] 自动登录失败：需要人工恢复登录态')
-                    browser.close(); return 3
-                shops.save_email_state(acc['邮箱'], ctx.storage_state())
+                    # 服务器 Xvfb 没有可供人工拖拽的窗口，转交给本机常驻滑块助手。
+                    # 助手完成后关闭旧上下文，重新加载数据库里的新 storage state。
+                    if not request_slider_and_wait():
+                        print('[FAIL] 滑块助手未完成，暂停本次日期')
+                        browser.close(); return 3
+                    browser.close()
+                    acc, ok = _write_account_state(state_path)
+                    if not ok:
+                        print('[FAIL] 滑块助手完成但数据库没有新登录态')
+                        return 3
+                    browser, ctx, page = _launch_report_browser(p, state_path)
+                    page.goto(lf.WORKBENCH, wait_until='domcontentloaded', timeout=60000)
+                    time.sleep(10)
+                    if '/login' in page.url or 'passport' in page.url:
+                        print('[FAIL] 新登录态加载后仍在登录页')
+                        browser.close(); return 3
+                else:
+                    shops.save_email_state(acc['邮箱'], ctx.storage_state())
                 cur = lf.current_shop(page) or first_shop
                 print('自动登录成功，已更新数据库登录态')
             results = []
@@ -568,12 +648,10 @@ def main():
                         product = download_current(page, 'product_' + re.sub(r'[^0-9A-Za-z\u4e00-\u9fff]+', '_', name))
                         stage = '校验报表字段'
                         mrow = trade_row(trade, shop)
-                        # 商品列表为空只有一种可接受情况：店铺当日支付金额为 0。
-                        # 有销售额却没有商品行，说明报表口径/下载过程异常，禁止入库。
-                        prows, pids, _ = product_rows(product, allow_empty=(mrow['支付金额'] == 0))
+                        # 商品列表 0 行表示当天没有商品明细，仍然要写入成交主表；
+                        # 商品表保持 0 行，不把它当成抓取失败。
+                        prows, pids, _ = product_rows(product, allow_empty=True)
                         old_ids, old_main = existing_state(conn, name)
-                        if not prows and mrow['支付金额'] != 0:
-                            raise RuntimeError('商品列表为空但店铺支付金额非 0，拒绝入库')
                         if old_ids and pids and old_ids != pids:
                             raise RuntimeError('已有商品 ID 集合与报表不一致，拒绝覆盖（库=%d，报表=%d）' % (len(old_ids), len(pids)))
                         do_product = (not old_ids) and bool(prows)

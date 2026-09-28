@@ -2591,6 +2591,8 @@ _AUTH_PUBLIC_PATHS = {
     #   这两个接口在路由内用共享密钥 X-Slider-Key 自校验，比依赖 token 简单且不受
     #   「重启 ecom 全员掉线」影响（token 存内存，见 token 说明）。
     '/api/fetch/doudian/slider/pending', '/api/fetch/doudian/slider/report',
+    # 服务器报表下载任务在登录态过期时通过同一共享密钥唤起本机滑块助手。
+    '/api/fetch/doudian/slider/status', '/api/fetch/doudian/slider/request',
 }
 
 
@@ -8507,6 +8509,9 @@ def api_slider_status():
 
     只读 + 原子写落盘，所以这里不加锁（避免 DB 慢时拖住本机助手的轮询）。
     """
+    tok = request.cookies.get('token', '')
+    if not _AUTH_TOKENS.get(tok) and not _slider_key_ok():
+        return jsonify({'code': 401, 'msg': '未登录或滑块密钥无效', 'data': None}), 401
     return success(_slider_view(_slider_read()))
 
 
@@ -8515,6 +8520,8 @@ def api_slider_request():
     """页面点「手动拖滑块」：下发一条任务给本机助手（幂等，重复点不会叠加）"""
     try:
         tok = request.cookies.get('token', '')
+        if not _AUTH_TOKENS.get(tok) and not _slider_key_ok():
+            return jsonify({'code': 401, 'msg': '未登录或滑块密钥无效', 'data': None}), 401
         who = (_AUTH_TOKENS.get(tok) or {}).get('name') or ''
         with _slider_lock:
             st = _slider_read()
