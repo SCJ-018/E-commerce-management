@@ -248,13 +248,13 @@ def click_exact_natural_day(page):
     raise RuntimeError('自然日控件中未找到 %s' % DATE)
 
 
-def click_trade_date_if_available(page):
+def click_trade_date_if_available(page, _retry=True):
     """成交分析页使用“近1天/自定义”日期器，必须显式选择目标日。
 
     不能把 URL 的 date_value 当成已生效日期：实测页面仍显示近 1 天，
     下载文件实际是次日数据。优先走自定义日历，若版本提供自然日则兼容。
     """
-    deadline = time.time() + 35
+    deadline = time.time() + 50
     opened = False
     while time.time() < deadline and not opened:
         loc = page.get_by_text('自然日', exact=True)
@@ -275,7 +275,33 @@ def click_trade_date_if_available(page):
             if opened:
                 break
         if not opened:
+            # 最后的兜底：该店铺有时把按钮文本放在普通 div 内，Playwright
+            # 文本定位器会被隐藏浮层副本遮住，直接在 DOM 中点可见最小节点。
+            hit = page.evaluate("""() => {
+              const xs = [...document.querySelectorAll('button,div,span,a')]
+                .filter(e => (e.textContent || '').trim() === '自定义')
+                .map(e => ({e, r:e.getBoundingClientRect(), s:getComputedStyle(e)}))
+                .filter(x => x.r.width > 0 && x.r.height > 0 && x.s.visibility !== 'hidden' && x.s.display !== 'none')
+                .sort((a,b) => (a.r.width*a.r.height) - (b.r.width*b.r.height));
+              if (!xs.length) return null;
+              xs[0].e.click();
+              return {tag: xs[0].e.tagName, cls: xs[0].e.className || ''};
+            }""")
+            if hit:
+                print('    成交分析页通过 DOM 兜底点击自定义日期按钮:', hit)
+                opened = True
+        if not opened:
             time.sleep(1)
+    if not opened and _retry:
+        # 个别店铺成交分析页首屏接口会卡在空白内容区，按钮虽在 DOM 中但暂时
+        # 不响应点击。刷新一次并重新等待，避免把页面加载故障误判成无日期数据。
+        try:
+            print('    成交分析页日期控件未就绪，刷新页面后重试')
+            page.reload(wait_until='domcontentloaded', timeout=60000)
+            time.sleep(15)
+            return click_trade_date_if_available(page, _retry=False)
+        except Exception:
+            pass
     if not opened:
         raise RuntimeError('成交分析页未找到自然日或自定义日期控件')
     time.sleep(1)
