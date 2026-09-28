@@ -75,11 +75,30 @@ METRIC_MAP = [
     ('平台消费券补贴金额', 'platform_coupon_cost_amt'),
 ]
 
-DATE = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith('--') else (
+_ARGS = list(sys.argv[1:])
+_RANGE_DATES = []
+if '--range' in _ARGS:
+    _ri = _ARGS.index('--range')
+    if len(_ARGS) <= _ri + 2:
+        raise SystemExit('--range 需要开始日期和结束日期')
+    _range_start, _range_end = _ARGS[_ri + 1], _ARGS[_ri + 2]
+    try:
+        _ds = datetime.date.fromisoformat(_range_start)
+        _de = datetime.date.fromisoformat(_range_end)
+    except ValueError as e:
+        raise SystemExit('日期格式必须为 YYYY-MM-DD: %s' % e)
+    if _de < _ds:
+        raise SystemExit('--range 结束日期不能早于开始日期')
+    _RANGE_DATES = [(_ds + datetime.timedelta(days=i)).isoformat()
+                    for i in range((_de - _ds).days + 1)]
+_plain_dates = [x for x in _ARGS if not x.startswith('--') and re.match(r'^\d{4}-\d{2}-\d{2}$', x)]
+DATE = _plain_dates[0] if _plain_dates else (
     datetime.date.today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-USE_MISSING = '--missing' in sys.argv
-DRY_RUN = '--dry-run' in sys.argv
-TARGET_ARGS = [part.strip() for x in sys.argv[2:] if not x.startswith('--')
+USE_MISSING = '--missing' in _ARGS
+DRY_RUN = '--dry-run' in _ARGS
+_range_tokens = set(_RANGE_DATES)
+TARGET_ARGS = [part.strip() for x in _ARGS if not x.startswith('--')
+               and x not in _plain_dates and x not in _range_tokens
                for part in x.split(',') if part.strip()]
 SLIDER_API_BASE = (os.environ.get('SLIDER_API_BASE') or 'https://julangkeji.site').rstrip('/')
 SLIDER_KEY = os.environ.get('SLIDER_AGENT_KEY') or 'julang-doudian-slider-2026'
@@ -87,7 +106,7 @@ SLIDER_WAIT_SECONDS = int(os.environ.get('SLIDER_WAIT_SECONDS', '600'))
 DL_DIR = os.path.join(BASE_DIR, '_downloads')
 os.makedirs(DL_DIR, exist_ok=True)
 
-TRADE_URL = (
+TRADE_URL_TEMPLATE = (
     'https://compass.jinritemai.com/shop/business-part'
     '?defaultVisualType=all&date_type=20&date_value=%s%%2C%s&from_page=%%2Fshop'
 )
@@ -97,7 +116,16 @@ PRODUCT_URL = (
 )
 DATE_VALUE = str(int(datetime.datetime.strptime(
     DATE, '%Y-%m-%d').replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8))).timestamp()))
-TRADE_URL = TRADE_URL % (DATE_VALUE, DATE_VALUE)
+TRADE_URL = TRADE_URL_TEMPLATE % (DATE_VALUE, DATE_VALUE)
+
+
+def set_report_date(date_value):
+    """更新当前报表日期；店铺会话在日期之间保持不变。"""
+    global DATE, DATE_VALUE, TRADE_URL
+    DATE = date_value
+    DATE_VALUE = str(int(datetime.datetime.strptime(
+        DATE, '%Y-%m-%d').replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8))).timestamp()))
+    TRADE_URL = TRADE_URL_TEMPLATE % (DATE_VALUE, DATE_VALUE)
 
 NS = {
     'm': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
@@ -568,6 +596,178 @@ def target_shops():
     return [s for s in all_shops if s['店铺名'] not in prod or s['店铺名'] not in main]
 
 
+def missing_for_shop(conn, shop_name):
+    """按当前 DATE 判断这家店是否仍有任一报表缺失。"""
+    old_ids, old_main = existing_state(conn, shop_name)
+    return not old_ids or not old_main
+
+
+def _session_login(p, browser, ctx, page, targets, state_path):
+    """建立一次可复用的罗盘会话；只有登录态确实失效才调用滑块助手。"""
+    first_shop = targets[0]['店铺名']
+    page.goto(lf.WORKBENCH, wait_until='domcontentloaded', timeout=60000)
+    time.sleep(10)
+    cur = lf.current_shop(page) or ''
+    body = page.inner_text('body') or ''
+    login_page = ('/login' in page.url or 'passport' in page.url or
+                  '发送验证码' in body or '扫码登录' in body or not cur)
+    if not login_page:
+        return browser, ctx, page, cur
+    if os.path.exists('/opt/pw'):
+        lf.UNATTENDED = True
+    print('登录态已过期，尝试自动登录（先检测滑块）...')
+    if not lf.do_login(page, first_shop):
+        if not request_slider_and_wait():
+            raise RuntimeError('滑块助手未完成')
+        browser.close()
+        _, ok = _write_account_state(state_path)
+        if not ok:
+            raise RuntimeError('滑块助手完成但数据库没有新登录态')
+        browser, ctx, page = _launch_report_browser(p, state_path)
+        page.goto(lf.WORKBENCH, wait_until='domcontentloaded', timeout=60000)
+        time.sleep(10)
+        if '/login' in page.url or 'passport' in page.url:
+            raise RuntimeError('新登录态加载后仍在登录页')
+    else:
+        acc = shops.get_email_account() or {}
+        if acc.get('邮箱'):
+            shops.save_email_state(acc['邮箱'], ctx.storage_state())
+    cur = lf.current_shop(page) or first_shop
+    print('登录态可用，当前店铺：%s' % cur)
+    return browser, ctx, page, cur
+
+
+def process_shop_date(conn, page, shop, cur):
+    """在已登录会话中完成一家店当前日期的全部报表下载和入库。"""
+    name = shop['店铺名']
+    last_error = None
+    for attempt in range(2):
+        stage = '准备切店'
+        try:
+            if not lf.current_shop(page):
+                stage = '恢复工作台'
+                page.goto(lf.WORKBENCH, wait_until='domcontentloaded', timeout=60000)
+                time.sleep(8)
+                cur = lf.current_shop(page) or cur
+            stage = '切店'
+            if name[:6] not in cur and not lf.switch_shop(page, name, cur):
+                raise RuntimeError('切店失败：未找到店铺入口或切换菜单')
+            cur = lf.current_shop(page) or name
+            trade = None
+            product = None
+            stage = '打开成交报表'
+            page.goto(TRADE_URL, wait_until='domcontentloaded', timeout=60000)
+            time.sleep(8)
+            stage = '选择成交日期'
+            click_trade_date_if_available(page)
+            stage = '下载成交报表'
+            trade = download_current(page, 'trade_' + re.sub(r'[^0-9A-Za-z\u4e00-\u9fff]+', '_', name), menu_immediate=True)
+            stage = '打开商品报表'
+            page.goto(PRODUCT_URL, wait_until='domcontentloaded', timeout=60000)
+            time.sleep(8)
+            stage = '选择商品日期'
+            click_exact_natural_day(page)
+            stage = '配置商品指标'
+            select_all_metrics(page)
+            stage = '下载商品报表'
+            product = download_current(page, 'product_' + re.sub(r'[^0-9A-Za-z\u4e00-\u9fff]+', '_', name))
+            stage = '校验报表字段'
+            mrow = trade_row(trade, shop)
+            prows, pids, _ = product_rows(product, allow_empty=True)
+            old_ids, old_main = existing_state(conn, name)
+            if old_ids and pids and old_ids != pids:
+                raise RuntimeError('已有商品 ID 集合与报表不一致，拒绝覆盖（库=%d，报表=%d）' % (len(old_ids), len(pids)))
+            do_product = (not old_ids) and bool(prows)
+            do_main = not old_main
+            if DRY_RUN:
+                print('    校验通过：商品 %d 行；待写商品=%s，待写店铺主表=%s' %
+                      (len(prows), do_product, do_main))
+            else:
+                stage = '写入数据库'
+                if do_product:
+                    n = save_product(conn, shop, prows)
+                    print('    商品表写入 %d 行' % n)
+                if do_main:
+                    save_main(conn, mrow)
+                    print('    店铺营销表写入 1 行')
+                conn.commit()
+                print('    已提交事务')
+            return cur, {'店铺': name, '日期': DATE, 'status': 'ok', 'products': len(prows),
+                         'write_product': do_product, 'write_main': do_main}
+        except Exception as e:
+            conn.rollback()
+            last_error = '%s：%s' % (stage, str(e))
+            if stage == '选择成交日期':
+                try:
+                    page.screenshot(path=os.path.join(
+                        DL_DIR, 'date_fail_%s_%s.png' % (DATE, re.sub(r'[^0-9A-Za-z\u4e00-\u9fff]+', '_', name))))
+                except Exception:
+                    pass
+            print('    [FAIL attempt %d/2] %s' % (attempt + 1, last_error))
+            if attempt == 0:
+                try:
+                    page.goto(lf.WORKBENCH, wait_until='domcontentloaded', timeout=60000)
+                    time.sleep(8)
+                    cur = lf.current_shop(page) or ''
+                    print('    [RECOVER] 已重新打开工作台，继续当前店铺当前日期')
+                except Exception as recover_error:
+                    print('    [RECOVER FAIL] %s' % recover_error)
+    return cur, {'店铺': name, '日期': DATE, 'status': 'skip', 'error': last_error}
+
+
+def main_shop_first():
+    """补抓模式：店铺外层、日期内层，每家店复用同一登录会话。"""
+    dates = _RANGE_DATES or [DATE]
+    all_shops = shops.get_active_shops()
+    if TARGET_ARGS:
+        wanted = set(TARGET_ARGS)
+        targets = [s for s in all_shops if s['店铺名'] in wanted]
+    else:
+        targets = all_shops
+    if not targets:
+        print('没有可处理的店铺')
+        return 0
+    acc = shops.get_email_account() or {}
+    if not acc.get('state'):
+        print('[FAIL] 数据库中没有有效抖店登录态')
+        return 2
+    state_path = os.path.join(BASE_DIR, '_report_backfill_state.json')
+    with open(state_path, 'w', encoding='utf-8') as f:
+        json.dump(acc['state'], f, ensure_ascii=False)
+    conn = shops.get_conn()
+    results = []
+    try:
+        with sync_playwright() as p:
+            browser, ctx, page = _launch_report_browser(p, state_path)
+            browser, ctx, page, cur = _session_login(p, browser, ctx, page, targets, state_path)
+            for shop in targets:
+                name = shop['店铺名']
+                print('\n===== 店铺 %s（本次会话内完成全部缺失日期） =====' % name)
+                for date_value in dates:
+                    set_report_date(date_value)
+                    if USE_MISSING and not missing_for_shop(conn, name):
+                        print('    %s 已有商品和店铺主表，跳过' % DATE)
+                        continue
+                    print('    ---- 日期 %s ----' % DATE)
+                    cur, result = process_shop_date(conn, page, shop, cur)
+                    results.append(result)
+                    # 页面回到登录页才唤起滑块；单个日期报表失败不重新登录，
+                    # 继续同一家店的下一个日期。
+                    try:
+                        body = page.inner_text('body') or ''
+                        expired = '/login' in page.url or 'passport' in page.url or ('扫码登录' in body and not lf.current_shop(page))
+                    except Exception:
+                        expired = True
+                    if expired:
+                        print('    登录态已失效，暂停当前店铺日期循环并恢复会话')
+                        browser, ctx, page, cur = _session_login(p, browser, ctx, page, targets, state_path)
+            browser.close()
+    finally:
+        conn.close()
+    print('\nRESULT=' + json.dumps(results, ensure_ascii=False))
+    return 0 if all(x['status'] == 'ok' for x in results) else 1
+
+
 def main():
     targets = target_shops()
     if not targets:
@@ -687,6 +887,12 @@ def main():
                     except Exception as e:
                         conn.rollback()
                         last_error = '%s：%s' % (stage, str(e))
+                        if stage == '选择成交日期':
+                            try:
+                                page.screenshot(path=os.path.join(
+                                    DL_DIR, 'date_fail_%s_%s.png' % (DATE, re.sub(r'[^0-9A-Za-z\u4e00-\u9fff]+', '_', name))))
+                            except Exception:
+                                pass
                         print('    [FAIL attempt %d/2] %s' % (attempt + 1, last_error))
                         if attempt == 0:
                             try:
@@ -706,4 +912,4 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(main_shop_first() if _RANGE_DATES else main())
