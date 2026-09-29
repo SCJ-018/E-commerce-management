@@ -197,6 +197,9 @@ def scrape_one(page, keyword, api_payloads=None):
     try:
         api_urls = [x.get('url', '') for x in (api_payloads or []) if isinstance(x, dict) and x.get('url')]
         log('[词库] %s 采集到的爱搜接口：%s' % (keyword, json.dumps(api_urls[-20:], ensure_ascii=False)))
+        for x in (api_payloads or []):
+            if isinstance(x, dict) and 'library_v2/list_down' in x.get('url', ''):
+                log('[词库] list_down请求方法=%s body=%s' % (x.get('method'), x.get('post_data')))
     except Exception:
         pass
     try:
@@ -262,7 +265,9 @@ def main():
                 if isinstance(payload, (dict, list)):
                     if 'library_v2/list_down' in response.url:
                         log('[词库] list_down响应：%s' % json.dumps(payload, ensure_ascii=False)[:12000])
-                    api_payloads.append({'url': response.url, 'payload': payload})
+                    req = response.request
+                    api_payloads.append({'url': response.url, 'payload': payload,
+                                         'method': req.method, 'post_data': req.post_data})
                     if len(api_payloads) > 120:
                         del api_payloads[:-120]
             except Exception:
