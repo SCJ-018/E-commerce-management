@@ -1641,7 +1641,10 @@ try:
     register_content_studio(app, success, fail, DEEPSEEK_API_URL,
                             db_execute=db_execute,
                             db_execute_insert=db_execute_insert,
-                            current_session=lambda: globals().get('_current_session', lambda: {})())
+                            current_session=lambda: globals().get('_current_session', lambda: {})(),
+                            alert=lambda title, detail='': _dev_alert(title, detail=detail,
+                                                                       signature='content-studio:aisou',
+                                                                       source='内容创作中心'))
     print('[内容工坊] AI 接口已注册: /api/content-studio/analyze, /api/content-studio/generate')
 except Exception as _content_studio_err:
     print('[内容工坊] AI 接口注册失败:', _content_studio_err)

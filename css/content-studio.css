@@ -466,6 +466,82 @@
 .cs-kv .k { display:block; margin-bottom:5px; color:var(--ink-3); font-size:10.5px; font-weight:700; }
 .cs-kv .v { padding:9px 11px; border:1px solid var(--line); border-radius:10px; background:#fffdfe; color:var(--ink); font-size:11px; line-height:1.6; word-break:break-word; }
 .cs-kv .v.mute { background:#faf9fd; color:var(--ink-4); }
+
+/* ---------- 右栏：AI 生图提示词 ---------- */
+.cs-image-prompts-card { border-color:var(--pink-line); background:linear-gradient(165deg,#fffafd 0%,#fff 58%); }
+.cs-image-prompts { padding-top:0; }
+.cs-image-prompt-meta { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 0 10px; border-top:1px solid var(--line-2); color:var(--pink-ink); font-size:9.5px; line-height:1.45; }
+.cs-image-prompt-meta > span { display:flex; align-items:flex-start; gap:5px; min-width:0; }
+.cs-image-prompt-meta > span i { flex:none; margin-top:1px; }
+.cs-image-prompt-list { display:flex; flex-direction:column; gap:8px; }
+.cs-image-prompt-item { padding:9px 10px 10px; border:1px solid var(--pink-line); border-radius:11px; background:#fff; }
+.cs-image-prompt-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.cs-image-prompt-head > div { min-width:0; }
+.cs-image-prompt-head b { display:block; color:var(--ink-strong); font-size:11px; font-weight:760; }
+.cs-image-prompt-head small { display:block; margin-top:3px; color:var(--ink-4); font-size:9px; line-height:1.4; }
+.cs-image-prompt-text { max-height:138px; overflow:auto; margin-top:7px; padding:8px; border-radius:8px; background:#fff9fb; color:var(--ink-2); font-size:10px; line-height:1.65; white-space:pre-wrap; word-break:break-word; scrollbar-width:thin; }
+.cs-image-prompt-details { margin-top:7px; border-top:1px dashed var(--pink-line); padding-top:6px; }
+.cs-image-prompt-details summary { cursor:pointer; color:var(--pink-ink); font-size:9.5px; font-weight:700; list-style:none; }
+.cs-image-prompt-details summary::-webkit-details-marker { display:none; }
+.cs-image-prompt-details summary:before { content:'+'; display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; margin-right:4px; border-radius:4px; background:var(--pink-bg); font-size:11px; }
+.cs-image-prompt-details[open] summary:before { content:'−'; }
+.cs-image-prompt-detail { display:grid; grid-template-columns:45px minmax(0,1fr); gap:6px; margin-top:6px; color:var(--ink-3); font-size:9.5px; line-height:1.5; }
+.cs-image-prompt-detail b { color:var(--ink-2); font-weight:700; }
+.cs-image-prompt-detail span { min-width:0; word-break:break-word; }
+.cs-image-prompt-hint { display:flex; gap:5px; margin-top:10px; padding:8px 9px; border-radius:9px; background:var(--amber-bg); color:var(--amber-ink); font-size:9.5px; line-height:1.55; }
+.cs-image-prompts-empty { padding-top:6px; }
+
+/* ---------- 标题优化与产品词库 ---------- */
+.cs-title-optimizer-card { border-color:#ded8fa; background:linear-gradient(160deg,#fff 0%,#fbfaff 100%); }
+.cs-library-btn { flex:none; padding:6px 9px; border-color:var(--violet-line); background:var(--violet-bg); color:var(--violet-ink); }
+.cs-library-btn span { display:inline-flex; min-width:16px; height:16px; align-items:center; justify-content:center; border-radius:99px; background:#fff; font-size:9px; }
+.cs-title-input { display:block; width:100%; min-height:76px; resize:vertical; outline:0; padding:10px 11px; border:1px solid var(--line-2); border-radius:11px; background:#fff; color:var(--ink); font:11px/1.65 inherit; }
+.cs-title-input:focus { border-color:var(--violet-2); box-shadow:0 0 0 3px rgba(139,122,232,.1); }
+.cs-title-actions { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px; }
+.cs-title-actions .cs-hint { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink-4); font-size:9.5px; }
+.cs-title-status { margin-top:8px; padding:7px 9px; border-radius:8px; background:var(--mint-bg); color:var(--mint-ink); font-size:9.5px; line-height:1.5; }
+.cs-title-status.error { background:#fff1f3; color:#c95e73; }
+.cs-title-results { display:flex; flex-direction:column; gap:6px; margin-top:10px; }
+.cs-title-result { display:flex; align-items:flex-start; gap:7px; padding:8px 9px; border:1px solid var(--line-2); border-radius:9px; background:#fff; color:var(--ink-2); font-size:10px; line-height:1.6; }
+.cs-title-result span { flex:1; min-width:0; }
+.cs-hot-word-row { display:flex; flex-wrap:wrap; align-items:center; gap:5px; color:var(--pink-ink); font-size:9px; }
+.cs-hot-word-row i { color:#ef8a77; }
+.cs-hot-word-row span { padding:3px 6px; border-radius:99px; background:var(--pink-bg); }
+.cs-library-backdrop { position:fixed; z-index:80; inset:0; display:flex; align-items:flex-start; justify-content:flex-end; padding:82px 24px 24px; background:rgba(38,31,61,.18); backdrop-filter:blur(3px); }
+.cs-library-popover { width:min(520px,calc(100vw - 32px)); max-height:min(650px,calc(100vh - 110px)); overflow:auto; padding:20px; border:1px solid #e3dcf6; border-radius:20px; background:#fff; box-shadow:0 24px 70px rgba(72,57,117,.25); }
+.cs-library-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding-bottom:14px; border-bottom:1px solid var(--line-2); }
+.cs-library-head h2 { margin:5px 0 5px; color:var(--ink-strong); font-size:20px; }
+.cs-library-head p { margin:0; color:var(--ink-3); font-size:10.5px; line-height:1.65; }
+.cs-library-toolbar { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:13px 0 10px; color:var(--ink-3); font-size:10.5px; }
+.cs-library-toolbar b { color:var(--violet-ink); font-size:15px; }
+.cs-library-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; }
+.cs-library-term { display:flex; align-items:center; justify-content:space-between; gap:6px; min-height:42px; padding:8px 9px 8px 11px; border:1px solid var(--line-2); border-radius:11px; background:linear-gradient(135deg,#fcfbff,#fff); color:var(--ink-2); font-size:11px; font-weight:680; }
+.cs-library-term span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cs-library-term button { flex:none; width:20px; height:20px; border:0; border-radius:6px; background:transparent; color:var(--ink-4); cursor:pointer; }
+.cs-library-term button:hover { background:#fff0f3; color:var(--pink-ink); }
+.cs-library-add { display:flex; align-items:center; min-height:42px; border:1px dashed var(--violet-2); border-radius:11px; background:var(--violet-bg); }
+.cs-library-add input { flex:1; min-width:0; padding:8px 9px 8px 11px; border:0; outline:0; background:transparent; color:var(--ink); font:11px inherit; }
+.cs-library-add button { flex:none; width:38px; height:40px; border:0; border-left:1px solid var(--violet-line); border-radius:0 10px 10px 0; background:transparent; color:var(--violet-ink); cursor:pointer; }
+.cs-library-add button:hover { background:#e9e4ff; }
+.cs-library-add button:disabled { opacity:.4; cursor:not-allowed; }
+.cs-library-foot { display:flex; align-items:flex-start; gap:6px; margin-top:12px; padding:8px 10px; border-radius:9px; background:var(--mint-bg); color:var(--mint-ink); font-size:9.5px; line-height:1.55; }
+.cs-library-foot.error { background:#fff1f3; color:#c95e73; }
+
+/* ---------- 图片参考素材上传 ---------- */
+.cs-upload-row { display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin-top:8px; }
+.cs-upload-btn { display:inline-flex; align-items:center; gap:5px; width:max-content; padding:6px 9px; border:1px dashed var(--violet-line); border-radius:8px; background:var(--violet-bg); color:var(--violet-ink); font-size:10px; font-weight:750; cursor:pointer; }
+.cs-upload-btn:hover { border-color:var(--violet-2); background:#ece8ff; }
+.cs-upload-hint { color:var(--ink-4); font-size:9.5px; }
+.cs-upload-previews { display:flex; flex-wrap:wrap; gap:7px; margin-top:8px; }
+.cs-upload-preview { position:relative; width:54px; height:54px; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:#f8f7fc; }
+.cs-upload-preview img { display:block; width:100%; height:100%; object-fit:cover; }
+.cs-upload-preview button { position:absolute; top:2px; right:2px; display:flex; align-items:center; justify-content:center; width:17px; height:17px; padding:0; border:0; border-radius:50%; background:rgba(45,38,68,.72); color:#fff; font-size:9px; cursor:pointer; }
+.cs-product-upload { margin-top:9px; padding:9px; border:1px solid var(--pink-line); border-radius:10px; background:#fffafd; }
+.cs-product-upload-head { display:flex; align-items:flex-start; justify-content:space-between; gap:7px; margin-bottom:7px; }
+.cs-product-upload-head span { color:var(--ink-2); font-size:10.5px; font-weight:750; }
+.cs-product-upload-head span i { color:var(--pink-ink); margin-right:4px; }
+.cs-product-upload-head em { margin-left:3px; color:var(--pink-ink); font-style:normal; font-size:9px; font-weight:650; }
+.cs-product-upload-head small { color:var(--ink-4); font-size:9px; }
 .cs-state { display:flex; flex-direction:column; gap:8px; padding:12px; margin:0 14px 14px; border-radius:var(--r-md); border:1px solid var(--line-2); background:var(--soft); }
 .cs-state.mint { border-color:var(--mint-line); background:var(--mint-bg); }
 .cs-state.amber { border-color:var(--amber-line); background:var(--amber-bg); }
@@ -558,4 +634,7 @@
   .cs-modal { max-height:calc(100vh - 20px); padding:16px; border-radius:18px; }
   .cs-modal-grid { grid-template-columns:minmax(0,1fr); }
   .cs-modal-selling { grid-column:auto; }
+  .cs-library-backdrop { align-items:flex-end; justify-content:center; padding:10px; }
+  .cs-library-popover { max-height:calc(100vh - 20px); border-radius:18px; }
+  .cs-library-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }

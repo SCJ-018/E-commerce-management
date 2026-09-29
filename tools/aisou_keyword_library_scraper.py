@@ -1,0 +1,199 @@
+# -*- coding: utf-8 -*-
+"""内容创作中心专用爱搜产品词库采集器。
+
+本程序与选品助手的 ``aisou_scraper.py`` 完全隔离：使用独立的输入、输出、进度文件，
+只走“搜索词精确匹配行 → 详情 → 下拉词模块”，每个产品词抓取下拉词前五页。
+它不写「爱搜数据表」，由内容创作中心后端读取本程序输出后写入自己的知识库表。
+"""
+import json
+import os
+import re
+import sys
+from urllib.parse import quote
+
+from playwright.sync_api import sync_playwright
+
+sys.stdout.reconfigure(encoding='utf-8')
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+INPUT_FILE = os.path.join(BASE_DIR, '_aisou_keyword_library_input.json')
+OUTPUT_FILE = os.path.join(BASE_DIR, '_aisou_keyword_library_output.json')
+PROGRESS_FILE = os.path.join(BASE_DIR, '_aisou_keyword_library_progress.json')
+LOCALSTORAGE_FILE = os.path.join(BASE_DIR, 'aisou_localstorage.json')
+PROFILE_DIR = os.path.join(BASE_DIR, 'aisou_keyword_library_profile')
+SEARCH_URL = 'https://dso.aidso.com/KeywordDouyin/searchWord?keyword='
+HOME_URL = 'https://dso.aidso.com/'
+UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
+
+JS_EXACT_DETAIL = """(kw) => {
+  const rows = Array.from(document.querySelectorAll('table tbody tr')).filter(x => x.offsetParent !== null);
+  let exact = rows.find(row => Array.from(row.querySelectorAll('td')).some(td => (td.innerText || '').trim() === kw));
+  if (!exact) return 'NOT_FOUND';
+  const detail = Array.from(exact.querySelectorAll('button,a,[role="button"],span,div')).find(x =>
+    /详情|查看详情/.test((x.innerText || '').trim()) && x.offsetParent !== null);
+  if (!detail) return 'NO_DETAIL';
+  detail.click(); return 'CLICKED';
+}"""
+JS_OPEN_DOWN = """() => {
+  const nodes = Array.from(document.querySelectorAll('#content-container *,body *')).filter(x =>
+    x.offsetParent !== null && (x.innerText || '').trim() === '下拉词');
+  if (!nodes.length) return 'NOT_FOUND';
+  nodes[nodes.length - 1].click(); return 'CLICKED';
+}"""
+JS_ROWS = """() => {
+  const root = document.querySelector('#content-container') || document.body;
+  const tables = Array.from(root.querySelectorAll('table')).filter(x => x.offsetParent !== null);
+  if (!tables.length) return [];
+  const table = tables[tables.length - 1];
+  return Array.from(table.querySelectorAll('tbody tr')).map(tr =>
+    Array.from(tr.querySelectorAll('td')).map(td => (td.innerText || '').trim()));
+}"""
+JS_NEXT = """() => {
+  const selectors = ['.el-pagination .btn-next','button[aria-label="下一页"]',
+    'button[title="下一页"]','a[aria-label="下一页"]'];
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (el && el.offsetParent !== null && !el.disabled && !el.classList.contains('is-disabled')) { el.click(); return true; }
+  }
+  const el = Array.from(document.querySelectorAll('button,a,span')).find(x =>
+    x.offsetParent !== null && (x.innerText || '').trim() === '下一页');
+  if (el) { el.click(); return true; }
+  return false;
+}"""
+
+
+def log(*args):
+    print(*args, flush=True)
+
+
+def progress(status, done, total, message=''):
+    try:
+        with open(PROGRESS_FILE, 'w', encoding='utf-8') as fh:
+            json.dump({'status': status, 'done': done, 'total': total, 'message': message}, fh, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def load_json(path, default):
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            value = json.load(fh)
+        return value
+    except Exception:
+        return default
+
+
+def parse_num(text):
+    text = str(text or '').replace('平均:', '').replace('平均：', '').replace(',', '').strip()
+    m = re.match(r'([\d.]+)\s*(亿|万|w|W|k|K)?', text)
+    if not m:
+        return ''
+    unit = {'亿': 10 ** 8, '万': 10 ** 4, 'w': 10 ** 4, 'W': 10 ** 4, 'k': 10 ** 3, 'K': 10 ** 3}
+    return int(round(float(m.group(1)) * unit.get(m.group(2) or '', 1)))
+
+
+def collect_page(page, page_no):
+    rows = page.evaluate(JS_ROWS) or []
+    result = []
+    seen = set()
+    for row in rows:
+        if not row:
+            continue
+        name = str(row[0] or '').strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        result.append({'type': '下拉词', 'name': name,
+                       'month': parse_num(row[1]) if len(row) > 1 else '',
+                       'seven': parse_num(row[2]) if len(row) > 2 else '',
+                       'page': page_no})
+    return result
+
+
+def scrape_one(page, keyword):
+    page.goto(SEARCH_URL + quote(keyword), wait_until='domcontentloaded', timeout=60000)
+    page.wait_for_timeout(5000)
+    detail = page.evaluate(JS_EXACT_DETAIL, keyword)
+    if detail != 'CLICKED':
+        log('[词库] %s 未找到精确匹配详情按钮：%s' % (keyword, detail))
+        return []
+    page.wait_for_timeout(1500)
+    page.evaluate(JS_OPEN_DOWN)
+    page.wait_for_timeout(1200)
+    words = []
+    for page_no in range(1, 6):
+        words.extend(collect_page(page, page_no))
+        if page_no == 5 or not page.evaluate(JS_NEXT):
+            break
+        page.wait_for_timeout(1200)
+    # 同一词在不同页重复时只保留首次出现。
+    unique, seen = [], set()
+    for item in words:
+        if item['name'] in seen:
+            continue
+        seen.add(item['name'])
+        unique.append(item)
+    return unique
+
+
+def main():
+    payload = load_json(INPUT_FILE, {})
+    keywords = [str(x).strip() for x in payload.get('keywords', []) if str(x).strip()]
+    ls = load_json(LOCALSTORAGE_FILE, {})
+    if not keywords:
+        progress('error', 0, 0, '无产品词')
+        return 2
+    if not isinstance(ls, dict) or not ls:
+        progress('error', 0, len(keywords), '缺少爱搜登录态')
+        return 2
+    progress('running', 0, len(keywords), '启动内容创作中心专用采集器')
+    results = []
+    with sync_playwright() as playwright:
+        try:
+            context = playwright.chromium.launch_persistent_context(
+                PROFILE_DIR, channel='chrome', headless=True,
+                args=['--disable-blink-features=AutomationControlled'],
+                user_agent=UA, viewport={'width': 1440, 'height': 900}, locale='zh-CN')
+        except Exception:
+            context = playwright.chromium.launch_persistent_context(
+                PROFILE_DIR, headless=True,
+                args=['--disable-blink-features=AutomationControlled'],
+                user_agent=UA, viewport={'width': 1440, 'height': 900}, locale='zh-CN')
+        page = context.pages[0] if context.pages else context.new_page()
+        login_codes = []
+        def on_response(response):
+            try:
+                if 'aidso' in response.url and ('user/info' in response.url or 'sub_account_info' in response.url):
+                    login_codes.append((response.json() or {}).get('code'))
+            except Exception:
+                pass
+        page.on('response', on_response)
+        page.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+        page.goto(HOME_URL, wait_until='domcontentloaded', timeout=60000)
+        page.wait_for_timeout(1200)
+        page.evaluate('(kv) => { for (const k in kv) localStorage.setItem(k, kv[k]); }', ls)
+        page.wait_for_timeout(1500)
+        if login_codes and login_codes[-1] != 200:
+            progress('error', 0, len(keywords), '爱搜登录态失效，Cookie 需要重新登录')
+            log('[词库] 登录态失效：user/info code=%s' % login_codes[-1])
+            context.close()
+            return 3
+        for index, keyword in enumerate(keywords):
+            progress('running', index, len(keywords), '采集 ' + keyword)
+            try:
+                words = scrape_one(page, keyword)
+            except Exception as exc:
+                log('[词库] %s 采集失败：%r' % (keyword, exc))
+                words = []
+            results.append({'keyword': keyword, 'words': words})
+            log('[词库] %s 完成，%d 条下拉词' % (keyword, len(words)))
+        context.close()
+    with open(OUTPUT_FILE, 'w', encoding='utf-8') as fh:
+        json.dump({'results': results}, fh, ensure_ascii=False, indent=2)
+    progress('done', len(keywords), len(keywords), '采集完成')
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

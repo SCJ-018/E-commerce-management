@@ -44,13 +44,61 @@
     return /视频|口播|镜头|转写|短视频|抖音/.test(text) ? 'video' : 'image_text';
   }
   function contentTypeLabel(type) { return type === 'image_text' ? '图文' : '视频'; }
-  function demoAnalysis(raw) {
+  function readImageFile(file) {
+    return new Promise(function (resolve, reject) {
+      if (!file || !/^image\//i.test(file.type || '')) { reject(new Error('只支持图片文件')); return; }
+      var reader=new FileReader();
+      reader.onerror=function () { reject(new Error('图片读取失败')); };
+      reader.onload=function () {
+        var img=new Image();
+        img.onerror=function () { reject(new Error('图片解析失败')); };
+        img.onload=function () {
+          var maxSide=1800, scale=Math.min(1,maxSide/Math.max(img.naturalWidth || img.width,img.naturalHeight || img.height));
+          var canvas=document.createElement('canvas'); canvas.width=Math.max(1,Math.round((img.naturalWidth || img.width)*scale)); canvas.height=Math.max(1,Math.round((img.naturalHeight || img.height)*scale));
+          var ctx=canvas.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.drawImage(img,0,0,canvas.width,canvas.height);
+          resolve({name:file.name,dataUrl:canvas.toDataURL('image/jpeg',.9),width:canvas.width,height:canvas.height});
+        };
+        img.src=reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+  function demoImagePrompts(data) {
+    var name=String(data.productName || '产品').trim();
+    var category=String(data.category || '产品').trim();
+    var selling=String(data.sellingPoints || '仅展示已确认的真实卖点').trim();
+    var audience=String(data.audience || '目标用户').trim();
+    var scene=String(data.scene || '真实日常使用场景').trim();
+    var ref=data.reference && data.reference.breakdown ? data.reference.breakdown : {};
+    var sourceImageCount=data.contentType === 'image_text' ? Math.max(0, Math.min(6, Number(ref.sourceImageCount || 0))) : 0;
+    var basis=data.imitate ? '母本图片版式未提供；仅依据已拆解主题：'+String(ref.topic || '素材中的核心问题')+'，具体版式待补图核验' : '按“'+String(data.noteType || '种草')+'”模板组织信息型组图';
+    var productRef=data.productImageCount ? '参考随附的自家产品图，准确保留外形、颜色、结构、Logo位置和比例' : '自家产品图尚未上传，先保留自家产品参考图槽位';
+    var negative='不要单品详情图、商品主图、洗手台摆拍、刷头微距轮播、假榜单、虚构竞品、乱码中文、错误 Logo、水印、夸大效果';
+    var common='竖版社交媒体测评种草信息图，统一浅色底、清楚的卡片网格和醒目信息层级，标题和短评留白给后期排版，不要求模型直接生成中文';
+    var cards = [
+      {slot:'第1张·核心结论信息卡',purpose:'先给读者一个可核验的核心结论或选择问题',layoutType:'核心结论信息卡',prompt:common+'。制作第1张图文信息卡：上方留出核心结论区，下方用两到三块等宽信息卡承载问题、已知依据和待核验项；不要默认做封面，不要做单品详情主图。自家产品只放在相关槽位。'+productRef,negativePrompt:negative,composition:'结论区25%，信息卡区65%，页脚核验备注区10%',productPlacement:'自家产品参考图放在与正文任务对应的产品槽位，不占满整页',aspectRatio:'3:4',textOverlay:'核心问题：'+category+'怎么选；自家产品卡：'+name+'；其他对象：待补资料；选择标准：按实际证据填写',copyBlocks:'核心问题、选择标准、产品槽位标题和待核验备注',basis:basis},
+      {slot:'对比·信息卡',purpose:'用相同维度比较已知卖点与其他待核验方案',layoutType:'多产品对比卡片',prompt:common+'。纵向排列三张等高对比卡，每卡左侧预留产品抠图位置，右侧预留一句定位、卖点标签与两行短评位置。第一卡使用自家产品参考图，其余卡只保留灰色占位，不生成未知竞品外观。比较维度围绕“'+selling.slice(0,100)+'”，未给证据的结论留空。'+productRef,negativePrompt:negative,composition:'左侧产品图35%，右侧标题和短评65%，三卡连续阅读',productPlacement:'自家产品图仅放在第一张自家产品卡，保持原图外观比例',aspectRatio:'3:4',textOverlay:'自家产品卡：'+name+'；已核实卖点：'+selling.slice(0,90)+'；体验短评：待实测；其他产品信息：待补资料',copyBlocks:'产品名称、卖点标签、两行用户化短评和待实测标记',basis:basis},
+      {slot:'收束·适用条件',purpose:'帮助读者判断是否适合自己并核对限制',layoutType:'适用边界双栏卡',prompt:common+'。制作一页“适合谁/还需核对什么”的双栏清单，左栏是'+name+'在'+scene+'中的场景示意并使用自家产品参考图，右栏是适用条件和待核验项文字区；不画虚假的使用效果或用户证言。'+productRef,negativePrompt:negative,composition:'左图右文，图片约40%，清单约60%',productPlacement:'自家产品参考图放左栏场景示意，保持原图外观比例',aspectRatio:'3:4',textOverlay:'适用对象：'+audience+'；已核实卖点：'+selling.slice(0,90)+'；仍需核验：适配、效果证据、竞品对照条件',copyBlocks:'适用人群、已核实卖点、待核验条件',basis:basis}
+    ];
+    if (sourceImageCount) {
+      while (cards.length < sourceImageCount) {
+        var extra=Object.assign({}, cards[(cards.length-1) % cards.length]);
+        extra.slot='第'+(cards.length+1)+'张·补充信息卡';
+        extra.purpose='承接母本第'+(cards.length+1)+'张作品图的信息任务，补充可核验细节';
+        cards.push(extra);
+      }
+      return cards.slice(0, sourceImageCount);
+    }
+    return cards;
+  }
+  function demoAnalysis(raw, hasImages) {
     var title = raw.match(/(?:标题|题目)[:：]\s*([^\n]+)/);
     return { title:(title && title[1] ? title[1].trim() : '一套脚垫用了三个月，我终于找到清洁不返味的方法'), sourceUrl:'', contentType:inferContentType(raw), evidence:'演示拆解：未连接服务端 AI', breakdown:{
       topic:'围绕“长期使用后的真实变化”切入，面向正在比较材质、清洁成本和耐用性的车主。',
       structure:'前 3 秒抛出结果或反常识问题 → 展示使用场景 → 给出 2 至 3 个对比证据 → 总结适用人群并引导评论。',
       title:'使用时间 + 明确结果 + 具体场景；标题承诺可验证的体验，避免泛泛而谈。',
       shots:'近景展示污渍或细节 → 手部实拍安装/清洁 → 俯拍整体效果 → 对比镜头收尾。未提供视频时不判断真实镜头。',
+      imageLayout:hasImages ? '已上传图文截图，但当前处于演示降级，未完成视觉识别；请重试服务端分析。' : '未提供图文截图，无法判断是榜单/梯队、对比卡片还是单品详情版式。',
       comments:'“你们更在意耐脏还是好清洁？”\n“想看哪种材质的对比，我补一条实拍。”',
       learn:'把抽象卖点换成可观察的使用结果；先给结论，再用连续的小证据降低理解成本。',
       risks:'不能把单次体验写成普遍结论；测试条件要说清；不要复制原文独特句式、画面编排或评论引导。'
@@ -58,7 +106,7 @@
   }
   function demoGeneration(data) {
     var n=data.productName, c=data.category, t=data.noteType || (data.contentType === 'image_text' ? '图文' : '视频'), s=data.sellingPoints, brand=data.brand, style=data.stylePreference;
-    var common = { contentType:data.contentType || 'video', topics:[n+'真实使用一周后的 3 个变化',c+'怎么选：材质、适配和清洁成本',t+'视角拆解 '+n+' 的一个关键卖点', '预算有限时，先看 '+n+' 的这项细节', n+'适合哪些人，哪些人不必买'],
+    var common = { contentType:data.contentType || 'video', imagePromptMode:data.imitate ? 'imitate' : 'template', sourceImageCount:data.contentType === 'image_text' && data.reference && data.reference.breakdown ? Number(data.reference.breakdown.sourceImageCount || 0) : 0, topics:[n+'真实使用一周后的 3 个变化',c+'怎么选：材质、适配和清洁成本',t+'视角拆解 '+n+' 的一个关键卖点', '预算有限时，先看 '+n+' 的这项细节', n+'适合哪些人，哪些人不必买'],
       matrix:[{angle:'真实体验',format:'实拍',hook:'先展示使用后的结果，再回放关键细节'},{angle:'避坑对比',format:'测评',hook:'同一场景只比较一个变量'},{angle:'场景解决方案',format:'干货',hook:'从车主常见痛点给出选择顺序'}],
       titles:['用了 7 天，我终于知道 '+n+' 这个细节值不值','别只看价格：'+c+'先看这 3 个地方','真实体验｜'+n+'适合谁，哪些人可以跳过'],
       body:'最近在整理'+(brand ? '「'+brand+'」' : '')+' '+n+' 的使用体验，想把真实感受说清楚。先说结论：'+s+'。\n\n这次会用「'+style+'」的表达方式，按使用场景、清洁维护和适配细节逐项展示；文中只写已确认的信息，具体效果以实际测试为准。',
@@ -72,19 +120,20 @@
       common.shooting='0-3s：结果特写和一句结论；3-8s：展示安装或使用场景；8-15s：用近景呈现卖点“'+s.slice(0,40)+'”；15-22s：补充适用人群与注意事项。';
       common.script='【镜头 1｜0-3s】结果特写，口播：先看用了一段时间后的真实状态。\n【镜头 2｜3-8s】展示安装/清洁过程，口播：这里重点看 '+s.slice(0,32)+'。\n【镜头 3｜8-15s】拍细节和局部对比，口播：只描述看得见、测得到的变化。\n【镜头 4｜15-22s】正面总结，口播：适合……；如果你更在意……，请先核验。';
     }
+    common.imagePrompts=demoImagePrompts(data);
     return common;
   }
 
   var FLOW_META = [
     ['投喂爆文素材','抖音链接、口播文案或镜头摘要'],
-    ['爆文拆解','7 维结构化分析并落卡'],
+    ['爆文拆解','8 维结构化分析并落卡'],
     ['选择参考母本','可选：只借鉴方法，不照抄原句'],
     ['生成配置','品类 · 内容形态 · 品牌 · 风格 · 真实卖点'],
-    ['AI 生成内容','选题 → 脚本，共 8 段产出'],
+    ['AI 生成内容','选题 → 正文 → 生图提示词'],
     ['人工核验发布','核对适配、价格与测试条件']
   ];
   var BREAKDOWN_MAP = [
-    ['选题与受众','topic'],['内容结构','structure'],['标题策略','title'],['镜头与节奏','shots'],
+    ['选题与受众','topic'],['内容结构','structure'],['标题策略','title'],['镜头与节奏','shots'],['图文版式与信息任务','imageLayout'],
     ['评论区互动模板','comments'],['可借鉴点','learn'],['风险与验证','risks']
   ];
 
@@ -92,10 +141,14 @@
     components: { 'content-violation-page': window.ContentViolationPage },
     data: function () { return {
       workspaceTab:'creative',
-      activeTab:'breakdown', input:'', analysisFocus:'', status:'', statusError:false, busy:false, cards:[], selectedId:null,
+      activeTab:'breakdown', input:'', analysisFocus:'', referenceImages:[], productImages:[], status:'', statusError:false, busy:false, cards:[], selectedId:null,
       category:'', categoryOptions:[], categoryOpen:false, noteType:'测评', brand:'', stylePreference:'素人感型', styleOpen:false, imitate:false, referenceId:null, productName:'', sellingPoints:'', audience:'', scene:'',
       output:null, productionBusy:false, productionStatus:'', productionError:false, aiDegraded:false, imitationOpen:false,
+      productTerms:[], libraryOpen:false, libraryBusy:false, librarySync:{status:'idle',message:'',done:0,total:0}, newProductTerm:'',
+      titleInput:'', titleOptimizeBusy:false, titleOptimizeStatus:'', titleOptimizeError:false, optimizedTitles:[], optimizedUsedWords:[],
       profileDone:false, cardsDone:false, categoriesDone:false,
+      // 页面只挂载一次；账号切换时必须丢弃上个账号的内存状态。
+      sessionAccount:sessionStorage.getItem('admin_current_account') || '', sessionEpoch:0,
       noteTypes:noteTypes, stylePreferences:stylePreferences,
       userName:sessionStorage.getItem('admin_current_user') || '当前用户', userRole:sessionStorage.getItem('admin_current_role') || '团队成员', avatar:''
     }; },
@@ -137,7 +190,9 @@
     },
     mounted:function () {
       var self = this;
+      self.sessionAccount=sessionStorage.getItem('admin_current_account') || '';
       self.loadProfile();
+      self.loadKeywordLibrary();
       // 融合拆解区：右半是「成果详情」，必须有一张选中卡片才有内容。
       // 本地有历史卡片但 selectedId 为空（刷新/换页回来）时，默认选中最新一张，
       // 否则左列有卡、右边却是空态，看起来像坏了。
@@ -145,27 +200,52 @@
       window.addEventListener('content-studio-tab', function (e) {
         if (e && e.detail === 'violation') self.workspaceTab = 'violation';
       });
+      window.addEventListener('admin-session-changed', function () {
+        self.ensureSessionContext();
+        if (!mount.classList.contains('hidden')) {
+          self.loadProfile(); self.loadCards(); self.loadCategories(); self.loadKeywordLibrary();
+        }
+      });
       // 本页在「登录之前」就已挂载（脚本首屏执行），那一刻 /api/profile/me 还是 401，
       // 之后再不会自动补取 → 用户卡会一直停在兜底文案「当前用户 / 团队成员」。
       // 所以每次页面被切到前台时补取一次（成功后不再重复请求）。
       try {
         var obs = new MutationObserver(function () {
            if (!mount.classList.contains('hidden')) {
+             self.ensureSessionContext();
              if (!self.profileDone) self.loadProfile();
              if (!self.cardsDone) self.loadCards();
              if (!self.categoriesDone) self.loadCategories();
+             if (!self.productTerms.length) self.loadKeywordLibrary();
            }
         });
         obs.observe(mount, { attributes:true, attributeFilter:['class', 'style'] });
       } catch (e) {}
-      window.addEventListener('hashchange', function () { if (!self.profileDone) self.loadProfile(); if (!self.cardsDone) self.loadCards(); if (!self.categoriesDone) self.loadCategories(); });
+      window.addEventListener('hashchange', function () { self.ensureSessionContext(); if (!self.profileDone) self.loadProfile(); if (!self.cardsDone) self.loadCards(); if (!self.categoriesDone) self.loadCategories(); });
       window.addEventListener('click', function () { self.styleOpen=false; self.categoryOpen=false; });
     },
     methods: {
+      // 登录/退出不会销毁本页实例，因此以当前账号作为数据状态边界。
+      ensureSessionContext:function () {
+        var account=sessionStorage.getItem('admin_current_account') || '';
+        if (account === this.sessionAccount) return false;
+        this.sessionAccount=account;
+        this.sessionEpoch += 1;
+        this.profileDone=false; this.cardsDone=false; this.categoriesDone=false;
+        this.cards=[]; this.selectedId=null; this.referenceId=null; this.referenceImages=[]; this.productImages=[];
+        this.categoryOptions=[]; this.output=null; this.avatar='';
+        this.status=''; this.statusError=false; this.aiDegraded=false;
+        this.userName=sessionStorage.getItem('admin_current_user') || '当前用户';
+        this.userRole=sessionStorage.getItem('admin_current_role') || '团队成员';
+        return true;
+      },
       loadProfile:function () {
         var self=this;
+        self.ensureSessionContext();
         if (self.profileDone) return;
+        var account=self.sessionAccount, epoch=self.sessionEpoch;
         fetch('/api/profile/me', {credentials:'same-origin'}).then(function (r) { return r.json(); }).then(function (r) {
+          if (account !== self.sessionAccount || epoch !== self.sessionEpoch) return;
           if (!r || r.code !== 0 || !r.data) return;
           self.userName=r.data.name || self.userName;
           self.userRole=r.data.role || self.userRole;
@@ -176,9 +256,12 @@
       },
       navigate:function (page) { window.location.hash=page; if (window.App && App.navigateTo) App.navigateTo(page); },
       loadCards:async function () {
+        this.ensureSessionContext();
         if (this.cardsDone) return;
+        var account=this.sessionAccount, epoch=this.sessionEpoch;
         try {
           var cards=await post('cards', null, 'GET');
+          if (account !== this.sessionAccount || epoch !== this.sessionEpoch) return;
           this.cards=Array.isArray(cards) ? cards : [];
           // 从旧版本浏览器缓存做一次性迁移；迁移成功后不再把 localStorage 当作正式数据源。
           if (!this.cards.length) {
@@ -195,6 +278,7 @@
               }
             }
           }
+          if (account !== this.sessionAccount || epoch !== this.sessionEpoch) return;
           if (!this.selectedId && this.cards.length) this.selectedId=this.cards[0].id;
           this.cardsDone=true;
         } catch (e) {
@@ -202,12 +286,55 @@
         }
       },
       loadCategories:async function () {
+        this.ensureSessionContext();
         if (this.categoriesDone) return;
+        var account=this.sessionAccount, epoch=this.sessionEpoch;
         try {
           var categories=await post('categories', null, 'GET');
+          if (account !== this.sessionAccount || epoch !== this.sessionEpoch) return;
           this.categoryOptions=Array.isArray(categories) ? categories : [];
           this.categoriesDone=true;
         } catch (e) { if (e.httpStatus !== 401) this.categoryOptions=[]; }
+      },
+      loadKeywordLibrary:async function () {
+        try {
+          var d=await post('keyword-library', null, 'GET');
+          this.productTerms=Array.isArray(d && d.terms) ? d.terms : [];
+          this.librarySync=(d && d.sync) || this.librarySync;
+        } catch (e) { if (e.httpStatus !== 401) this.librarySync={status:'error',message:e.message || '词库读取失败'}; }
+      },
+      toggleKeywordLibrary:function () { this.libraryOpen=!this.libraryOpen; if (this.libraryOpen) this.loadKeywordLibrary(); },
+      addProductTerm:async function () {
+        var term=this.newProductTerm.trim();
+        if (!term) return;
+        this.libraryBusy=true;
+        try { var d=await post('keyword-library',{term:term}); this.productTerms=(d && d.term) || this.productTerms; this.newProductTerm=''; this.librarySync={status:'idle',message:'已加入词库'}; }
+        catch (e) { this.librarySync={status:'error',message:e.message || '添加失败'}; }
+        finally { this.libraryBusy=false; }
+      },
+      removeProductTerm:async function (item) {
+        if (!item || !item.id) return;
+        try { this.productTerms=await post('keyword-library/'+encodeURIComponent(item.id),null,'DELETE'); }
+        catch (e) { this.librarySync={status:'error',message:e.message || '删除失败'}; }
+      },
+      syncKeywordLibrary:async function () {
+        this.libraryBusy=true;
+        try { await post('keyword-library/sync',{}); this.librarySync={status:'running',message:'正在采集爱搜下拉词'}; }
+        catch (e) { this.librarySync={status:'error',message:e.message || '采集启动失败'}; }
+        finally { this.libraryBusy=false; }
+      },
+      optimizeTitle:async function () {
+        var title=this.titleInput.trim();
+        if (!title) { this.titleOptimizeStatus='请先输入需要优化的标题'; this.titleOptimizeError=true; return; }
+        var product=(this.productName || this.category || '').trim();
+        if (!product) { this.titleOptimizeStatus='请先在爆文生产配置中填写产品名称或品类'; this.titleOptimizeError=true; return; }
+        this.titleOptimizeBusy=true; this.titleOptimizeError=false; this.titleOptimizeStatus='正在匹配词库并优化标题…';
+        try {
+          var d=await post('optimize-title',{title:title,productName:product,category:this.category,noteType:this.noteType});
+          this.optimizedTitles=(d && d.titles) || []; this.optimizedUsedWords=(d && d.usedWords) || [];
+          this.titleOptimizeStatus=(d && d.knowledgeReady) ? '已融合爱搜高热词，请人工核验语义与事实' : '词库暂未有匹配数据，已生成保守版本';
+        } catch (e) { this.titleOptimizeStatus=e.message || '标题优化失败'; this.titleOptimizeError=true; }
+        finally { this.titleOptimizeBusy=false; }
       },
       selectCategory:function (category) { this.category=category; this.categoryOpen=false; },
       toggleCategory:function () { this.categoryOpen=!this.categoryOpen; },
@@ -226,7 +353,17 @@
         this.referenceId=card.id; this.imitate=true; this.imitationOpen=true; this.productionStatus=''; this.productionError=false;
       },
       closeImitation:function () { if (!this.productionBusy) this.imitationOpen=false; },
-      clearInput:function () { this.input=''; this.analysisFocus=''; },
+      clearInput:function () { this.input=''; this.analysisFocus=''; this.referenceImages=[]; },
+      addReferenceImages:async function (files) {
+        var self=this, incoming=Array.prototype.slice.call(files || []).filter(function (file) { return /^image\//i.test(file.type || ''); }).slice(0,6-self.referenceImages.length);
+        for (var i=0;i<incoming.length;i++) { try { self.referenceImages.push(await readImageFile(incoming[i])); } catch (e) { self.status=e.message || '图文截图读取失败'; self.statusError=true; } }
+      },
+      removeReferenceImage:function (index) { this.referenceImages.splice(index,1); },
+      addProductImages:async function (files) {
+        var self=this, incoming=Array.prototype.slice.call(files || []).filter(function (file) { return /^image\//i.test(file.type || ''); }).slice(0,4-self.productImages.length);
+        for (var i=0;i<incoming.length;i++) { try { self.productImages.push(await readImageFile(incoming[i])); } catch (e) { self.productionStatus=e.message || '产品图读取失败'; self.productionError=true; } }
+      },
+      removeProductImage:function (index) { this.productImages.splice(index,1); },
       removeCard:async function (card) {
         var target=card || this.selectedCard;
         if (!target || !target.id) return;
@@ -241,22 +378,29 @@
       analyze:async function () {
         var raw=this.input.trim();
         var focus=this.analysisFocus.trim();
-        if (!raw) { this.status='请粘贴抖音链接、文案或镜头摘要'; this.statusError=true; return; }
+        if (!raw && !this.referenceImages.length) { this.status='请粘贴素材或上传母本图文截图'; this.statusError=true; return; }
         this.busy=true; this.status='正在读取素材并生成拆解卡…'; this.statusError=false;
         try {
           var d;
-          var payload = focus ? (raw + '\n\n【本次分析重点】\n' + focus) : raw;
-          try { d=await post('analyze',{input:payload}); }
+          try { d=await post('analyze',{input:raw,focus:focus,images:this.referenceImages.map(function (item) { return item.dataUrl; })}); }
           catch (apiError) {
             if (apiError.apiError) throw apiError;
-            d=demoAnalysis(raw); this.aiDegraded=true;
+            d=demoAnalysis(raw, this.referenceImages.length > 0); this.aiDegraded=true;
             this.status='服务端暂时无法连接，已生成演示拆解卡；请检查后端服务或网络后重试';
           }
-          var card={input:raw,
-            title:d.title || '未命名爆文', sourceUrl:d.sourceUrl || '', contentType:d.contentType || inferContentType(raw), evidence:d.evidence || '', breakdown:d.breakdown || {}};
+          var detectedImageCount=Number(d.sourceImageCount || (d.breakdown && d.breakdown.sourceImageCount) || this.referenceImages.length || 0);
+          var cardBreakdown=Object.assign({}, d.breakdown || {}, {sourceImageCount:detectedImageCount});
+          var card={input:raw || ('用户上传图文截图（'+this.referenceImages.length+'张）'),
+            title:d.title || '未命名爆文', sourceUrl:d.sourceUrl || '', contentType:d.contentType || inferContentType(raw), evidence:d.evidence || '', breakdown:cardBreakdown};
           var savedCard=await post('cards', card);
           this.cards.unshift(savedCard); this.cards=this.cards.slice(0,50); this.selectedId=savedCard.id;
-          if (!this.status || this.status.indexOf('演示') < 0) this.status='拆解完成，已保存到当前账号卡片'; this.statusError=false; this.input=''; this.analysisFocus='';
+          var knowledgeStatus=savedCard.knowledgeStatus || d.knowledgeStatus;
+          if (!this.status || this.status.indexOf('演示') < 0) {
+            this.status=knowledgeStatus === 'saved' ? '拆解完成，个人卡片已保存，方法已纳入共享知识库' :
+              knowledgeStatus === 'exists' ? '拆解完成，个人卡片已保存；该素材已在共享知识库中' :
+              '拆解完成，个人卡片已保存；共享知识库写入失败，请稍后重试';
+          }
+          this.statusError=false; this.input=''; this.analysisFocus=''; this.referenceImages=[];
         } catch (e) { this.status=e.message || '拆解失败'; this.statusError=true; }
         finally { this.busy=false; }
       },
@@ -275,7 +419,7 @@
         if (this.imitate) { this.imitationOpen=false; this.activeTab='production'; }
         this.productionBusy=true; this.productionStatus=this.imitate ? '正在按参考母本仿写，请稍候…' : '正在根据笔记类型与风格偏好原创，请稍候…'; this.productionError=false;
         try {
-          var payload={category:this.category.trim(),noteType:this.noteType,contentType:contentType,brand:this.brand.trim(),stylePreference:this.stylePreference,productName:this.productName.trim(),sellingPoints:this.sellingPoints.trim(),audience:this.audience.trim(),scene:this.scene.trim(),imitate:this.imitate,reference:this.imitate && this.referenceCard ? {title:this.referenceCard.title,contentType:contentType,breakdown:this.referenceCard.breakdown} : null};
+          var payload={category:this.category.trim(),noteType:this.noteType,contentType:contentType,brand:this.brand.trim(),stylePreference:this.stylePreference,productName:this.productName.trim(),sellingPoints:this.sellingPoints.trim(),audience:this.audience.trim(),scene:this.scene.trim(),imitate:this.imitate,productImageCount:this.productImages.length,productImageNames:this.productImages.map(function (item) { return item.name; }),reference:this.imitate && this.referenceCard ? {title:this.referenceCard.title,contentType:contentType,breakdown:this.referenceCard.breakdown} : null};
           try { this.output=await post('generate',payload); this.productionStatus='已生成，可逐段复制并进行人工审核'; }
           catch (apiError) {
             if (apiError.apiError) throw apiError;
@@ -297,6 +441,19 @@
         this.copy(out);
       },
       copyMatrix:function () { return textVal((this.output && this.output.matrix || []).map(function (x) { return x.angle+'：'+x.format+' / '+x.hook; })); },
+      imagePromptText:function (item) {
+        if (!item) return '';
+        return ['【'+(item.slot || '配图')+'】', '用途：'+(item.purpose || ''), '版式：'+(item.layoutType || '信息型图文卡片'), '提示词：'+(item.prompt || ''), '自家产品图位置：'+(item.productPlacement || '按提示词指定槽位放置'), '负面提示词：'+(item.negativePrompt || ''), '构图：'+(item.composition || ''), '比例：'+(item.aspectRatio || '3:4'), '后期文字：'+(item.textOverlay || ''), '文案区块：'+(item.copyBlocks || ''), '依据：'+(item.basis || '')].join('\n');
+      },
+      allImagePromptText:function () {
+        var list=this.output && this.output.imagePrompts || [];
+        var note=this.productImages.length ? '【参考图附件】请将本页已上传的 '+this.productImages.length+' 张自家产品图与提示词一并提交；保持外观、颜色、结构、Logo位置和比例一致。' : '【参考图附件】请先上传自家产品图，再与提示词一并提交；当前提示词只保留产品图槽位。';
+        return note+'\n\n'+list.map(this.imagePromptText).join('\n\n');
+      },
+      copyImagePrompt:function (item) {
+        var note=this.productImages.length ? '【参考图附件】请将本页已上传的 '+this.productImages.length+' 张自家产品图与提示词一并提交；保持产品外观、颜色、结构、Logo位置和比例一致。' : '【参考图附件】请先上传自家产品图，再与提示词一并提交。';
+        this.copy(note+'\n\n'+this.imagePromptText(item));
+      },
       asText:textVal,
       display:function (value) { return textVal(value) || '暂无内容'; }
     },
@@ -364,6 +521,7 @@
               </div>
               <div v-else class="cs-empty"><i class="fa-solid fa-layer-group"></i>还没有拆解卡，先投喂一条素材。</div>
             </div>
+
           </aside>
 
           <!-- ==================== 中栏：主流程 ==================== -->
@@ -390,7 +548,7 @@
                 </div>
                 <div class="cs-stats">
                   <div class="cs-stat"><b>{{ cards.length }}</b><span>爆文卡片</span></div>
-                  <div class="cs-stat"><b>7</b><span>拆解维度</span></div>
+                  <div class="cs-stat"><b>8</b><span>拆解维度</span></div>
                   <div class="cs-stat"><b>6</b><span>笔记类型</span></div>
                   <div class="cs-stat"><b>8</b><span>内容产出段</span></div>
                 </div>
@@ -407,7 +565,14 @@
                   <div class="cs-grid2">
                     <div class="cs-field">
                       <label class="cs-label" for="csInput">素材内容 <em>公开链接可能无法提取视频正文</em></label>
-                      <textarea id="csInput" v-model="input" class="cs-ta" maxlength="20000" placeholder="粘贴抖音视频链接；若希望分析结构和镜头，请一并粘贴口播文案、字幕或镜头摘要。"></textarea>
+                      <textarea id="csInput" v-model="input" class="cs-ta" maxlength="20000" placeholder="粘贴抖音链接、文案或镜头摘要；图文链接会自动按作品图片顺序识别，链接无法读取图片时再上传母本截图。"></textarea>
+                      <div class="cs-upload-row">
+                        <label class="cs-upload-btn"><i class="fa-solid fa-images"></i> 上传母本图文截图 <input type="file" accept="image/*" multiple hidden @change="addReferenceImages($event.target.files); $event.target.value=''" /></label>
+                        <span class="cs-upload-hint">链接图片无法读取时使用，最多 6 张，按上传顺序对应作品页</span>
+                      </div>
+                      <div v-if="referenceImages.length" class="cs-upload-previews">
+                        <div v-for="(item,i) in referenceImages" :key="item.name+i" class="cs-upload-preview"><img :src="item.dataUrl" :alt="item.name"><button type="button" @click="removeReferenceImage(i)" aria-label="移除截图"><i class="fa-solid fa-xmark"></i></button></div>
+                      </div>
                       <div class="cs-count"><span class="cache"><i class="fa-solid fa-cloud"></i> 当前账号自动保存</span><span>{{ input.length }} / 20000</span></div>
                     </div>
                     <div class="cs-field">
@@ -417,7 +582,7 @@
                     </div>
                   </div>
                   <div class="cs-row-actions">
-                    <span class="cs-hint">建议包含标题、开头钩子、主要画面和评论信息</span>
+                    <span class="cs-hint">图文链接会按第 1 页到第 N 页生成对应提示词；文字可补充标题、卖点和评论信息</span>
                     <button type="button" class="cs-btn ghost" @click="clearInput"><i class="fa-solid fa-eraser"></i> 清空</button>
                   </div>
                   <div class="cs-status" :class="{show:!!status, error:statusError}">{{ status }}</div>
@@ -425,11 +590,11 @@
               </div>
 
               <div class="cs-card cs-fuse">
-                <div class="cs-fuse-top">
+                  <div class="cs-fuse-top">
                   <div class="mark"><i class="fa-solid fa-layer-group"></i></div>
                   <div class="ttl">
                     <b>爆文拆解区</b>
-                    <small>左列选卡 → 右侧即时查看 7 维分析；把选题、结构、标题、镜头和评论话术转成可复用的方法</small>
+                    <small>左列选卡 → 右侧即时查看 8 维分析；把图文版式、选题、结构、镜头和评论话术转成可复用的方法</small>
                   </div>
                   <div class="tools">
                     <span class="cs-badge pink">{{ cards.length }} 张</span>
@@ -463,7 +628,7 @@
                       <div class="cs-fuse-result-head">
                         <div class="cs-chip mint" style="flex:none"><i class="fa-solid fa-bullseye"></i></div>
                         <div class="grow">
-                          <div class="ttl">拆解成果 · 7 维</div>
+                          <div class="ttl">拆解成果 · 8 维</div>
                           <div class="sub" :title="selectedCard.title">{{ selectedCard.title }}</div>
                         </div>
                         <span class="cs-badge" :class="draftBadge(selectedCard).cls">{{ draftBadge(selectedCard).text }}</span>
@@ -475,6 +640,7 @@
                           <div class="cs-blk"><h4><i class="fa-solid fa-heading"></i> 标题策略</h4><p>{{ display(selectedCard.breakdown.title) }}</p></div>
                           <div class="cs-blk"><h4><i class="fa-solid fa-video"></i> 镜头与节奏</h4><p>{{ display(selectedCard.breakdown.shots) }}</p></div>
                         </div>
+                        <div class="cs-blk"><h4><i class="fa-solid fa-table-cells-large"></i> 图文版式与信息任务</h4><p>{{ display(selectedCard.breakdown.imageLayout) }}</p></div>
                         <div class="cs-blk"><h4><i class="fa-solid fa-comments"></i> 评论区互动模板</h4><p>{{ display(selectedCard.breakdown.comments) }}</p></div>
                         <div class="cs-grid2">
                           <div class="cs-blk mint"><h4><i class="fa-solid fa-lightbulb"></i> 可借鉴点</h4><p>{{ display(selectedCard.breakdown.learn) }}</p></div>
@@ -559,6 +725,11 @@
                         <input v-model="productName" class="cs-ta line" maxlength="120" placeholder="产品名称 *">
                         <input v-model="brand" class="cs-ta line" style="margin-top:8px" maxlength="80" placeholder="品牌（可选）">
                         <textarea v-model="sellingPoints" class="cs-ta" style="min-height:122px;margin-top:8px" maxlength="3000" placeholder="真实卖点 / 参数 / 测试结论 *"></textarea>
+                        <div class="cs-product-upload">
+                          <div class="cs-product-upload-head"><span><i class="fa-solid fa-camera"></i> 自家产品图 <em>建议上传</em></span><small>会作为参考图随提示词使用</small></div>
+                          <label class="cs-upload-btn"><i class="fa-solid fa-plus"></i> 添加产品图 <input type="file" accept="image/*" multiple hidden @change="addProductImages($event.target.files); $event.target.value=''" /></label>
+                          <div v-if="productImages.length" class="cs-upload-previews"><div v-for="(item,i) in productImages" :key="item.name+i" class="cs-upload-preview"><img :src="item.dataUrl" :alt="item.name"><button type="button" @click="removeProductImage(i)" aria-label="移除产品图"><i class="fa-solid fa-xmark"></i></button></div></div>
+                        </div>
                       </div>
                       <div class="cs-field">
                         <div class="cs-style-select" :class="{open:styleOpen}" @click.stop>
@@ -628,38 +799,63 @@
                     <div class="cs-out-body">{{ display(output.checks) }}</div>
                   </div>
                 </div>
-                <div v-else class="cs-empty"><i class="fa-solid fa-wand-magic-sparkles"></i>填好配置后点击「AI 生成内容」，这里会依次展示 8 段产出。</div>
+                <div v-else class="cs-empty"><i class="fa-solid fa-wand-magic-sparkles"></i>填好配置后点击「AI 生成内容」，这里会依次展示内容产出和生图提示词。</div>
               </div>
             </template>
           </main>
 
           <!-- ==================== 右栏：AI 服务状态 ==================== -->
           <aside class="cs-rail cs-rail-right">
-            <div class="cs-card">
+            <div class="cs-card cs-title-optimizer-card">
               <div class="cs-head">
-                <div class="cs-chip"><i class="fa-solid fa-align-left"></i></div>
-                <div class="grow"><div class="cs-title">文案生成</div><div class="cs-sub">模型由服务端统一调度</div></div>
-                <span class="cs-badge" :class="aiDegraded?'amber':'mint'">{{ aiDegraded ? '演示降级' : '服务端 AI' }}</span>
+                <div class="cs-chip"><i class="fa-solid fa-heading"></i></div>
+                <div class="grow"><div class="cs-title">标题优化</div><div class="cs-sub">匹配爱搜热词，生成可审核标题</div></div>
+                <button type="button" class="cs-btn cs-library-btn" @click="toggleKeywordLibrary"><i class="fa-solid fa-book-open"></i> 词库 <span>{{ productTerms.length }}</span></button>
               </div>
               <div class="cs-pad">
-                <div class="cs-kv">
-                  <div><span class="k">调用方式</span><div class="v">服务端 AI（密钥仅存在服务器环境变量，前端不保存）</div></div>
-                  <div><span class="k">接口</span><div class="v mute">/api/content-studio/analyze<br>/api/content-studio/generate</div></div>
+                <textarea v-model="titleInput" class="cs-title-input" maxlength="300" placeholder="粘贴已有标题，系统会按当前产品模糊匹配高热词"></textarea>
+                <div class="cs-title-actions"><span class="cs-hint">{{ productName || category || '先填写产品名称' }}</span><button type="button" class="cs-btn primary" :disabled="titleOptimizeBusy" @click="optimizeTitle"><i class="fa-solid" :class="titleOptimizeBusy?'fa-spinner':'fa-wand-magic-sparkles'"></i> {{ titleOptimizeBusy ? '优化中' : '优化标题' }}</button></div>
+                <div v-if="titleOptimizeStatus" class="cs-title-status" :class="{error:titleOptimizeError}">{{ titleOptimizeStatus }}</div>
+                <div v-if="optimizedTitles.length" class="cs-title-results">
+                  <div class="cs-title-result" v-for="(item,i) in optimizedTitles" :key="i"><span>{{ item }}</span><button type="button" class="cs-copy" @click="copy(item)"><i class="fa-solid fa-copy"></i></button></div>
+                  <div v-if="optimizedUsedWords.length" class="cs-hot-word-row"><i class="fa-solid fa-fire"></i><span v-for="word in optimizedUsedWords" :key="word">{{ word }}</span></div>
                 </div>
               </div>
             </div>
 
-            <div class="cs-card">
+            <div class="cs-card cs-image-prompts-card">
               <div class="cs-head">
-                <div class="cs-chip pink"><i class="fa-solid fa-image"></i></div>
-                <div class="grow"><div class="cs-title">图片生成</div><div class="cs-sub">封面与配图能力</div></div>
-                <span class="cs-badge gray">未接入</span>
+                <div class="cs-chip pink"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
+                <div class="grow"><div class="cs-title">AI 生图提示词</div><div class="cs-sub">随内容产出生成，可直接复制到生图模型</div></div>
+                <span class="cs-badge" :class="output && output.imagePrompts && output.imagePrompts.length ? 'pink' : 'gray'">{{ output && output.imagePrompts && output.imagePrompts.length ? '已生成' : '等待内容' }}</span>
               </div>
-              <div class="cs-pad">
-                <div class="cs-kv">
-                  <div><span class="k">当前状态</span><div class="v mute">本页暂不生成图片；封面与配图请走本地流程</div></div>
+              <div v-if="output && output.imagePrompts && output.imagePrompts.length" class="cs-pad cs-image-prompts">
+                <div class="cs-image-prompt-meta">
+                  <span><i class="fa-solid fa-route"></i>{{ output.imagePromptMode === 'imitate' ? '仿写母本：按原作品图序对应' : '原创模板：按笔记类型组织图文版式' }}<small v-if="output.sourceImageCount"> · 按母本 {{ output.sourceImageCount }} 张作品图生成</small><small v-if="productImages.length"> · 已附 {{ productImages.length }} 张自家产品图</small></span>
+                  <button type="button" class="cs-copy" @click="copy(allImagePromptText())"><i class="fa-solid fa-copy"></i> 全部复制</button>
                 </div>
+                <div class="cs-image-prompt-list">
+                  <div v-for="(item,i) in output.imagePrompts" :key="i" class="cs-image-prompt-item">
+                    <div class="cs-image-prompt-head">
+                      <div><b>{{ item.slot || ('配图 '+(i+1)) }}</b><small>{{ item.aspectRatio || '3:4' }} · {{ item.purpose || '补充正文信息' }}</small></div>
+                      <button type="button" class="cs-copy" @click="copyImagePrompt(item)"><i class="fa-solid fa-copy"></i> 复制</button>
+                    </div>
+                    <div class="cs-image-prompt-text">{{ item.prompt }}</div>
+                    <details class="cs-image-prompt-details">
+                      <summary>查看构图、负面词与后期文字</summary>
+                      <div class="cs-image-prompt-detail"><b>版式</b><span>{{ item.layoutType || '信息型图文卡片' }}</span></div>
+                      <div class="cs-image-prompt-detail"><b>构图</b><span>{{ item.composition || '按主体任务安排构图' }}</span></div>
+                      <div class="cs-image-prompt-detail"><b>产品图</b><span>{{ item.productPlacement || '按提示词指定槽位放置' }}</span></div>
+                      <div class="cs-image-prompt-detail"><b>负面提示词</b><span>{{ item.negativePrompt || '无' }}</span></div>
+                      <div class="cs-image-prompt-detail"><b>后期文字</b><span>{{ item.textOverlay || '后期排版，不要求模型生成文字' }}</span></div>
+                      <div class="cs-image-prompt-detail"><b>文案区块</b><span>{{ item.copyBlocks || '标题、标签和短评后期排版' }}</span></div>
+                      <div v-if="item.basis" class="cs-image-prompt-detail"><b>生成依据</b><span>{{ item.basis }}</span></div>
+                    </details>
+                  </div>
+                </div>
+                <div class="cs-image-prompt-hint"><i class="fa-solid fa-circle-info"></i> 生成时请把已上传的自家产品图一并作为参考图；准确中文、排名和短评建议后期排版，并核对所有测评依据。</div>
               </div>
+              <div v-else class="cs-empty cs-image-prompts-empty"><i class="fa-solid fa-image"></i>先完成一次内容生成，这里会按爆文版式生成榜单、对比卡或信息页提示词。</div>
             </div>
 
             <div class="cs-card">
@@ -670,7 +866,7 @@
               </div>
               <div class="cs-state" :class="aiDegraded?'':'mint'">
                 <div class="cs-state-line"><i class="fa-solid fa-check"></i> {{ cards.length ? '已拆解 ' + cards.length + ' 张卡片，当前账号保留最近 50 张' : '还没有拆解卡片，先从左侧投喂素材' }}</div>
-                <div class="cs-state-line"><i class="fa-solid fa-check"></i> {{ output ? '已生成 8 段内容产出，可逐段复制并人工核验' : '生成结果会逐段展示，可单独复制' }}</div>
+                <div class="cs-state-line"><i class="fa-solid fa-check"></i> {{ output ? '已生成内容与生图提示词，可逐段复制并人工核验' : '生成结果会逐段展示，可单独复制' }}</div>
               </div>
               <div class="cs-state">
                 <div class="cs-state-line amber"><i class="fa-solid fa-triangle-exclamation"></i> 服务端未配置模型密钥时自动降级为演示结果，页面以黄色提示条标出。</div>
@@ -679,6 +875,7 @@
               <ul class="cs-tips">
                 <li><i class="fa-solid fa-circle-check"></i> 只根据你提供的素材分析，不臆造视频画面与真实评论。</li>
                 <li><i class="fa-solid fa-circle-check"></i> 参考爆文只借鉴选题与结构，不复制原句。</li>
+                <li><i class="fa-solid fa-circle-check"></i> 图文版式识别依赖可读图模型；没有截图或视觉模型时会明确标记“无法判断”。</li>
               </ul>
             </div>
           </aside>
@@ -692,6 +889,21 @@
           <div class="cs-violation-shield"><i class="fa-solid fa-shield-halved"></i></div>
         </div>
         <content-violation-page></content-violation-page>
+      </div>
+
+      <div v-if="libraryOpen" class="cs-library-backdrop" @click.self="libraryOpen=false">
+        <section class="cs-library-popover" role="dialog" aria-modal="true" aria-label="产品词库">
+          <div class="cs-library-head">
+            <div><div class="cs-kicker">AISOU KEYWORD LIBRARY</div><h2>产品词库</h2><p>词库词会作为变量交给爱搜采集器，周一 12:00 自动更新下拉词知识库。</p></div>
+            <button type="button" class="cs-modal-close" @click="libraryOpen=false" aria-label="关闭词库"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+          <div class="cs-library-toolbar"><span><b>{{ productTerms.length }}</b> 个产品词</span><button type="button" class="cs-btn ghost" :disabled="libraryBusy || librarySync.status==='running'" @click="syncKeywordLibrary"><i class="fa-solid" :class="librarySync.status==='running'?'fa-spinner':'fa-rotate'" ></i> {{ librarySync.status==='running' ? '采集中' : '立即更新' }}</button></div>
+          <div class="cs-library-grid">
+            <div v-for="item in productTerms" :key="item.id" class="cs-library-term"><span>{{ item.term }}</span><button type="button" title="移除产品词" @click="removeProductTerm(item)"><i class="fa-solid fa-xmark"></i></button></div>
+            <form class="cs-library-add" @submit.prevent="addProductTerm"><input v-model="newProductTerm" maxlength="120" placeholder="添加产品词"><button type="submit" :disabled="libraryBusy || !newProductTerm.trim()" title="添加产品词"><i class="fa-solid fa-plus"></i></button></form>
+          </div>
+          <div v-if="librarySync.message" class="cs-library-foot" :class="{error:librarySync.status==='error'}"><i class="fa-solid" :class="librarySync.status==='error'?'fa-triangle-exclamation':'fa-circle-info'"></i>{{ librarySync.message }}</div>
+        </section>
       </div>
 
       <div v-if="imitationOpen" class="cs-modal-backdrop" @click.self="closeImitation">

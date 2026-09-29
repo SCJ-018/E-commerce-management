@@ -110,6 +110,40 @@ CREATE TABLE IF NOT EXISTS `种草Sheet配置` (
   INDEX `idx_种草Sheet_部门排序` (`部门`, `排序`, `id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='种草监测中台部门 Sheet 配置';
 
+-- ========================
+-- 内容创作中心：爱搜产品词库与下拉词知识库
+-- ========================
+CREATE TABLE IF NOT EXISTS `content_studio_product_terms` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `term` VARCHAR(120) NOT NULL,
+  `enabled` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_by` VARCHAR(128) NOT NULL DEFAULT '',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`), UNIQUE KEY `uk_content_studio_product_term` (`term`),
+  KEY `idx_content_studio_product_term_enabled` (`enabled`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='内容创作中心爱搜产品词库';
+
+CREATE TABLE IF NOT EXISTS `content_studio_keyword_knowledge` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `product_term` VARCHAR(120) NOT NULL,
+  `keyword` VARCHAR(255) NOT NULL,
+  `keyword_type` VARCHAR(30) NOT NULL DEFAULT '下拉词',
+  `month_cover` VARCHAR(50) NOT NULL DEFAULT '',
+  `seven_search` VARCHAR(50) NOT NULL DEFAULT '',
+  `page_no` INT NOT NULL DEFAULT 1,
+  `is_question` TINYINT(1) NOT NULL DEFAULT 0,
+  `fingerprint` CHAR(64) NOT NULL,
+  `fetched_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`), UNIQUE KEY `uk_content_studio_keyword_fp` (`fingerprint`),
+  KEY `idx_content_studio_keyword_term` (`product_term`),
+  KEY `idx_content_studio_keyword_question` (`is_question`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='内容创作中心爱搜下拉词知识库';
+
+INSERT IGNORE INTO `content_studio_product_terms` (`term`) VALUES
+('电动牙刷'),('护腰坐垫'),('剃须刀'),('爬楼机'),('脚垫'),('坐垫'),
+('车衣'),('香薰'),('去油膜'),('头枕'),('腰靠');
+
 -- 商品初始数据
 INSERT INTO `products` (`name`, `category`, `price`, `stock`, `status`) VALUES
 ('无线蓝牙耳机 Pro', '电子产品', 299.00, 150, '在售'),
