@@ -59,7 +59,7 @@ JS_ROWS = """() => {
   }
   const rows = [];
   const seen = new Set();
-  const numeric = s => /^[\d,.]+(?:亿|万|w|W|k|K)?$/.test(s.replace(/平均[:：]/g, '').trim());
+  const numeric = s => /^[0-9,.]+(?:亿|万|w|W|k|K)?$/.test(s.replace(/平均[:：]/g, '').trim());
   for (const el of Array.from(root.querySelectorAll('*'))) {
     if (el.offsetParent === null || el.children.length > 5) continue;
     const lines = (el.innerText || '').split(String.fromCharCode(10)).map(x => x.trim()).filter(Boolean);
@@ -68,8 +68,8 @@ JS_ROWS = """() => {
     for (let i = lines.length - 1; i >= 0; i--) if (numeric(lines[i])) { n = i; break; }
     if (n < 1) continue;
     let word = lines[n - 1];
-    if (/^\d+$/.test(word) && n > 1) word = lines[n - 2];
-    if (!word || /关键词|月覆盖人次|全部导出|下拉词/.test(word) || /^\d+$/.test(word)) continue;
+    if (/^[0-9]+$/.test(word) && n > 1) word = lines[n - 2];
+    if (!word || /关键词|月覆盖人次|全部导出|下拉词/.test(word) || /^[0-9]+$/.test(word)) continue;
     const key = word + '|' + lines[n];
     if (seen.has(key)) continue;
     seen.add(key);
