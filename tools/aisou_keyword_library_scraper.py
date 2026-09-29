@@ -98,9 +98,9 @@ JS_NEXT = """() => {
   return false;
 }"""
 JS_PAGER_INFO = """() => Array.from(document.querySelectorAll('button,a,li,[role="button"],div'))
-  .filter(x => x.offsetParent !== null && ((x.innerText || '').trim() === '1' ||
+  .filter(x => ((x.innerText || '').trim() === '1' ||
     (x.innerText || '').trim() === '2' || /page|pagination|分页/i.test(x.className || '')))
-  .slice(-30).map(x => ({tag:x.tagName, text:(x.innerText || '').trim().slice(0,40),
+  .slice(-80).map(x => ({tag:x.tagName, text:(x.innerText || '').trim().slice(0,40),
     cls:String(x.className || '').slice(0,160), disabled:!!x.disabled,
     html:x.outerHTML.slice(0,300)}))"""
 
@@ -326,8 +326,6 @@ def main():
                     return
                 payload = response.json()
                 if isinstance(payload, (dict, list)):
-                    if 'library_v2/list_down' in response.url:
-                        log('[词库] list_down响应：%s' % json.dumps(payload, ensure_ascii=False)[:12000])
                     req = response.request
                     api_payloads.append({'url': response.url, 'payload': payload,
                                          'method': req.method, 'post_data': req.post_data})
