@@ -305,6 +305,18 @@
 .srm-stat:before{content:"";position:absolute;left:0;right:0;top:0;height:3px;background:linear-gradient(90deg,var(--srm-t1),var(--srm-t2))}
 .srm-stat:hover{transform:translateY(-2px);border-color:var(--srm-tb);box-shadow:0 16px 30px -18px var(--srm-ts)}
 .srm-stat-head{display:flex;align-items:center;justify-content:flex-start;gap:11px;color:#5b6a80;font-size:13px;font-weight:650}
+.srm-stat-label{min-width:0;white-space:nowrap}
+.srm-period-trigger{
+  display:inline-flex;align-items:center;gap:6px;margin-left:auto;height:28px;padding:0 10px;
+  border:1px solid #dce5f2;border-radius:9px;background:linear-gradient(180deg,#fff,#f7faff);
+  color:#52627a;font:inherit;font-size:11.5px;font-weight:750;cursor:pointer;
+  box-shadow:0 2px 5px rgba(30,64,112,.05);transition:border-color .16s ease,box-shadow .16s ease,color .16s ease;
+}
+.srm-period-trigger i{font-size:9px;color:#8fa0b8;transition:transform .16s ease}
+.srm-period-trigger:hover,.srm-period-trigger.open{border-color:#a9c7f4;color:#2563eb;box-shadow:0 0 0 3px rgba(59,130,246,.11)}
+.srm-period-trigger.open i{transform:rotate(180deg);color:#2563eb}
+.srm-period-panel{min-width:118px}
+.srm-period-panel .srm-dd-head{font-size:11px;color:#718096}
 .srm-stat-icon{
   width:40px;height:40px;flex:0 0 40px;border-radius:12px;
   display:grid;place-items:center;color:#fff;font-size:16px;

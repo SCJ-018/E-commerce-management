@@ -1017,8 +1017,12 @@ _SEEDING_CATEGORY_CACHE_TTL = 60
 _SEEDING_TABLES_READY = False
 
 
-def _seeding_category_view_total(rule, date_value=None):
-    """按部门固定口径汇总三平台单链接浏览量/点击人数。"""
+def _seeding_category_view_total(rule, date_value=None, end_date=None):
+    """按部门固定口径汇总三平台单链接浏览量/点击人数。
+
+    date_value + end_date 用于按日期区间汇总；只传 date_value 时保持原有
+    单日口径，避免影响其它调用方。
+    """
     platforms = (
         ('抖店单链接数据表', '统计周期', '店铺名', '商品名称', '商品点击人数'),
         ('京东单链接数据表', '时间', '店铺名', 'SPU名称', '商品访客数'),
@@ -1031,7 +1035,10 @@ def _seeding_category_view_total(rule, date_value=None):
         if rule['store']:
             conditions.append(f'`{store_col}` LIKE %s')
             params.append('%' + rule['store'] + '%')
-        if date_value:
+        if date_value and end_date:
+            conditions.append(f'`{date_col}` >= %s AND `{date_col}` <= %s')
+            params.extend([date_value, end_date])
+        elif date_value:
             conditions.append(f'`{date_col}` = %s')
             params.append(date_value)
         title_conditions = [f'`{title_col}` LIKE %s' for _ in rule['keywords']]
@@ -1047,9 +1054,9 @@ def _seeding_category_view_total(rule, date_value=None):
     return total
 
 
-def _seeding_category_totals(date_value):
-    """按日期返回全部部门的品类浏览量，并复用短 TTL 缓存。"""
-    cache_key = str(date_value or '')
+def _seeding_category_totals(date_value, end_date=None):
+    """按日期或日期区间返回全部部门的品类浏览量，并复用短 TTL 缓存。"""
+    cache_key = '%s:%s' % (str(date_value or ''), str(end_date or ''))
     now = time.monotonic()
     with _SEEDING_CATEGORY_CACHE_LOCK:
         cached = _SEEDING_CATEGORY_CACHE.get(cache_key)
@@ -1058,11 +1065,43 @@ def _seeding_category_totals(date_value):
         # 锁覆盖计算阶段，避免 category-views 与 summary 并发首屏请求
         # 同时发现缓存未命中，重复执行整套聚合查询。
         totals = {
-            dept: _seeding_category_view_total(rule, date_value)
+            dept: _seeding_category_view_total(rule, date_value, end_date)
             for dept, rule in _SEEDING_CATEGORY_VIEW_RULES.items()
         }
         _SEEDING_CATEGORY_CACHE[cache_key] = (now, totals)
     return dict(totals)
+
+
+def _seeding_category_pool(totals, departments):
+    """返回一组部门共用的品类流量池。
+
+    一部和二部当前配置的是同一套店铺/关键词规则，因此两张卡片命中
+    的是同一份三平台数据，不能把它们简单相加；规则真正不同后才按
+    部门求和，避免重复计算并保持未来配置可扩展。
+    """
+    departments = tuple(departments)
+    if not departments:
+        return 0
+    rules = [_SEEDING_CATEGORY_VIEW_RULES.get(dept) for dept in departments]
+    same_rule = all(rule == rules[0] for rule in rules[1:])
+    values = [int(totals.get(dept, 0) or 0) for dept in departments]
+    return max(values) if same_rule else sum(values)
+
+
+def _seeding_allocated_category_views(totals, note_views):
+    """按一部/二部本月笔记浏览量占比瓜分共同品类流量池。"""
+    pair = ('一部', '二部')
+    pool = _seeding_category_pool(totals, pair)
+    weight_total = sum(max(0, int(note_views.get(dept, 0) or 0)) for dept in pair)
+    if weight_total <= 0:
+        weights = {dept: 0.5 for dept in pair}
+    else:
+        weights = {dept: max(0, int(note_views.get(dept, 0) or 0)) / weight_total for dept in pair}
+    allocated = dict(totals)
+    # 最后一个部门吃掉四舍五入误差，确保两张卡片之和严格等于流量池。
+    allocated[pair[0]] = int(round(pool * weights[pair[0]]))
+    allocated[pair[1]] = int(pool - allocated[pair[0]])
+    return allocated
 
 
 def _seeding_record_to_front(row):
@@ -1386,12 +1425,37 @@ def seeding_summary():
 
         category_current = _seeding_category_totals(yesterday)
         category_previous = _seeding_category_totals(yesterday - timedelta(days=1))
-        if department and department != '全部':
-            category_current_value = category_current.get(department, 0)
-            category_previous_value = category_previous.get(department, 0)
-        else:
-            category_current_value = sum(category_current.values())
-            category_previous_value = sum(category_previous.values())
+        category_month_current = _seeding_category_totals(month_start, today)
+        category_month_previous = _seeding_category_totals(previous_month_start, previous_month_end)
+
+        # 一部/二部命中同一套品类规则，先构成一个共同流量池，再按两部门
+        # 本月笔记阅读量占比分摊；其它部门保持原有固定口径。
+        # record_stats 受请求部门条件约束；这里显式查询两部门，避免选中
+        # 某一部门时另一部门权重被误置为 0。
+        pair_note_views = {}
+        for dept in ('一部', '二部'):
+            rows = db_execute(
+                'SELECT COALESCE(SUM(`阅读量`), 0) AS views FROM `种草收录表` '
+                'WHERE `发布时间` >= %s AND `发布时间` <= %s AND `部门` = %s',
+                [month_start, today, dept],
+            ) or [{}]
+            pair_note_views[dept] = int(float(rows[0].get('views') or 0))
+        allocated_current = _seeding_allocated_category_views(category_current, pair_note_views)
+        allocated_previous = _seeding_allocated_category_views(category_previous, pair_note_views)
+        allocated_month_current = _seeding_allocated_category_views(category_month_current, pair_note_views)
+        allocated_month_previous = _seeding_allocated_category_views(category_month_previous, pair_note_views)
+
+        def category_value(values, pool_values=None):
+            if department and department != '全部':
+                return int(values.get(department, 0) or 0)
+            # 全部部门：一部/二部只计共同流量池一次，再加其它部门。
+            base = _seeding_category_pool(pool_values or values, ('一部', '二部'))
+            return int(base + sum(int(values.get(dept, 0) or 0) for dept in ('三部', '四部', '五部')))
+
+        category_current_value = category_value(allocated_current, category_current)
+        category_previous_value = category_value(allocated_previous, category_previous)
+        category_month_current_value = category_value(allocated_month_current, category_month_current)
+        category_month_previous_value = category_value(allocated_month_previous, category_month_previous)
         return success({
             'date': str(today), 'period': '本月',
             'previousDate': str(previous_month_end), 'previousPeriod': '上月',
@@ -1399,6 +1463,14 @@ def seeding_summary():
             'previous': record_stats(previous_month_start, previous_month_end),
             'categoryCurrent': category_current_value,
             'categoryPrevious': category_previous_value,
+            'categoryMonthCurrent': category_month_current_value,
+            'categoryMonthPrevious': category_month_previous_value,
+            'categoryAllocation': {
+                '一部': pair_note_views['一部'],
+                '二部': pair_note_views['二部'],
+                'poolYesterday': _seeding_category_pool(category_current, ('一部', '二部')),
+                'poolMonth': _seeding_category_pool(category_month_current, ('一部', '二部')),
+            },
         })
     except Exception as e:
         traceback.print_exc()
