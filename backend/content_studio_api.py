@@ -479,6 +479,19 @@ def register_content_studio(app, success, fail, api_url, db_execute=None,
                                if hasattr(r.get('updated_at'), 'strftime') else str(r.get('updated_at') or ''))}
                 for r in rows]
 
+    def _keyword_library_stats():
+        """返回知识库最近一次写入时间和当前关键词总量，供词库弹窗展示。"""
+        _ensure_keyword_library()
+        rows = db_execute(
+            'SELECT COUNT(*) AS total_count, MAX(`fetched_at`) AS latest_at '
+            'FROM `content_studio_keyword_knowledge`') or []
+        row = rows[0] if rows else {}
+        latest = row.get('latest_at')
+        return {
+            'count': int(row.get('total_count') or 0),
+            'updatedAt': latest.strftime('%Y-%m-%d %H:%M') if hasattr(latest, 'strftime') else str(latest or '')
+        }
+
     def _keyword_context(product_name='', note_type='', limit=40):
         """按产品词模糊匹配高热词；问题型下拉词单独标注供引流创作使用。"""
         try:
@@ -720,7 +733,8 @@ def register_content_studio(app, success, fail, api_url, db_execute=None,
     @app.route('/api/content-studio/product-terms', methods=['GET'])
     def content_studio_keyword_library():
         try:
-            return success({'terms': _keyword_term_rows(), 'sync': dict(keyword_sync_state)})
+            return success({'terms': _keyword_term_rows(), 'sync': dict(keyword_sync_state),
+                            'stats': _keyword_library_stats()})
         except Exception as exc:
             return fail('产品词库读取失败：%s' % exc)
 

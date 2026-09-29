@@ -144,7 +144,7 @@
       activeTab:'breakdown', input:'', analysisFocus:'', referenceImages:[], productImages:[], status:'', statusError:false, busy:false, cards:[], selectedId:null,
       category:'', categoryOptions:[], categoryOpen:false, noteType:'测评', brand:'', stylePreference:'素人感型', styleOpen:false, imitate:false, referenceId:null, productName:'', sellingPoints:'', audience:'', scene:'',
       output:null, productionBusy:false, productionStatus:'', productionError:false, aiDegraded:false, imitationOpen:false,
-      productTerms:[], libraryOpen:false, libraryBusy:false, librarySync:{status:'idle',message:'',done:0,total:0}, newProductTerm:'',
+      productTerms:[], libraryOpen:false, libraryBusy:false, librarySync:{status:'idle',message:'',done:0,total:0}, libraryStats:{count:0,updatedAt:''}, newProductTerm:'',
       titleInput:'', titleOptimizeBusy:false, titleOptimizeStatus:'', titleOptimizeError:false, optimizedTitles:[], optimizedUsedWords:[],
       profileDone:false, cardsDone:false, categoriesDone:false,
       // 页面只挂载一次；账号切换时必须丢弃上个账号的内存状态。
@@ -301,6 +301,7 @@
           var d=await post('keyword-library', null, 'GET');
           this.productTerms=Array.isArray(d && d.terms) ? d.terms : [];
           this.librarySync=(d && d.sync) || this.librarySync;
+          this.libraryStats=(d && d.stats) || this.libraryStats;
         } catch (e) { if (e.httpStatus !== 401) this.librarySync={status:'error',message:e.message || '词库读取失败'}; }
       },
       toggleKeywordLibrary:function () { this.libraryOpen=!this.libraryOpen; if (this.libraryOpen) this.loadKeywordLibrary(); },
@@ -902,7 +903,7 @@
             <div v-for="item in productTerms" :key="item.id" class="cs-library-term"><span>{{ item.term }}</span><button type="button" title="移除产品词" @click="removeProductTerm(item)"><i class="fa-solid fa-xmark"></i></button></div>
             <form class="cs-library-add" @submit.prevent="addProductTerm"><input v-model="newProductTerm" maxlength="120" placeholder="添加产品词"><button type="submit" :disabled="libraryBusy || !newProductTerm.trim()" title="添加产品词"><i class="fa-solid fa-plus"></i></button></form>
           </div>
-          <div v-if="librarySync.message" class="cs-library-foot" :class="{error:librarySync.status==='error'}"><i class="fa-solid" :class="librarySync.status==='error'?'fa-triangle-exclamation':'fa-circle-info'"></i>{{ librarySync.message }}</div>
+          <div class="cs-library-foot" :class="{error:librarySync.status==='error'}"><i class="fa-solid" :class="librarySync.status==='error'?'fa-triangle-exclamation':'fa-circle-info'"></i><span v-if="librarySync.status==='error'">{{ librarySync.message }}</span><span v-else>最新数据更新时间：{{ libraryStats.updatedAt || '暂无' }}；当前数据量：{{ libraryStats.count || 0 }} 条</span></div>
         </section>
       </div>
 
