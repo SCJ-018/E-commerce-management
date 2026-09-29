@@ -256,6 +256,7 @@ def scrape_one(page, keyword, api_payloads=None):
         log('[词库] 尝试点击分页下拉项2：%s' % clicked_size_or_page)
         page.wait_for_timeout(1200)
         log('[词库] 点击后list_down请求数：%s' % len([x for x in (api_payloads or []) if isinstance(x, dict) and 'library_v2/list_down' in x.get('url','')]))
+        log('[词库] Vue方法：%s' % page.evaluate("""() => { let x=document.querySelector('#content-container'), out=[]; for(let i=0;x&&i<8;i++,x=x.parentElement){let v=x.__vue__; if(v) out.push(Object.keys((v.$options&&v.$options.methods)||{}));} return out; }"""))
     except Exception:
         pass
     # list_down 是截图中“下拉词”模块的真实接口，返回 total_page/page_size/result。
