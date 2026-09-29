@@ -184,13 +184,16 @@ def scrape_one(page, keyword, api_payloads=None):
     for page_no in range(1, 6):
         current = collect_page(page, page_no, api_payloads)
         words.extend(current)
+        log('[词库] %s 下拉词第%d页读取 %d 条' % (keyword, page_no, len(current)))
         if page_no == 1 and not current:
             try:
                 body_text = (page.locator('body').inner_text(timeout=2000) or '').replace('\n', ' | ')
                 log('[词库] %s 详情页未读到表格，页面文本：%s' % (keyword, body_text[:1200]))
             except Exception:
                 pass
-        if page_no == 5 or not page.evaluate(JS_NEXT):
+        next_clicked = page.evaluate(JS_NEXT)
+        log('[词库] %s 下拉词第%d页翻页：%s' % (keyword, page_no, next_clicked))
+        if page_no == 5 or not next_clicked:
             break
         page.wait_for_timeout(1200)
     # 同一词在不同页重复时只保留首次出现。
