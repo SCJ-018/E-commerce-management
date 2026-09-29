@@ -5,7 +5,7 @@
   var _app = null, _epoch = 0;
   var state = Vue.reactive({ dates: [], date: '', data: null, loading: true, error: '', running: false,
     job: { status: 'idle', message: '' }, rankJob: { status: 'idle', message: '' }, rankRunning: false,
-    rankError: '', scoreCard: null });
+    scoreCard: null });
   var n = function (v) { return Number(v || 0); };
   var fmt = function (v) { var x = n(v); return x >= 1e8 ? (x / 1e8).toFixed(1) + '亿' : x >= 1e4 ? (x / 1e4).toFixed(1) + '万' : x ? Math.round(x).toLocaleString('zh-CN') : '--'; };
   var avg = function (b) { var a = b && b.candidates || []; return a.length ? (a.reduce(function (s, x) { return s + n(x.score && x.score.total_score); }, 0) / a.length).toFixed(1) : '—'; };
@@ -38,17 +38,18 @@
   }
   async function runTmall() {
     if (state.rankRunning) return;
-    state.rankRunning = true; state.rankError = '';
+    state.rankRunning = true;
     try {
       var r = await ApiService.runTmallRanklist();
-      if (!r) { state.rankError = '任务未能启动，请稍后重试。'; return; }
+      if (!r) return;
       for (var i = 0; i < 1200; i++) {
         await new Promise(function (resolve) { setTimeout(resolve, 3000); }); await rankJob();
         if (state.rankJob.status === 'done') return;
-        if (state.rankJob.status === 'error') { state.rankError = state.rankJob.message || '天猫榜单采集失败'; return; }
+        // 采集失败只通过后端钉钉告警通知，不在选品助手前端展示错误详情。
+        if (state.rankJob.status === 'error') return;
       }
-      state.rankError = '采集仍在后台执行，请稍后刷新查看。';
-    } catch (_) { state.rankError = '任务请求异常，请稍后重试。'; } finally { state.rankRunning = false; }
+    } catch (_) { /* 前端不展示抓取失败详情；后台采集失败由后端钉钉告警处理。 */ }
+    finally { state.rankRunning = false; }
   }
 
   var Page = {
@@ -70,7 +71,7 @@
 @media(max-width:800px){.selv2-layout{height:auto;min-height:0;overflow:visible;display:block}.selv2-layout>.selv2-candidate-scroll,.selv2-layout>.selv2-right{overflow:visible;padding-right:0}.selv2-left{display:none}.selv2-right{position:static;max-height:none}}
 </style>
 <div class="selv2-shell">
-  <div class="selv2-head"><section class="selv2-hero"><div class="selv2-kicker">DAILY PRODUCT SELECTION · V2</div><h1 class="selv2-title">从热搜信号，到可执行的选品决策</h1><p class="selv2-copy">每天 07:00 清洗抖音热搜，以四个经营分层筛出 70 个候选品，再用爱搜需求、利润、竞争、售后与内容空间完成统一评分。</p><div v-if="state.data" class="selv2-metrics"><div class="selv2-metric"><span>今日候选</span><b>{{ state.data.summary.candidateCount }}</b></div><div class="selv2-metric"><span>高分原品</span><b>{{ state.data.summary.finalistCount }}</b></div><div class="selv2-metric"><span>关联裂变品</span><b>{{ state.data.summary.variantCount }}</b></div><div class="selv2-metric"><span>结果日期</span><b style="font-size:16px">{{ state.data.date }}</b></div></div></section><aside class="selv2-date"><label><i class="fa-regular fa-calendar"></i> 选品结果日期</label><select :value="state.date" :disabled="!state.dates.length" @change="changeDate"><option v-for="d in state.dates" :key="d" :value="d">{{ d }}</option><option v-if="!state.dates.length">暂无已生成结果</option></select><button @click="refresh"><i class="fa-solid fa-rotate"></i> 刷新结果</button><div class="selv2-rank-capture"><div class="selv2-rank-title"><b>天猫榜单周采集</b><span>周一 00:00 · 排除进口/食品/医药</span></div><button type="button" class="selv2-rank-run" @click="runTmall" :disabled="state.rankRunning"><i class="fa-solid fa-cloud-arrow-down"></i> {{ state.rankRunning ? '采集中…' : '手动采集' }}</button><small :class="state.rankJob.status">{{ state.rankJob.crawlerMessage || state.rankJob.message || '等待自动任务' }}</small><em v-if="state.rankJob.weeks && state.rankJob.weeks.length">保留 {{ state.rankJob.weeks.length }}/{{ state.rankJob.keepWeeks || 4 }} 周 · 最新 {{ state.rankJob.weeks[0].rows }} 条</em><small v-if="state.rankError" class="error">{{ state.rankError }}</small></div></aside></div>
+  <div class="selv2-head"><section class="selv2-hero"><div class="selv2-kicker">DAILY PRODUCT SELECTION · V2</div><h1 class="selv2-title">从热搜信号，到可执行的选品决策</h1><p class="selv2-copy">每天 07:00 清洗抖音热搜，以四个经营分层筛出 70 个候选品，再用爱搜需求、利润、竞争、售后与内容空间完成统一评分。</p><div v-if="state.data" class="selv2-metrics"><div class="selv2-metric"><span>今日候选</span><b>{{ state.data.summary.candidateCount }}</b></div><div class="selv2-metric"><span>高分原品</span><b>{{ state.data.summary.finalistCount }}</b></div><div class="selv2-metric"><span>关联裂变品</span><b>{{ state.data.summary.variantCount }}</b></div><div class="selv2-metric"><span>结果日期</span><b style="font-size:16px">{{ state.data.date }}</b></div></div></section><aside class="selv2-date"><label><i class="fa-regular fa-calendar"></i> 选品结果日期</label><select :value="state.date" :disabled="!state.dates.length" @change="changeDate"><option v-for="d in state.dates" :key="d" :value="d">{{ d }}</option><option v-if="!state.dates.length">暂无已生成结果</option></select><button @click="refresh"><i class="fa-solid fa-rotate"></i> 刷新结果</button><div class="selv2-rank-capture"><div class="selv2-rank-title"><b>天猫榜单周采集</b><span>周一 00:00 · 排除进口/食品/医药</span></div><button type="button" class="selv2-rank-run" @click="runTmall" :disabled="state.rankRunning"><i class="fa-solid fa-cloud-arrow-down"></i> {{ state.rankRunning ? '采集中…' : '手动采集' }}</button><small v-if="state.rankJob.status !== 'error'" :class="state.rankJob.status">{{ state.rankJob.crawlerMessage || state.rankJob.message || '等待自动任务' }}</small><em v-if="state.rankJob.weeks && state.rankJob.weeks.length">保留 {{ state.rankJob.weeks.length }}/{{ state.rankJob.keepWeeks || 4 }} 周 · 最新 {{ state.rankJob.weeks[0].rows }} 条</em></div></aside></div>
   <div v-if="state.error" class="selv2-error">{{ state.error }}</div><div v-if="state.loading" class="selv2-loading"><i class="fa-solid fa-spinner fa-spin"></i> 正在读取当日选品结果…</div>
   <div v-else-if="!state.data" class="selv2-empty"><h3>当日还没有分层选品结果</h3><p>系统会在每天 07:00 完成热搜清洗后自动生成，也可手动启动本次任务。</p><button class="selv2-primary" :disabled="state.running" @click="run"><i class="fa-solid fa-wand-magic-sparkles"></i> {{ state.running ? (state.job.message || '生成中…') : '生成当日选品结果' }}</button></div>
   <div v-else class="selv2-layout"><aside class="selv2-panel selv2-left"><div class="selv2-side-label">四个经营分层</div><button v-for="band in state.data.bands" :key="band.key" class="selv2-nav" :class="band.key" @click="scrollToBand(band.key)"><div class="selv2-nav-top"><span><i class="selv2-dot"></i>{{ band.name }}</span><b>{{ band.candidates.length }}</b></div><small>{{ band.min }}–{{ band.max }} 元 · 均分 {{ avg(band) }}</small><span class="selv2-nav-detail">决策：{{ band.decision }}</span><span class="selv2-nav-detail">适合：{{ band.audience }}</span><div class="selv2-meter"><i :style="{width: Math.min(100, Number(avg(band))*10)+'%'}"></i></div></button><div class="selv2-status"><b>● {{ state.job.status === 'done' ? '当日结果已完成' : (state.job.message || '等待每日任务') }}</b><br>候选、评分与最终推荐按日期独立存档。</div></aside>
