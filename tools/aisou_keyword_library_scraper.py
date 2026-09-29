@@ -103,6 +103,20 @@ JS_PAGER_INFO = """() => Array.from(document.querySelectorAll('button,a,li,[role
   .slice(-80).map(x => ({tag:x.tagName, text:(x.innerText || '').trim().slice(0,40),
     cls:String(x.className || '').slice(0,160), disabled:!!x.disabled,
     html:x.outerHTML.slice(0,300)}))"""
+JS_TRIGGER_PAGE = """(pageNo) => {
+  let found = null, seen = new Set();
+  function walk(v) {
+    if (!v || seen.has(v) || found) return;
+    seen.add(v);
+    if (v.listPage && v.searchForm && typeof v.tableDataFun === 'function') found = v;
+    (v.$children || []).forEach(walk);
+  }
+  Array.from(document.querySelectorAll('*')).forEach(el => { if (el.__vue__) walk(el.__vue__); });
+  if (!found) return false;
+  found.listPage.pageNum = pageNo;
+  found.tableDataFun();
+  return true;
+}"""
 
 
 def log(*args):
@@ -241,63 +255,40 @@ def scrape_one(page, keyword, api_payloads=None):
     opened = page.evaluate(JS_OPEN_DOWN)
     log('[词库] %s 详情页下拉词入口：%s，URL：%s' % (keyword, opened, page.url))
     page.wait_for_timeout(1200)
-    try:
-        api_urls = [x.get('url', '') for x in (api_payloads or []) if isinstance(x, dict) and x.get('url')]
-        log('[词库] %s 采集到 list_down 接口：%s' % (keyword, [u for u in api_urls if 'library_v2/list_down' in u][-1:]))
-        for x in (api_payloads or []):
-            if isinstance(x, dict) and 'library_v2/list_down' in x.get('url', ''):
-                log('[词库] list_down请求方法=%s body=%s' % (x.get('method'), x.get('post_data')))
-    except Exception:
-        pass
-    try:
-        log('[词库] %s 分页控件：%s' % (keyword, json.dumps(page.evaluate(JS_PAGER_INFO), ensure_ascii=False)[:5000]))
-        log('[词库] %s 分页相关DOM：%s' % (keyword, page.evaluate("""() => Array.from(document.querySelectorAll('*')).filter(x => /pagination|pager|page-size/i.test(String(x.className||''))).slice(-20).map(x => x.outerHTML.slice(0,500))""")))
-        clicked_size_or_page = page.evaluate("""() => { const xs=Array.from(document.querySelectorAll('li')).filter(x=>(x.innerText||'').trim()==='2'); if (!xs.length) return false; xs[xs.length-1].click(); return true; }""")
-        log('[词库] 尝试点击分页下拉项2：%s' % clicked_size_or_page)
-        page.wait_for_timeout(1200)
-        log('[词库] 点击后list_down请求数：%s' % len([x for x in (api_payloads or []) if isinstance(x, dict) and 'library_v2/list_down' in x.get('url','')]))
-        log('[词库] Vue方法：%s' % page.evaluate("""() => { let out=[],seen=new Set(); function walk(v){if(!v||seen.has(v)||out.length>100)return;seen.add(v);let ms=Object.keys((v.$options&&v.$options.methods)||{});if(ms.some(k=>/page|list|search|sort/i.test(k)))out.push({name:v.$options.name||'',methods:ms.filter(k=>/page|list|search|sort/i.test(k))});(v.$children||[]).forEach(walk);} Array.from(document.querySelectorAll('*')).forEach(el=>{if(el.__vue__)walk(el.__vue__)}); return out; }"""))
-        log('[词库] getList组件状态：%s' % page.evaluate("""() => {let out=[],seen=new Set();function walk(v){if(!v||seen.has(v)||out.length>10)return;seen.add(v);let ms=Object.keys((v.$options&&v.$options.methods)||{});if(ms.includes('getList'))out.push({keys:Object.keys(v.$data||{}),listPage:v.listPage||null,activeName:v.activeName||null});(v.$children||[]).forEach(walk);}Array.from(document.querySelectorAll('*')).forEach(el=>{if(el.__vue__)walk(el.__vue__)});return out;}"""))
-        log('[词库] tableDataFun组件状态：%s' % page.evaluate("""() => {let out=[],seen=new Set();function walk(v){if(!v||seen.has(v)||out.length>10)return;seen.add(v);let ms=Object.keys((v.$options&&v.$options.methods)||{});if(ms.includes('tableDataFun'))out.push({keys:Object.keys(v.$data||{}),listPage:v.listPage||null,activeName:v.activeName||null,searchForm:v.searchForm||null});(v.$children||[]).forEach(walk);}Array.from(document.querySelectorAll('*')).forEach(el=>{if(el.__vue__)walk(el.__vue__)});return out;}"""))
-        invoked = page.evaluate("""() => {let found=null,seen=new Set();function walk(v){if(!v||seen.has(v)||found)return;seen.add(v);if(v.listPage&&v.searchForm&&typeof v.tableDataFun==='function')found=v;(v.$children||[]).forEach(walk);}Array.from(document.querySelectorAll('*')).forEach(el=>{if(el.__vue__)walk(el.__vue__)});if(!found)return false;found.listPage.pageNum=2;found.tableDataFun();return true;}""")
-        log('[词库] 调用组件第2页：%s' % invoked)
-        page.wait_for_timeout(2200)
-        log('[词库] 调用后list_down请求数：%s' % len([x for x in (api_payloads or []) if isinstance(x, dict) and 'library_v2/list_down' in x.get('url','')]))
-        log('[词库] searchFun源码：%s' % page.evaluate("""() => {let found=null,seen=new Set();function walk(v){if(!v||seen.has(v)||found) return;seen.add(v);let ms=Object.keys((v.$options&&v.$options.methods)||{});if(ms.includes('searchFun')&&v.listPage) found=String(v.searchFun||'');(v.$children||[]).forEach(walk);}Array.from(document.querySelectorAll('*')).forEach(el=>{if(el.__vue__)walk(el.__vue__)});return found&&found.slice(0,3000);}"""))
-    except Exception:
-        pass
-    # list_down 是截图中“下拉词”模块的真实接口，返回 total_page/page_size/result。
-    # 页面本身只渲染当前 20 条且分页控件由前端组件托管，因此直接复用该请求分页，
-    # 不依赖脆弱的 DOM 下一页按钮。
-    down_capture = next((x for x in reversed(api_payloads or [])
-                         if isinstance(x, dict) and 'library_v2/list_down' in x.get('url', '')), None)
+    # list_down 是截图中“下拉词”模块的真实接口。分页控件由 Vue 组件托管，
+    # 通过组件 tableDataFun 触发请求，可沿用前端自动生成的签名。
+    def down_items(page_no):
+        for captured in reversed(api_payloads or []):
+            if not isinstance(captured, dict) or 'library_v2/list_down' not in captured.get('url', ''):
+                continue
+            payload = captured.get('payload')
+            data = payload.get('data') if isinstance(payload, dict) else None
+            actual = data.get('page_no') if isinstance(data, dict) else None
+            if str(actual) == str(page_no):
+                return collect_api_result(payload, page_no)
+        return []
     words = []
     for page_no in range(1, 6):
-        if page_no == 1 and down_capture:
-            current = collect_api_result(down_capture.get('payload'), page_no)
-        elif down_capture:
-            try:
-                current = collect_api_result(fetch_api_page(page, down_capture, page_no), page_no)
-            except Exception as exc:
-                log('[词库] %s 下拉词第%d页接口请求失败：%s' % (keyword, page_no, exc))
-                current = []
-        else:
+        if page_no > 1:
+            before = len(api_payloads or [])
+            triggered = page.evaluate(JS_TRIGGER_PAGE, page_no)
+            deadline = 12000
+            while triggered and deadline > 0:
+                page.wait_for_timeout(500)
+                deadline -= 500
+                if len(api_payloads or []) > before and down_items(page_no):
+                    break
+        current = down_items(page_no)
+        if not current and page_no == 1:
             current = collect_page(page, page_no, api_payloads)
         words.extend(current)
         log('[词库] %s 下拉词第%d页读取 %d 条' % (keyword, page_no, len(current)))
-        if page_no == 1 and not current and not down_capture:
+        if page_no == 1 and not current:
             try:
                 body_text = (page.locator('body').inner_text(timeout=2000) or '').replace('\n', ' | ')
                 log('[词库] %s 详情页未读到表格，页面文本：%s' % (keyword, body_text[:1200]))
             except Exception:
                 pass
-        if down_capture:
-            continue
-        next_clicked = page.evaluate(JS_NEXT)
-        log('[词库] %s 下拉词第%d页翻页：%s' % (keyword, page_no, next_clicked))
-        if page_no == 5 or not next_clicked:
-            break
-        page.wait_for_timeout(1200)
     # 同一词在不同页重复时只保留首次出现。
     unique, seen = [], set()
     for item in words:
@@ -339,8 +330,6 @@ def main():
                     return
                 payload = response.json()
                 if isinstance(payload, (dict, list)):
-                    if 'library_v2/helper/libraryHelper' in response.url and 'type=down' in response.url:
-                        log('[词库] helper down响应摘要：%s' % json.dumps(payload, ensure_ascii=False)[:3000])
                     req = response.request
                     api_payloads.append({'url': response.url, 'payload': payload,
                                          'method': req.method, 'post_data': req.post_data})
