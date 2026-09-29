@@ -83,6 +83,18 @@ JS_NEXT = """() => {
   const el = Array.from(document.querySelectorAll('button,a,span')).find(x =>
     x.offsetParent !== null && /^(下一页|>|›|»)$/.test((x.innerText || '').trim()));
   if (el) { el.click(); return true; }
+  const pagers = Array.from(document.querySelectorAll('[class*="pagination"],[class*="Pagination"],.el-pagination'))
+    .filter(x => x.offsetParent !== null);
+  for (const pager of pagers) {
+    const controls = Array.from(pager.querySelectorAll('button,a,li,[role="button"]'))
+      .filter(x => x.offsetParent !== null && !x.disabled && !x.classList.contains('disabled') && !x.classList.contains('is-disabled'));
+    if (!controls.length) continue;
+    const next = controls.slice().reverse().find(x => /^(下一页|>|›|»)$/.test((x.innerText || '').trim()) ||
+      /next|下一页/.test((x.className || '') + ' ' + (x.getAttribute('aria-label') || '') + ' ' + (x.getAttribute('title') || '')));
+    if (next) { next.click(); return true; }
+    // 截图所示分页没有文本/aria 标识时，分页控件最后一个可用按钮就是“>”。
+    if (controls.length >= 3) { controls[controls.length - 1].click(); return true; }
+  }
   return false;
 }"""
 
@@ -175,11 +187,6 @@ def scrape_one(page, keyword, api_payloads=None):
     opened = page.evaluate(JS_OPEN_DOWN)
     log('[词库] %s 详情页下拉词入口：%s，URL：%s' % (keyword, opened, page.url))
     page.wait_for_timeout(1200)
-    try:
-        detail_text = (page.locator('#content-container').inner_text(timeout=3000) or '').replace('\n', ' | ')
-        log('[词库] %s 详情模块文本：%s' % (keyword, detail_text[:3000]))
-    except Exception:
-        pass
     words = []
     for page_no in range(1, 6):
         current = collect_page(page, page_no, api_payloads)
