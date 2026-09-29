@@ -50,13 +50,9 @@ JS_ROWS = """() => {
   const all = Array.from(document.querySelectorAll('#content-container *,body *'))
     .filter(x => x.offsetParent !== null);
   const heading = all.find(x => (x.innerText || '').trim() === '下拉词');
-  let root = heading || document.querySelector('#content-container') || document.body;
-  // 真实页面是四列卡片而非 table：向上找到同时包含“全部导出”和分页的模块外壳。
-  for (let i = 0; i < 8 && root.parentElement; i++) {
-    const t = root.innerText || '';
-    if (/全部导出/.test(t) && (/50/.test(t) || /下一页|›|>|»/.test(t))) break;
-    root = root.parentElement;
-  }
+  // 真实页面是四列卡片而非 table。使用整个内容容器，避免停在只包含前两列的
+  // CSS 子网格；详情页中其它卡片会被下面的“关键词+数值”行规则过滤掉。
+  const root = document.querySelector('#content-container') || document.body;
   const rows = [];
   const seen = new Set();
   const numeric = s => /^[0-9,.]+(?:亿|万|w|W|k|K)?$/.test(s.replace(/平均[:：]/g, '').trim());
