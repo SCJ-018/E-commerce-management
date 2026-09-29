@@ -484,13 +484,21 @@ def register_content_studio(app, success, fail, api_url, db_execute=None,
         try:
             _ensure_keyword_library()
             name = str(product_name or '').strip()
+            # 先取有限窗口，再在 Python 里做双向包含匹配：产品名常带“Pro/升级版”，
+            # 不能只用 SQL 的 term LIKE %产品名%，否则会漏掉“电动牙刷 Pro”对应的“电动牙刷”。
             rows = db_execute("""
                 SELECT `product_term`,`keyword`,`keyword_type`,`month_cover`,`seven_search`,`is_question`
                 FROM `content_studio_keyword_knowledge`
-                WHERE `keyword` <> '' AND (%s = '' OR `product_term` LIKE %s OR `keyword` LIKE %s)
+                WHERE `keyword` <> ''
                 ORDER BY `is_question` DESC, CAST(NULLIF(`seven_search`,'') AS UNSIGNED) DESC,
-                         CAST(NULLIF(`month_cover`,'') AS UNSIGNED) DESC LIMIT %s
-            """, [name, '%%%s%%' % name, '%%%s%%' % name, int(limit)]) or []
+                         CAST(NULLIF(`month_cover`,'') AS UNSIGNED) DESC LIMIT 1000
+            """) or []
+            if name:
+                folded = name.lower()
+                rows = [r for r in rows if folded in str(r.get('product_term') or '').lower()
+                        or str(r.get('product_term') or '').lower() in folded
+                        or folded in str(r.get('keyword') or '').lower()]
+            rows = rows[:int(limit)]
         except Exception:
             app.logger.exception('爱搜关键词知识库读取失败')
             return ''
