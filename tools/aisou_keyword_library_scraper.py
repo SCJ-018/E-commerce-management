@@ -260,6 +260,8 @@ def main():
                     return
                 payload = response.json()
                 if isinstance(payload, (dict, list)):
+                    if 'library_v2/list_down' in response.url:
+                        log('[词库] list_down响应：%s' % json.dumps(payload, ensure_ascii=False)[:12000])
                     api_payloads.append({'url': response.url, 'payload': payload})
                     if len(api_payloads) > 120:
                         del api_payloads[:-120]
