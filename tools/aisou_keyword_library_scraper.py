@@ -217,12 +217,14 @@ def fetch_api_page(page, captured, page_no):
     if not isinstance(body, dict):
         body = {}
     body['page_no'] = page_no
-    script = """async ({url, body}) => {
-      const r = await fetch(url, {method:'POST', credentials:'include',
-        headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-      return await r.json();
-    }"""
-    return page.evaluate(script, {'url': captured['url'], 'body': body})
+    # 直接使用 Playwright 上下文请求，绕过页面从 dso.aidso.com 到 api.aidso.com
+    # 的跨域限制；context.request 与浏览器上下文共享 cookies。
+    response = page.context.request.post(
+        captured['url'], data=body,
+        headers={'Content-Type': 'application/json', 'Referer': page.url}, timeout=60000)
+    if not response.ok:
+        raise RuntimeError('HTTP %s' % response.status)
+    return response.json()
 
 
 def scrape_one(page, keyword, api_payloads=None):
