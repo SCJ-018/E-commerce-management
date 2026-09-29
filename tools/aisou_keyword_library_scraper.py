@@ -30,8 +30,13 @@ JS_EXACT_DETAIL = """(kw) => {
   const rows = Array.from(document.querySelectorAll('table tbody tr')).filter(x => x.offsetParent !== null);
   let exact = rows.find(row => Array.from(row.querySelectorAll('td')).some(td => (td.innerText || '').trim() === kw));
   if (!exact) return 'NOT_FOUND';
-  const detail = Array.from(exact.querySelectorAll('button,a,[role="button"],span,div')).find(x =>
-    /详情|查看详情/.test((x.innerText || '').trim()) && x.offsetParent !== null);
+  // 爱搜当前版本的详情入口在第 9 列，文本常由图标/空白 p 节点承载，
+  // 不能只依赖“详情”文字。先按参考 DOM 结构定位，再按文字/title/aria-label 兜底。
+  const detail = exact.querySelector('td:nth-child(9) div div div p:nth-child(2)') ||
+    exact.querySelector('td:nth-child(9) [title*="详情"],td:nth-child(9) [aria-label*="详情"]') ||
+    Array.from(exact.querySelectorAll('button,a,[role="button"],span,div,p')).find(x =>
+      x.offsetParent !== null && (/详情|查看|明细/.test((x.innerText || '').trim()) ||
+        /详情|查看|明细/.test(x.getAttribute('title') || '') || /详情|查看|明细/.test(x.getAttribute('aria-label') || '')));
   if (!detail) return 'NO_DETAIL';
   detail.click(); return 'CLICKED';
 }"""
