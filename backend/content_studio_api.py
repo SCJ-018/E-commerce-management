@@ -278,7 +278,7 @@ def _parse_json_response(raw):
         raise
 
 
-def _ask_ai(api_url, system, user, max_tokens):
+def _ask_ai(api_url, system, user, max_tokens, model=None):
     # 内容工坊可用独立 key；未配置时沿用项目已有 DeepSeek key，便于本地部署直接启用。
     key = (_content_studio_setting('CONTENT_STUDIO_API_KEY') or
            _content_studio_setting('DEEPSEEK_API_KEY') or '').strip()
@@ -287,7 +287,7 @@ def _ask_ai(api_url, system, user, max_tokens):
     user_content = user
     if isinstance(user, list):
         user_content = user
-    model_name = (_content_studio_setting('CONTENT_STUDIO_VISION_MODEL') if isinstance(user, list) else '') or _content_studio_setting('CONTENT_STUDIO_MODEL', 'deepseek-flash')
+    model_name = model or (_content_studio_setting('CONTENT_STUDIO_VISION_MODEL') if isinstance(user, list) else '') or _content_studio_setting('CONTENT_STUDIO_MODEL', 'deepseek-flash')
     response = requests.post(api_url, timeout=90,
         headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'},
         json={'model': model_name,
@@ -517,6 +517,38 @@ def register_content_studio(app, success, fail, api_url, db_execute=None,
             text += '\n问题型下拉词（引流类型优先参考）：' + '；'.join(questions[:max(1, limit // 2)])
         return text[:9000]
 
+    def _classify_question_keywords(product_term, words):
+        """用内容创作同一套 deepseek-flash 语义判断哪些下拉词属于提问。
+
+        模型只允许从原始列表原样选择，避免生成新词污染知识库；接口异常时退回本地
+        规则，不阻断整周采集任务。
+        """
+        candidates = []
+        for word in words or []:
+            value = str(word or '').strip()
+            if value and value not in candidates:
+                candidates.append(value)
+        candidates = candidates[:500]
+        if not candidates:
+            return set(), False
+        system = ('你是搜索意图分类器。判断下拉关键词是否表达一个需要回答的问题。'
+                  '疑问不要求带问号，也包括“值不值得、有没有必要、哪款好、正确用法、原因、区别”等隐式提问。'
+                  '只可从输入关键词原样选择，不得改写、补充或生成新关键词。'
+                  '只返回合法 JSON 对象，格式为 {"questionKeywords":["原词"]}。')
+        user = '产品词：%s\n待判断下拉词：%s' % (
+            str(product_term or '')[:120], json.dumps(candidates, ensure_ascii=False))
+        try:
+            result = _ask_ai(api_url, system, user, 2200, model='deepseek-flash')
+            selected = result.get('questionKeywords') if isinstance(result, dict) else None
+            if not isinstance(selected, list):
+                raise ValueError('问题词分类返回格式异常')
+            allowed = set(candidates)
+            return {str(x).strip() for x in selected if str(x).strip() in allowed}, True
+        except Exception as exc:
+            app.logger.warning('问题型下拉词 AI 分类降级（%s）：%s', product_term, exc)
+            pattern = re.compile(r'(吗|怎么|如何|为什么|是不是|值得|智商税|哪个好|哪款|能不能|可以吗|有没有必要|区别|用法|教程)')
+            return {x for x in candidates if pattern.search(x)}, False
+
     def _keyword_sync_worker():
         """每周任务：把当前产品词库交给 Playwright 采集器，再写入专用知识库。"""
         if not keyword_sync_lock.acquire(False):
@@ -566,17 +598,23 @@ def register_content_studio(app, success, fail, api_url, db_execute=None,
                 keyword_sync_state.update(status='error', message='采集结果读取失败：%s' % exc)
                 return
             inserted = 0
+            ai_classified_terms = 0
             for result in output.get('results') or []:
                 term = str(result.get('keyword') or '').strip()
                 if not term:
                     continue
                 db_execute('DELETE FROM `content_studio_keyword_knowledge` WHERE `product_term`=%s', [term], fetch=False)
-                for item in result.get('words') or []:
+                result_words = result.get('words') or []
+                question_words, used_ai = _classify_question_keywords(
+                    term, [item.get('name') for item in result_words if isinstance(item, dict)])
+                if used_ai:
+                    ai_classified_terms += 1
+                for item in result_words:
                     word = str(item.get('name') or '').strip()
                     if not word:
                         continue
                     fp = hashlib.sha256(('%s|%s|%s|%s' % (term, item.get('type') or '下拉词', word, item.get('page') or 1)).encode('utf-8')).hexdigest()
-                    question = 1 if re.search(r'(吗|怎么|如何|为什么|是不是|值得|智商税|哪个好|能不能|可以)', word) else 0
+                    question = 1 if word in question_words else 0
                     db_execute("""INSERT INTO `content_studio_keyword_knowledge`
                       (`product_term`,`keyword`,`keyword_type`,`month_cover`,`seven_search`,`page_no`,`is_question`,`fingerprint`)
                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
@@ -585,7 +623,7 @@ def register_content_studio(app, success, fail, api_url, db_execute=None,
                                [term, word, item.get('type') or '下拉词', item.get('month') or '', item.get('seven') or '',
                                 int(item.get('page') or 1), question, fp], fetch=False)
                     inserted += 1
-            keyword_sync_state.update(status='done', message='采集完成，写入 %d 条知识库关键词' % inserted,
+            keyword_sync_state.update(status='done', message='采集完成，写入 %d 条知识库关键词；%d 个产品词由 deepseek-flash 完成问题意图识别' % (inserted, ai_classified_terms),
                                       done=len(terms), finishedAt=time.strftime('%Y-%m-%d %H:%M:%S'))
         except Exception as exc:
             app.logger.exception('爱搜关键词同步失败')
