@@ -243,7 +243,7 @@ def scrape_one(page, keyword, api_payloads=None):
     page.wait_for_timeout(1200)
     try:
         api_urls = [x.get('url', '') for x in (api_payloads or []) if isinstance(x, dict) and x.get('url')]
-        log('[词库] %s 采集到的爱搜接口：%s' % (keyword, json.dumps(api_urls[-20:], ensure_ascii=False)))
+        log('[词库] %s 采集到 list_down 接口：%s' % (keyword, [u for u in api_urls if 'library_v2/list_down' in u][-1:]))
         for x in (api_payloads or []):
             if isinstance(x, dict) and 'library_v2/list_down' in x.get('url', ''):
                 log('[词库] list_down请求方法=%s body=%s' % (x.get('method'), x.get('post_data')))
@@ -251,6 +251,7 @@ def scrape_one(page, keyword, api_payloads=None):
         pass
     try:
         log('[词库] %s 分页控件：%s' % (keyword, json.dumps(page.evaluate(JS_PAGER_INFO), ensure_ascii=False)[:5000]))
+        log('[词库] %s 分页相关DOM：%s' % (keyword, page.evaluate("""() => Array.from(document.querySelectorAll('*')).filter(x => /pagination|pager|page-size/i.test(String(x.className||''))).slice(-20).map(x => x.outerHTML.slice(0,500))""")))
     except Exception:
         pass
     # list_down 是截图中“下拉词”模块的真实接口，返回 total_page/page_size/result。
