@@ -38,6 +38,8 @@ FILES = {
     'backend/hr_api.py': REMOTE_ROOT + '/backend/hr_api.py',
     # 天猫榜单周采集：backend/app.py 通过 subprocess 调用，必须与后端一起发布。
     'tools/tmall_ranklist_scraper.py': REMOTE_ROOT + '/tools/tmall_ranklist_scraper.py',
+    # 内容创作中心专用爱搜词库采集器：与选品助手 aisou_scraper.py 完全隔离。
+    'tools/aisou_keyword_library_scraper.py': REMOTE_ROOT + '/tools/aisou_keyword_library_scraper.py',
 }
 
 # 目录：本地目录 -> 远程目录（递归上传，自动建远程子目录）
