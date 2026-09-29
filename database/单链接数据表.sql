@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS `抖店单链接数据表` (
   `商详页成交转化率` DECIMAL(10,4) NOT NULL,
   `商详页跳失率` DECIMAL(10,4) NOT NULL,
   `平台消费券补贴金额` DECIMAL(18,2) NOT NULL,
-  PRIMARY KEY (`统计周期`, `商品编码`)
+  -- 同一商品编码可能被不同抖店店铺复用，店铺必须参与唯一键。
+  PRIMARY KEY (`店铺名`, `统计周期`, `商品编码`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='抖店单链接数据表';
 
 CREATE TABLE IF NOT EXISTS `京东单链接数据表` (

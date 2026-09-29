@@ -786,6 +786,8 @@ const App = (() => {
     sessionStorage.setItem('admin_current_user', state.currentUser);
     sessionStorage.setItem('admin_current_account', username);
     sessionStorage.setItem('admin_current_role', state.currentRole);
+    // 内容创作中心是常驻单例页面，通知它账号上下文已切换，避免复用上一账号的内存数据。
+    window.dispatchEvent(new CustomEvent('admin-session-changed', { detail: { account: username } }));
     if (state.currentPermissions && state.currentPermissions.length) {
       sessionStorage.setItem('admin_permissions', JSON.stringify(state.currentPermissions));
     }
@@ -835,7 +837,10 @@ const App = (() => {
     sessionStorage.removeItem('admin_logged_in');
     sessionStorage.removeItem('admin_permissions');
     sessionStorage.removeItem('admin_current_user');
+    sessionStorage.removeItem('admin_current_account');
+    sessionStorage.removeItem('admin_current_role');
     state.currentUser = null;
+    window.dispatchEvent(new CustomEvent('admin-session-changed', { detail: { account: '' } }));
     document.getElementById('loginPage').classList.remove('hidden');
     document.getElementById('appPage').classList.add('hidden');
     document.getElementById('loginForm').reset();

@@ -451,22 +451,32 @@ def download_current(page, tag, menu_immediate=False):
     direct = None
     if menu_immediate:
         # 成交分析页的菜单由悬浮触发；第一项才是“下载当前明细”。
-        try:
-            visible[0].hover()
-            time.sleep(0.8)
-            cur = page.get_by_text('下载当前明细', exact=True)
-            opts = [cur.nth(i) for i in range(cur.count()) if _is_visible(cur.nth(i))]
-            if not opts:
-                visible[0].click(force=True)
-                time.sleep(0.5)
+        # 日期刚切换后，菜单可能在第一次点击时被前端重绘；最多重新悬浮三次，
+        # 每次都重新取得可见菜单项，避免复用已经脱离 DOM 的旧节点。
+        last_error = None
+        for _ in range(3):
+            try:
+                visible[0].hover()
+                time.sleep(1.0)
+                cur = page.get_by_text('下载当前明细', exact=True)
                 opts = [cur.nth(i) for i in range(cur.count()) if _is_visible(cur.nth(i))]
-            if not opts:
-                raise RuntimeError('悬浮菜单未显示下载当前明细')
-            with page.expect_download(timeout=30000) as di:
-                opts[0].click(force=True)
-            direct = di.value
-        except Exception:
-            direct = None
+                if not opts:
+                    visible[0].click(force=True)
+                    time.sleep(0.8)
+                    opts = [cur.nth(i) for i in range(cur.count()) if _is_visible(cur.nth(i))]
+                if not opts:
+                    raise RuntimeError('悬浮菜单未显示下载当前明细')
+                # 报表生成在部分店铺会超过 30 秒；下载事件仍由当前明细菜单触发，
+                # 延长等待不会改变报表口径，只避免把慢响应误判成“未触发”。
+                with page.expect_download(timeout=120000) as di:
+                    opts[0].click(force=True)
+                direct = di.value
+                break
+            except Exception as e:
+                last_error = e
+                time.sleep(1.5)
+        if direct is None and last_error:
+            print('    [WARN] 当前明细下载重试 3 次仍未触发:', last_error)
     if direct is None and menu_immediate:
         raise RuntimeError('成交分析下载未触发文件')
     if direct is None:
