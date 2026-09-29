@@ -47,22 +47,45 @@ JS_OPEN_DOWN = """() => {
   nodes[nodes.length - 1].click(); return 'CLICKED';
 }"""
 JS_ROWS = """() => {
-  const root = document.querySelector('#content-container') || document.body;
-  const tables = Array.from(root.querySelectorAll('table')).filter(x => x.offsetParent !== null);
-  if (!tables.length) return [];
-  const table = tables[tables.length - 1];
-  return Array.from(table.querySelectorAll('tbody tr')).map(tr =>
-    Array.from(tr.querySelectorAll('td')).map(td => (td.innerText || '').trim()));
+  const all = Array.from(document.querySelectorAll('#content-container *,body *'))
+    .filter(x => x.offsetParent !== null);
+  const heading = all.find(x => (x.innerText || '').trim() === '下拉词');
+  let root = heading || document.querySelector('#content-container') || document.body;
+  // 真实页面是四列卡片而非 table：向上找到同时包含“全部导出”和分页的模块外壳。
+  for (let i = 0; i < 8 && root.parentElement; i++) {
+    const t = root.innerText || '';
+    if (/全部导出/.test(t) && (/50/.test(t) || /下一页|›|>|»/.test(t))) break;
+    root = root.parentElement;
+  }
+  const rows = [];
+  const seen = new Set();
+  const numeric = s => /^[\d,.]+(?:亿|万|w|W|k|K)?$/.test(s.replace(/平均[:：]/g, '').trim());
+  for (const el of Array.from(root.querySelectorAll('*'))) {
+    if (el.offsetParent === null || el.children.length > 5) continue;
+    const lines = (el.innerText || '').split(/\n+/).map(x => x.trim()).filter(Boolean);
+    if (lines.length < 2 || lines.length > 4 || lines.length > 80) continue;
+    let n = -1;
+    for (let i = lines.length - 1; i >= 0; i--) if (numeric(lines[i])) { n = i; break; }
+    if (n < 1) continue;
+    let word = lines[n - 1];
+    if (/^\d+$/.test(word) && n > 1) word = lines[n - 2];
+    if (!word || /关键词|月覆盖人次|全部导出|下拉词/.test(word) || /^\d+$/.test(word)) continue;
+    const key = word + '|' + lines[n];
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push([word, lines[n], '']);
+  }
+  return rows;
 }"""
 JS_NEXT = """() => {
-  const selectors = ['.el-pagination .btn-next','button[aria-label="下一页"]',
-    'button[title="下一页"]','a[aria-label="下一页"]'];
+  const selectors = ['.el-pagination .btn-next','.el-pagination button[class*="next"]',
+    'button[aria-label="下一页"]','button[title="下一页"]','a[aria-label="下一页"]'];
   for (const selector of selectors) {
     const el = document.querySelector(selector);
     if (el && el.offsetParent !== null && !el.disabled && !el.classList.contains('is-disabled')) { el.click(); return true; }
   }
   const el = Array.from(document.querySelectorAll('button,a,span')).find(x =>
-    x.offsetParent !== null && (x.innerText || '').trim() === '下一页');
+    x.offsetParent !== null && /^(下一页|>|›|»)$/.test((x.innerText || '').trim()));
   if (el) { el.click(); return true; }
   return false;
 }"""
