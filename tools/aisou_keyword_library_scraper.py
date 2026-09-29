@@ -253,6 +253,10 @@ def scrape_one(page, keyword, api_payloads=None):
         log('[词库] %s 分页控件：%s' % (keyword, json.dumps(page.evaluate(JS_PAGER_INFO), ensure_ascii=False)[:5000]))
         log('[词库] %s 分页相关DOM：%s' % (keyword, page.evaluate("""() => Array.from(document.querySelectorAll('*')).filter(x => /pagination|pager|page-size/i.test(String(x.className||''))).slice(-20).map(x => x.outerHTML.slice(0,500))""")))
         log('[词库] 页面脚本：%s' % page.evaluate("""() => Array.from(document.scripts).map(x=>x.src).filter(Boolean)"""))
+        clicked_size_or_page = page.evaluate("""() => { const xs=Array.from(document.querySelectorAll('li')).filter(x=>(x.innerText||'').trim()==='2'); if (!xs.length) return false; xs[xs.length-1].click(); return true; }""")
+        log('[词库] 尝试点击分页下拉项2：%s' % clicked_size_or_page)
+        page.wait_for_timeout(1200)
+        log('[词库] 点击后list_down请求数：%s' % len([x for x in (api_payloads or []) if isinstance(x, dict) and 'library_v2/list_down' in x.get('url','')]))
     except Exception:
         pass
     # list_down 是截图中“下拉词”模块的真实接口，返回 total_page/page_size/result。
