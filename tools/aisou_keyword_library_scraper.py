@@ -62,7 +62,7 @@ JS_ROWS = """() => {
   const numeric = s => /^[\d,.]+(?:亿|万|w|W|k|K)?$/.test(s.replace(/平均[:：]/g, '').trim());
   for (const el of Array.from(root.querySelectorAll('*'))) {
     if (el.offsetParent === null || el.children.length > 5) continue;
-    const lines = (el.innerText || '').split(/\n+/).map(x => x.trim()).filter(Boolean);
+    const lines = (el.innerText || '').split(String.fromCharCode(10)).map(x => x.trim()).filter(Boolean);
     if (lines.length < 2 || lines.length > 4 || lines.length > 80) continue;
     let n = -1;
     for (let i = lines.length - 1; i >= 0; i--) if (numeric(lines[i])) { n = i; break; }
