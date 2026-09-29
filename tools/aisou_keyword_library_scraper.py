@@ -224,7 +224,10 @@ def fetch_api_page(page, captured, page_no):
         headers={'Content-Type': 'application/json', 'Referer': page.url}, timeout=60000)
     if not response.ok:
         raise RuntimeError('HTTP %s' % response.status)
-    return response.json()
+    payload = response.json()
+    if page_no == 2:
+        log('[词库] list_down第2页响应摘要：%s' % json.dumps(payload, ensure_ascii=False)[:1000])
+    return payload
 
 
 def scrape_one(page, keyword, api_payloads=None):
