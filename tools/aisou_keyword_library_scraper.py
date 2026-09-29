@@ -165,7 +165,8 @@ def collect_page(page, page_no, api_payloads=None):
         elif isinstance(value, list):
             for child in value:
                 yield from walk(child)
-    for payload in reversed(api_payloads):
+    for captured in reversed(api_payloads):
+        payload = captured.get('payload') if isinstance(captured, dict) and 'payload' in captured else captured
         for item in walk(payload):
             if not isinstance(item, dict):
                 continue
@@ -193,6 +194,11 @@ def scrape_one(page, keyword, api_payloads=None):
     opened = page.evaluate(JS_OPEN_DOWN)
     log('[词库] %s 详情页下拉词入口：%s，URL：%s' % (keyword, opened, page.url))
     page.wait_for_timeout(1200)
+    try:
+        api_urls = [x.get('url', '') for x in (api_payloads or []) if isinstance(x, dict) and x.get('url')]
+        log('[词库] %s 采集到的爱搜接口：%s' % (keyword, json.dumps(api_urls[-20:], ensure_ascii=False)))
+    except Exception:
+        pass
     try:
         log('[词库] %s 分页控件：%s' % (keyword, json.dumps(page.evaluate(JS_PAGER_INFO), ensure_ascii=False)[:5000]))
     except Exception:
@@ -254,7 +260,7 @@ def main():
                     return
                 payload = response.json()
                 if isinstance(payload, (dict, list)):
-                    api_payloads.append(payload)
+                    api_payloads.append({'url': response.url, 'payload': payload})
                     if len(api_payloads) > 120:
                         del api_payloads[:-120]
             except Exception:
