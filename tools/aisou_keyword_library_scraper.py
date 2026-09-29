@@ -97,6 +97,12 @@ JS_NEXT = """() => {
   }
   return false;
 }"""
+JS_PAGER_INFO = """() => Array.from(document.querySelectorAll('button,a,li,[role="button"],div'))
+  .filter(x => x.offsetParent !== null && ((x.innerText || '').trim() === '1' ||
+    (x.innerText || '').trim() === '2' || /page|pagination|分页/i.test(x.className || '')))
+  .slice(-30).map(x => ({tag:x.tagName, text:(x.innerText || '').trim().slice(0,40),
+    cls:String(x.className || '').slice(0,160), disabled:!!x.disabled,
+    html:x.outerHTML.slice(0,300)}))"""
 
 
 def log(*args):
@@ -187,6 +193,10 @@ def scrape_one(page, keyword, api_payloads=None):
     opened = page.evaluate(JS_OPEN_DOWN)
     log('[词库] %s 详情页下拉词入口：%s，URL：%s' % (keyword, opened, page.url))
     page.wait_for_timeout(1200)
+    try:
+        log('[词库] %s 分页控件：%s' % (keyword, json.dumps(page.evaluate(JS_PAGER_INFO), ensure_ascii=False)[:5000]))
+    except Exception:
+        pass
     words = []
     for page_no in range(1, 6):
         current = collect_page(page, page_no, api_payloads)
