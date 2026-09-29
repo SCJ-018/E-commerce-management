@@ -98,7 +98,7 @@ def parse_num(text):
     return int(round(float(m.group(1)) * unit.get(m.group(2) or '', 1)))
 
 
-def collect_page(page, page_no):
+def collect_page(page, page_no, api_payloads=None):
     rows = page.evaluate(JS_ROWS) or []
     result = []
     seen = set()
@@ -113,10 +113,39 @@ def collect_page(page, page_no):
                        'month': parse_num(row[1]) if len(row) > 1 else '',
                        'seven': parse_num(row[2]) if len(row) > 2 else '',
                        'page': page_no})
+    if result or not api_payloads:
+        return result
+    # 详情模块的表格在部分版本由虚拟列表渲染，DOM 没有 tbody；从同一次点击触发的
+    # JSON 响应兜底读取 result/list/data 数组，字段名兼容 keyword/name。
+    def walk(value):
+        if isinstance(value, dict):
+            for key in ('result', 'list', 'rows', 'records', 'items'):
+                child = value.get(key)
+                if isinstance(child, list):
+                    yield from child
+            for child in value.values():
+                yield from walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from walk(child)
+    for payload in reversed(api_payloads):
+        for item in walk(payload):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('keyword') or item.get('name') or item.get('word') or '').strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            result.append({'type': '下拉词', 'name': name,
+                           'month': item.get('month_cover_count') or item.get('month') or '',
+                           'seven': item.get('seven_search_count') or item.get('seven') or '',
+                           'page': page_no})
+        if result:
+            break
     return result
 
 
-def scrape_one(page, keyword):
+def scrape_one(page, keyword, api_payloads=None):
     page.goto(SEARCH_URL + quote(keyword), wait_until='domcontentloaded', timeout=60000)
     page.wait_for_timeout(5000)
     detail = page.evaluate(JS_EXACT_DETAIL, keyword)
@@ -129,7 +158,7 @@ def scrape_one(page, keyword):
     page.wait_for_timeout(1200)
     words = []
     for page_no in range(1, 6):
-        current = collect_page(page, page_no)
+        current = collect_page(page, page_no, api_payloads)
         words.extend(current)
         if page_no == 1 and not current:
             try:
@@ -174,6 +203,19 @@ def main():
                 args=['--disable-blink-features=AutomationControlled'],
                 user_agent=UA, viewport={'width': 1440, 'height': 900}, locale='zh-CN')
         page = context.pages[0] if context.pages else context.new_page()
+        api_payloads = []
+        def capture_response(response):
+            try:
+                if 'aidso' not in response.url:
+                    return
+                payload = response.json()
+                if isinstance(payload, (dict, list)):
+                    api_payloads.append(payload)
+                    if len(api_payloads) > 120:
+                        del api_payloads[:-120]
+            except Exception:
+                pass
+        page.on('response', capture_response)
         login_codes = []
         def on_response(response):
             try:
@@ -195,7 +237,8 @@ def main():
         for index, keyword in enumerate(keywords):
             progress('running', index, len(keywords), '采集 ' + keyword)
             try:
-                words = scrape_one(page, keyword)
+                api_payloads.clear()
+                words = scrape_one(page, keyword, api_payloads)
             except Exception as exc:
                 log('[词库] %s 采集失败：%r' % (keyword, exc))
                 words = []
