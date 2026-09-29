@@ -314,7 +314,7 @@ def main():
     with sync_playwright() as playwright:
         try:
             context = playwright.chromium.launch_persistent_context(
-                PROFILE_DIR, channel='chrome', headless=True,
+                PROFILE_DIR, executable_path='/usr/bin/google-chrome', headless=True,
                 args=['--disable-blink-features=AutomationControlled'],
                 user_agent=UA, viewport={'width': 1440, 'height': 900}, locale='zh-CN')
         except Exception:
