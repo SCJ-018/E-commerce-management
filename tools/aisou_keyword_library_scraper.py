@@ -124,11 +124,19 @@ def scrape_one(page, keyword):
         log('[词库] %s 未找到精确匹配详情按钮：%s' % (keyword, detail))
         return []
     page.wait_for_timeout(1500)
-    page.evaluate(JS_OPEN_DOWN)
+    opened = page.evaluate(JS_OPEN_DOWN)
+    log('[词库] %s 详情页下拉词入口：%s，URL：%s' % (keyword, opened, page.url))
     page.wait_for_timeout(1200)
     words = []
     for page_no in range(1, 6):
-        words.extend(collect_page(page, page_no))
+        current = collect_page(page, page_no)
+        words.extend(current)
+        if page_no == 1 and not current:
+            try:
+                body_text = (page.locator('body').inner_text(timeout=2000) or '').replace('\n', ' | ')
+                log('[词库] %s 详情页未读到表格，页面文本：%s' % (keyword, body_text[:1200]))
+            except Exception:
+                pass
         if page_no == 5 or not page.evaluate(JS_NEXT):
             break
         page.wait_for_timeout(1200)
