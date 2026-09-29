@@ -183,6 +183,48 @@ def collect_page(page, page_no, api_payloads=None):
     return result
 
 
+def collect_api_result(payload, page_no):
+    """读取 list_down 接口的分页结果。接口返回 data.result，而非 DOM 表格。"""
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get('data') if isinstance(payload.get('data'), dict) else payload
+    rows = data.get('result') if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return []
+    result, seen = [], set()
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('keyword') or item.get('name') or item.get('word') or '').strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        result.append({'type': '下拉词', 'name': name,
+                       'month': parse_num(item.get('month_cover_count') or item.get('month_cover_count_str') or item.get('month')),
+                       'seven': parse_num(item.get('seven_search_count') or item.get('seven')),
+                       'page': page_no})
+    return result
+
+
+def fetch_api_page(page, captured, page_no):
+    """复用爱搜本次 list_down 请求的签名和登录态，只替换分页参数。"""
+    if not isinstance(captured, dict) or not captured.get('url'):
+        return None
+    try:
+        body = json.loads(captured.get('post_data') or '{}')
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    body['page_no'] = page_no
+    script = """async ({url, body}) => {
+      const r = await fetch(url, {method:'POST', credentials:'include',
+        headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+      return await r.json();
+    }"""
+    return page.evaluate(script, {'url': captured['url'], 'body': body})
+
+
 def scrape_one(page, keyword, api_payloads=None):
     page.goto(SEARCH_URL + quote(keyword), wait_until='domcontentloaded', timeout=60000)
     page.wait_for_timeout(5000)
@@ -206,17 +248,33 @@ def scrape_one(page, keyword, api_payloads=None):
         log('[词库] %s 分页控件：%s' % (keyword, json.dumps(page.evaluate(JS_PAGER_INFO), ensure_ascii=False)[:5000]))
     except Exception:
         pass
+    # list_down 是截图中“下拉词”模块的真实接口，返回 total_page/page_size/result。
+    # 页面本身只渲染当前 20 条且分页控件由前端组件托管，因此直接复用该请求分页，
+    # 不依赖脆弱的 DOM 下一页按钮。
+    down_capture = next((x for x in reversed(api_payloads or [])
+                         if isinstance(x, dict) and 'library_v2/list_down' in x.get('url', '')), None)
     words = []
     for page_no in range(1, 6):
-        current = collect_page(page, page_no, api_payloads)
+        if page_no == 1 and down_capture:
+            current = collect_api_result(down_capture.get('payload'), page_no)
+        elif down_capture:
+            try:
+                current = collect_api_result(fetch_api_page(page, down_capture, page_no), page_no)
+            except Exception as exc:
+                log('[词库] %s 下拉词第%d页接口请求失败：%s' % (keyword, page_no, exc))
+                current = []
+        else:
+            current = collect_page(page, page_no, api_payloads)
         words.extend(current)
         log('[词库] %s 下拉词第%d页读取 %d 条' % (keyword, page_no, len(current)))
-        if page_no == 1 and not current:
+        if page_no == 1 and not current and not down_capture:
             try:
                 body_text = (page.locator('body').inner_text(timeout=2000) or '').replace('\n', ' | ')
                 log('[词库] %s 详情页未读到表格，页面文本：%s' % (keyword, body_text[:1200]))
             except Exception:
                 pass
+        if down_capture:
+            continue
         next_clicked = page.evaluate(JS_NEXT)
         log('[词库] %s 下拉词第%d页翻页：%s' % (keyword, page_no, next_clicked))
         if page_no == 5 or not next_clicked:
