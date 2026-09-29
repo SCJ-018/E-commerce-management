@@ -252,7 +252,6 @@ def scrape_one(page, keyword, api_payloads=None):
     try:
         log('[词库] %s 分页控件：%s' % (keyword, json.dumps(page.evaluate(JS_PAGER_INFO), ensure_ascii=False)[:5000]))
         log('[词库] %s 分页相关DOM：%s' % (keyword, page.evaluate("""() => Array.from(document.querySelectorAll('*')).filter(x => /pagination|pager|page-size/i.test(String(x.className||''))).slice(-20).map(x => x.outerHTML.slice(0,500))""")))
-        log('[词库] 页面脚本：%s' % page.evaluate("""() => Array.from(document.scripts).map(x=>x.src).filter(Boolean)"""))
         clicked_size_or_page = page.evaluate("""() => { const xs=Array.from(document.querySelectorAll('li')).filter(x=>(x.innerText||'').trim()==='2'); if (!xs.length) return false; xs[xs.length-1].click(); return true; }""")
         log('[词库] 尝试点击分页下拉项2：%s' % clicked_size_or_page)
         page.wait_for_timeout(1200)
@@ -332,6 +331,8 @@ def main():
                     return
                 payload = response.json()
                 if isinstance(payload, (dict, list)):
+                    if 'library_v2/helper/libraryHelper' in response.url and 'type=down' in response.url:
+                        log('[词库] helper down响应摘要：%s' % json.dumps(payload, ensure_ascii=False)[:3000])
                     req = response.request
                     api_payloads.append({'url': response.url, 'payload': payload,
                                          'method': req.method, 'post_data': req.post_data})
