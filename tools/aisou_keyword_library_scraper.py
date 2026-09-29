@@ -252,6 +252,7 @@ def scrape_one(page, keyword, api_payloads=None):
     try:
         log('[词库] %s 分页控件：%s' % (keyword, json.dumps(page.evaluate(JS_PAGER_INFO), ensure_ascii=False)[:5000]))
         log('[词库] %s 分页相关DOM：%s' % (keyword, page.evaluate("""() => Array.from(document.querySelectorAll('*')).filter(x => /pagination|pager|page-size/i.test(String(x.className||''))).slice(-20).map(x => x.outerHTML.slice(0,500))""")))
+        log('[词库] 页面脚本：%s' % page.evaluate("""() => Array.from(document.scripts).map(x=>x.src).filter(Boolean)"""))
     except Exception:
         pass
     # list_down 是截图中“下拉词”模块的真实接口，返回 total_page/page_size/result。
