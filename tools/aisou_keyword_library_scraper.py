@@ -175,6 +175,11 @@ def scrape_one(page, keyword, api_payloads=None):
     opened = page.evaluate(JS_OPEN_DOWN)
     log('[词库] %s 详情页下拉词入口：%s，URL：%s' % (keyword, opened, page.url))
     page.wait_for_timeout(1200)
+    try:
+        detail_text = (page.locator('#content-container').inner_text(timeout=3000) or '').replace('\n', ' | ')
+        log('[词库] %s 详情模块文本：%s' % (keyword, detail_text[:3000]))
+    except Exception:
+        pass
     words = []
     for page_no in range(1, 6):
         current = collect_page(page, page_no, api_payloads)
